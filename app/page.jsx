@@ -1,5 +1,7 @@
 'use client';
 
+import { sendEmail, sendSMS } from '@/lib/messaging';
+import { loadAll } from '@/lib/db';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Home, ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, FastForward, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox } from 'lucide-react';
 // ============================================================
@@ -581,25 +583,19 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [leadsRes, slotsRes, waitRes, settingsRes, offsetRes] = await Promise.all([
-          window.storage.get('leads-data').catch(() => null),
-          window.storage.get('slots-data').catch(() => null),
-          window.storage.get('waitlist-data').catch(() => null),
-          window.storage.get('settings-data').catch(() => null),
-          window.storage.get('time-offset').catch(() => null),
-        ]);
-        if (leadsRes && leadsRes.value) setLeads(JSON.parse(leadsRes.value));
-        if (slotsRes && slotsRes.value) {
-          setSlots(JSON.parse(slotsRes.value));
-        } else {
-          const fresh = generateDefaultSlots();
-          setSlots(fresh);
-          window.storage.set('slots-data', JSON.stringify(fresh)).catch(() => {});
-        }
-        if (waitRes && waitRes.value) setWaitlist(JSON.parse(waitRes.value));
-        if (settingsRes && settingsRes.value) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...JSON.parse(settingsRes.value) });
-        if (offsetRes && offsetRes.value) setTimeOffset(JSON.parse(offsetRes.value));
-      } catch (e) {}
+        const data = await loadAll();
+        setLeads(data.leads || []);
+        setSlots((data.slots || []).length > 0 ? data.slots : generateDefaultSlots());
+        setWaitlist(data.waitlist || []);
+        if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...data.settings });
+        // Still load timeOffset from localStorage (dev-only feature, not worth a DB trip)
+        try {
+          const offsetRes = await window.storage.get('time-offset').catch(() => null);
+          if (offsetRes && offsetRes.value) setTimeOffset(JSON.parse(offsetRes.value));
+        } catch (e) {}
+      } catch (e) {
+        console.error('[app] Failed to load data from Supabase', e);
+      }
       setLoaded(true);
     })();
   }, []);
@@ -618,7 +614,19 @@ export default function App() {
   };
   const saveSettings = async (newSettings) => {
     setSettings(newSettings);
-    try { await window.storage.set('settings-data', JSON.stringify(newSettings)); } catch (e) {}
+    try {
+      const { updateSettings } = await import('@/lib/db');
+      await updateSettings({
+        agent_name: newSettings.agentName,
+        agent_email: newSettings.agentEmail,
+        agent_phone: newSettings.agentPhone,
+        twilio_number: newSettings.twilioNumber,
+        rentspree_dashboard_url: newSettings.rentSpree?.dashboardUrl,
+        automation: newSettings.automation,
+      });
+    } catch (e) {
+      console.error('[app] Failed to save settings', e);
+    }
   };
   const saveTimeOffset = async (offset) => {
     setTimeOffset(offset);
@@ -843,34 +851,103 @@ export default function App() {
     const id = `lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const firstName = lead.fullName.split(' ')[0];
     const isSoon = bucket === 'GCMS' || bucket === 'BCMS';
-    const newLead = {
-      ...lead, id, bucket, stage: 'new',
-      createdAt: new Date().toISOString(),
-      tours: [], followUps: [], tasks: [],
-      activities: [{ id: `a_${Date.now()}`, type: 'lead-created', timestamp: new Date().toISOString(), message: `Lead created · ${bucket}` }],
-      messages: [
-        {
-          id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent',
-          to: lead.email, via: 'gmail', subject: 'Welcome to Rentals Philly',
-          body: isSoon
-            ? `Hi ${firstName} — welcome to Rentals Philly! I've pulled together a curated list of rentals matching your criteria.`
-            : `Hi ${firstName} — thanks for reaching out! Since your move-in date is further out, I'll follow up 75 days before.`,
-          timestamp: new Date().toISOString(), automated: true,
-        },
-        {
-          id: `m_${Date.now()}_s`, channel: 'sms', direction: 'outbound', status: 'sent',
-          to: lead.phone, via: 'twilio',
-          body: isSoon ? `Rentals Philly: Welcome ${firstName}! Your matches are ready.` : `Rentals Philly: Thanks ${firstName}! I'll reach out 75 days before your move.`,
-          timestamp: new Date().toISOString(), automated: true,
-        },
-      ],
+    const createdAt = new Date().toISOString();
+
+    const welcomeEmailSubject = 'Welcome to Rentals Philly';
+    const welcomeEmailBody = isSoon
+      ? `Hi ${firstName} — welcome to Rentals Philly! I've pulled together a curated list of rentals matching your criteria.`
+      : `Hi ${firstName} — thanks for reaching out! Since your move-in date is further out, I'll follow up 75 days before.`;
+    const welcomeSmsBody = isSoon
+      ? `Rentals Philly: Welcome ${firstName}! Your matches are ready.`
+      : `Rentals Philly: Thanks ${firstName}! I'll reach out 75 days before your move.`;
+
+    const welcomeMsgs = [
+      {
+        id: `m_${Date.now()}_e`,
+        lead_id: id,
+        channel: 'email', direction: 'outbound', status: 'sent',
+        to: lead.email, via: 'gmail',
+        subject: welcomeEmailSubject, body: welcomeEmailBody,
+        automated: true, internal: false,
+      },
+      {
+        id: `m_${Date.now()}_s`,
+        lead_id: id,
+        channel: 'sms', direction: 'outbound', status: 'sent',
+        to: lead.phone, via: 'twilio',
+        subject: null, body: welcomeSmsBody,
+        automated: true, internal: false,
+      },
+    ];
+
+    const welcomeActivity = {
+      id: `a_${Date.now()}`,
+      lead_id: id,
+      type: 'lead-created',
+      message: `Lead created · ${bucket}`,
     };
+
+    const tasks = [];
     if (bucket === 'GCM75+' || bucket === 'BC75+') {
       const followUpDate = new Date(lead.moveInDate);
       followUpDate.setDate(followUpDate.getDate() - 75);
-      newLead.tasks.push({ id: `t_${Date.now()}`, title: `75-day outreach to ${firstName}`, dueDate: followUpDate.toISOString().split('T')[0], status: 'pending', auto: true });
+      tasks.push({
+        id: `t_${Date.now()}`,
+        lead_id: id,
+        title: `75-day outreach to ${firstName}`,
+        due_date: followUpDate.toISOString().split('T')[0],
+        status: 'pending',
+        auto: true,
+      });
     }
-    await saveLeads([newLead, ...leads]);
+
+    try {
+      const db = await import('@/lib/db');
+      // Create lead row
+      await db.createLead({
+        id,
+        full_name: lead.fullName,
+        email: lead.email,
+        phone: lead.phone,
+        move_in_date: lead.moveInDate,
+        budget_min: Number(lead.budgetMin) || null,
+        budget_max: Number(lead.budgetMax) || null,
+        beds: lead.beds,
+        baths: lead.baths,
+        areas: lead.areas,
+        employed: lead.employed,
+        credit_score: lead.creditScore,
+        tour_type: lead.tourType,
+        bucket,
+        stage: 'new',
+      });
+      // Insert welcome messages + activity + any tasks
+      for (const m of welcomeMsgs) await db.insertMessage(m);
+      await db.insertActivity(welcomeActivity);
+      for (const t of tasks) await db.insertTask(t);
+    } catch (e) {
+      console.error('[app] Failed to create lead in Supabase', e);
+    }
+
+    // Fire real welcome email + SMS
+    sendEmail({ to: lead.email, subject: welcomeEmailSubject, body: welcomeEmailBody });
+    sendSMS({ to: lead.phone, body: welcomeSmsBody });
+
+    // Build the in-memory lead object for immediate UI use (matches old shape)
+    const newLead = {
+      ...lead, id, bucket, stage: 'new',
+      createdAt,
+      tours: [], followUps: [],
+      tasks: tasks.map(t => ({ id: t.id, title: t.title, dueDate: t.due_date, status: t.status, auto: t.auto })),
+      activities: [{ id: welcomeActivity.id, type: welcomeActivity.type, message: welcomeActivity.message, timestamp: createdAt }],
+      messages: welcomeMsgs.map(m => ({
+        id: m.id, channel: m.channel, direction: m.direction, status: m.status,
+        to: m.to, via: m.via, subject: m.subject, body: m.body,
+        automated: m.automated, timestamp: createdAt,
+      })),
+    };
+
+    setLeads([newLead, ...leads]);
     setCurrentLead(newLead);
     return newLead;
   };
