@@ -600,17 +600,66 @@ export default function App() {
     })();
   }, []);
 
+  // In the Supabase world, we only call saveLeads for bulk operations.
+  // The main bulk op is "clear all" from the leads list.
+  // Individual inserts/updates go through addLead / updateLead.
   const saveLeads = async (newLeads) => {
     setLeads(newLeads);
-    try { await window.storage.set('leads-data', JSON.stringify(newLeads)); } catch (e) {}
+    // If the array is empty, it's a "clear all" — delete all leads from Supabase
+    if (newLeads.length === 0 && leads.length > 0) {
+      try {
+        const db = await import('@/lib/db');
+        await db.deleteAllLeads();
+      } catch (e) {
+        console.error('[app] Failed to clear leads', e);
+      }
+    }
   };
+// Slots live in Supabase. Bulk update: we diff against the current state.
+  // Call site generally replaces the whole array, so we upsert all + delete any missing.
   const saveSlots = async (newSlots) => {
     setSlots(newSlots);
-    try { await window.storage.set('slots-data', JSON.stringify(newSlots)); } catch (e) {}
+    try {
+      const db = await import('@/lib/db');
+      // Upsert each slot
+      for (const s of newSlots) {
+        await db.upsertSlot({
+          id: s.id,
+          date: s.date,
+          time: s.time,
+          status: s.status || 'open',
+          booked_by: s.bookedBy || null,
+        });
+      }
+      // Delete slots that were removed
+      const newIds = new Set(newSlots.map(s => s.id));
+      for (const existing of slots) {
+        if (!newIds.has(existing.id)) {
+          await db.deleteSlot(existing.id);
+        }
+      }
+    } catch (e) {
+      console.error('[app] Failed to save slots', e);
+    }
   };
   const saveWaitlist = async (newWaitlist) => {
     setWaitlist(newWaitlist);
-    try { await window.storage.set('waitlist-data', JSON.stringify(newWaitlist)); } catch (e) {}
+    try {
+      const db = await import('@/lib/db');
+      // Find entries that are new (not already in state)
+      const existingIds = new Set(waitlist.map(w => w.id));
+      const newEntries = newWaitlist.filter(w => !existingIds.has(w.id));
+      for (const entry of newEntries) {
+        await db.insertWaitlist({
+          id: entry.id,
+          lead_id: entry.leadId,
+          preferred_dates: entry.preferredDates,
+          status: entry.status || 'waiting',
+        });
+      }
+    } catch (e) {
+      console.error('[app] Failed to save waitlist', e);
+    }
   };
   const saveSettings = async (newSettings) => {
     setSettings(newSettings);
@@ -655,10 +704,126 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // Update a lead in Supabase + sync newly-added nested items (messages/activities/tasks/submissions).
+  // Strategy: for each nested array, compare current-in-state vs updates, and persist anything new.
   const updateLead = async (id, updates) => {
-    const updated = leads.map(l => l.id === id ? { ...l, ...updates } : l);
-    await saveLeads(updated);
+    const existing = leads.find(l => l.id === id);
+    const merged = { ...existing, ...updates };
+    const updated = leads.map(l => l.id === id ? merged : l);
+    setLeads(updated);
     if (currentLead?.id === id) setCurrentLead({ ...currentLead, ...updates });
+
+    try {
+      const db = await import('@/lib/db');
+
+      // 1. Persist direct lead field updates (skip nested arrays — those go separately)
+      const { messages, activities, tasks, tours, submissions, scheduledNudges, followUps, ...leadFields } = updates;
+      const leadUpdatePayload = {};
+      if ('stage' in leadFields) leadUpdatePayload.stage = leadFields.stage;
+      if ('application' in leadFields) leadUpdatePayload.application = leadFields.application;
+      if ('applicationStatus' in leadFields) leadUpdatePayload.application_status = leadFields.applicationStatus;
+      if ('screening' in leadFields) leadUpdatePayload.screening = leadFields.screening;
+      if ('bucket' in leadFields) leadUpdatePayload.bucket = leadFields.bucket;
+      if (Object.keys(leadUpdatePayload).length > 0) {
+        await db.updateLead(id, leadUpdatePayload);
+      }
+
+      // 2. For each nested array in updates, insert new items
+      const existingMsgIds = new Set((existing?.messages || []).map(m => m.id));
+      const newMessages = (messages || []).filter(m => !existingMsgIds.has(m.id));
+      for (const m of newMessages) {
+        await db.insertMessage({
+          id: m.id, lead_id: id,
+          channel: m.channel, direction: m.direction, status: m.status,
+          to: m.to, via: m.via, subject: m.subject, body: m.body,
+          automated: !!m.automated, internal: !!m.internal,
+        });
+      }
+
+      const existingActIds = new Set((existing?.activities || []).map(a => a.id));
+      const newActs = (activities || []).filter(a => !existingActIds.has(a.id));
+      for (const a of newActs) {
+        await db.insertActivity({ id: a.id, lead_id: id, type: a.type, message: a.message });
+      }
+
+      const existingTaskIds = new Set((existing?.tasks || []).map(t => t.id));
+      const updatedTaskIds = new Set((tasks || []).map(t => t.id));
+      // New tasks → insert
+      const newTasks = (tasks || []).filter(t => !existingTaskIds.has(t.id));
+      for (const t of newTasks) {
+        await db.insertTask({
+          id: t.id, lead_id: id, title: t.title, due_date: t.dueDate,
+          status: t.status, priority: t.priority, auto: !!t.auto,
+          completed_at: t.completedAt || null,
+          related_tour_id: t.relatedTourId || null,
+          related_submission_id: t.relatedSubmissionId || null,
+          flags: t.flags || null,
+        });
+      }
+      // Existing tasks that changed status/completion → update
+      for (const t of (tasks || [])) {
+        if (!existingTaskIds.has(t.id)) continue;
+        const prev = (existing?.tasks || []).find(x => x.id === t.id);
+        if (prev && (prev.status !== t.status || prev.completedAt !== t.completedAt)) {
+          await db.updateTask(t.id, { status: t.status, completed_at: t.completedAt || null });
+        }
+      }
+
+      const existingTourIds = new Set((existing?.tours || []).map(t => t.id));
+      const newTours = (tours || []).filter(t => !existingTourIds.has(t.id));
+      for (const t of newTours) {
+        await db.insertTour({
+          id: t.id, lead_id: id, tour_type: t.tourType,
+          date: t.date, time: t.time, status: t.status,
+          listings: t.listings, schedule: t.schedule,
+          completed_at: t.completedAt || null,
+          auto_completed: !!t.autoCompleted,
+        });
+      }
+      // Updated tours (completed, etc.)
+      for (const t of (tours || [])) {
+        if (!existingTourIds.has(t.id)) continue;
+        const prev = (existing?.tours || []).find(x => x.id === t.id);
+        if (prev && (prev.status !== t.status || prev.completedAt !== t.completedAt)) {
+          await db.updateTour(t.id, {
+            status: t.status,
+            completed_at: t.completedAt || null,
+            auto_completed: !!t.autoCompleted,
+          });
+        }
+      }
+
+      const existingSubIds = new Set((existing?.submissions || []).map(s => s.id));
+      const newSubs = (submissions || []).filter(s => !existingSubIds.has(s.id));
+      for (const s of newSubs) {
+        await db.insertSubmission({
+          id: s.id, lead_id: id, listing: s.listing,
+          landlord_email: s.landlordEmail, landlord_name: s.landlordName,
+          email_subject: s.emailSubject, email_body: s.emailBody,
+          status: s.status, notes: s.notes || '',
+          follow_ups: s.followUps || [],
+        });
+      }
+      // Existing submissions changed (status update, follow-up added)
+      for (const s of (submissions || [])) {
+        if (!existingSubIds.has(s.id)) continue;
+        const prev = (existing?.submissions || []).find(x => x.id === s.id);
+        if (!prev) continue;
+        const subUpdates = {};
+        if (prev.status !== s.status) {
+          subUpdates.status = s.status;
+          subUpdates.status_updated_at = s.statusUpdatedAt || new Date().toISOString();
+        }
+        if ((prev.followUps?.length || 0) !== (s.followUps?.length || 0)) {
+          subUpdates.follow_ups = s.followUps || [];
+        }
+        if (Object.keys(subUpdates).length > 0) {
+          await db.updateSubmission(s.id, subUpdates);
+        }
+      }
+    } catch (e) {
+      console.error('[app] Failed to update lead', e);
+    }
   };
 
   const joinWaitlist = async (leadId, preferredDates) => {

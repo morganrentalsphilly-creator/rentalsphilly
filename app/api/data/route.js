@@ -158,7 +158,33 @@ export async function POST(request) {
         if (error) throw error;
         return NextResponse.json({ settings: data });
       }
+      case 'upload_application': {
+        const { leadId, filename, base64 } = body;
+        const db = supabaseAdmin();
+        // Strip the data URL prefix if present
+        const cleanBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
+        const buffer = Buffer.from(cleanBase64, 'base64');
+        const path = `${leadId}/${Date.now()}_${filename}`;
+        const { error } = await db.storage.from('applications').upload(path, buffer, {
+          contentType: 'application/pdf',
+          upsert: false,
+        });
+        if (error) throw error;
+        // Generate a signed URL good for 1 year
+        const { data: signed, error: urlError } = await db.storage
+          .from('applications')
+          .createSignedUrl(path, 60 * 60 * 24 * 365);
+        if (urlError) throw urlError;
+        return NextResponse.json({ path, url: signed.signedUrl });
+      }
 
+      case 'delete_application': {
+        const { path } = body;
+        const db = supabaseAdmin();
+        const { error } = await db.storage.from('applications').remove([path]);
+        if (error) throw error;
+        return NextResponse.json({ ok: true });
+      }
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
