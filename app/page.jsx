@@ -2,6 +2,7 @@
 
 import { sendEmail, sendSMS } from '@/lib/messaging';
 import { loadAll } from '@/lib/db';
+import { createBrowserSupabase } from '@/lib/supabase.client';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Home, ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, FastForward, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox } from 'lucide-react';
 // ============================================================
@@ -356,7 +357,7 @@ const interpretScreeningReport = (report, lead) => {
   return { flags, strengths, recommendation, summary };
 };
 
-const runAutomation = ({ leads, slots, settings, now }) => {
+const runAutomation = async ({ leads, slots, settings, now }) => {
   const updates = {};
 
   const mergeLead = (leadId, patch) => {
@@ -396,13 +397,34 @@ const runAutomation = ({ leads, slots, settings, now }) => {
         const isVirtual = tour.tourType === 'virtual';
         const body = `Hi ${firstName} — thanks for ${isVirtual ? 'the virtual tour' : 'touring'} today! You saw:\n\n${tourList}\n\nReply with the one that stood out and I'll start your application.`;
         const email = autoMsg(lead, 'email', 'Thanks for touring — which one?', body);
-        const sms = autoMsg(lead, 'sms', null, `Haven: Thanks ${firstName}! Which property stood out?`);
+        // Actually send the post-tour SMS via the server wrapper.
+        const ptSmsBody = `Rentals Philly: Thanks ${firstName}! Which property stood out?`;
+        let smsRow = null;
+        if (lead.id) {
+          const result = await sendSMS({
+            leadId: lead.id,
+            body: ptSmsBody,
+            kind: 'nudge_48hr',
+            idempotencyKey: `post-tour-${tour.id}`,
+            automated: true,
+          });
+          if (result?.ok && result.message) {
+            smsRow = {
+              id: result.message.id, channel: 'sms', direction: 'outbound',
+              status: result.message.status || 'sent',
+              to: result.message.to, via: 'twilio',
+              body: result.message.body,
+              timestamp: result.message.created_at || now.toISOString(),
+              automated: true,
+            };
+          }
+        }
         const nudge48 = new Date(now); nudge48.setHours(now.getHours() + 48);
         const nudge5d = new Date(now); nudge5d.setDate(now.getDate() + 5);
         mergeLead(lead.id, {
           tours: (updates[lead.id]?.tours || lead.tours).map(t => t.id === tour.id ? { ...t, status: 'completed', completedAt: now.toISOString(), autoCompleted: true } : t),
           stage: 'post-tour',
-          messages: [email, sms],
+          messages: [email, smsRow].filter(Boolean),
           activities: [activity(`Tour auto-completed. Post-tour follow-up sent.`, 'auto-complete')],
           scheduledNudges: [
             ...(lead.scheduledNudges || []),
@@ -423,14 +445,40 @@ const runAutomation = ({ leads, slots, settings, now }) => {
         });
         continue;
       }
-      let email, sms;
+      let email, smsBody, smsKind;
       if (nudge.type === 'post-tour-48hr') {
         email = autoMsg(lead, 'email', 'Still thinking it over?', `Hi ${firstName} — just checking in on the places you toured.`);
-        sms = autoMsg(lead, 'sms', null, `Haven: Hey ${firstName}, any favorites from the tour?`);
+        smsBody = `Rentals Philly: Hey ${firstName}, any favorites from the tour?`;
+        smsKind = 'nudge_48hr';
       } else if (nudge.type === 'post-tour-5day') {
         email = autoMsg(lead, 'email', 'Fresh options?', `Hi ${firstName} — want a fresh batch of listings?`);
       }
-      const msgs = [email, sms].filter(Boolean);
+
+      // Actually send the SMS nudge via the server wrapper. The DB row it
+      // creates becomes the source of truth — we splice it into the in-memory
+      // lead.messages so the UI stays consistent.
+      let smsRow = null;
+      if (smsBody && lead.id) {
+        const result = await sendSMS({
+          leadId: lead.id,
+          body: smsBody,
+          kind: smsKind,
+          idempotencyKey: `${smsKind}-${nudge.id}`,
+          automated: true,
+        });
+        if (result?.ok && result.message) {
+          smsRow = {
+            id: result.message.id, channel: 'sms', direction: 'outbound',
+            status: result.message.status || 'sent',
+            to: result.message.to, via: 'twilio',
+            body: result.message.body,
+            timestamp: result.message.created_at || now.toISOString(),
+            automated: true,
+          };
+        }
+      }
+
+      const msgs = [email, smsRow].filter(Boolean);
       mergeLead(lead.id, {
         messages: msgs,
         scheduledNudges: (updates[lead.id]?.scheduledNudges || lead.scheduledNudges || []).map(n => n.id === nudge.id ? { ...n, status: 'sent', sentAt: now.toISOString() } : n),
@@ -600,6 +648,81 @@ export default function App() {
     })();
   }, []);
 
+  // ---- Supabase Realtime: live inbox updates ------------------------------
+  // Subscribe to INSERTs on the `messages` table and merge each new row into
+  // the matching lead's in-memory messages array. This is how inbound SMS
+  // replies and outbound status changes show up in the inbox without a refresh.
+  useEffect(() => {
+    if (!loaded) return;
+    const supa = createBrowserSupabase();
+    if (!supa) return;
+    const channel = supa
+      .channel('messages-stream')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const row = payload.new;
+          if (!row || !row.lead_id) return;
+          setLeads((prev) => prev.map((l) => {
+            if (l.id !== row.lead_id) return l;
+            // Skip if we already have this message (optimistic insert).
+            if ((l.messages || []).some((m) => m.id === row.id)) return l;
+            const incoming = {
+              id: row.id,
+              channel: row.channel,
+              direction: row.direction,
+              status: row.status,
+              to: row.to,
+              via: row.via,
+              subject: row.subject,
+              body: row.body,
+              timestamp: row.created_at || new Date().toISOString(),
+              automated: !!row.automated,
+            };
+            return { ...l, messages: [...(l.messages || []), incoming] };
+          }));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
+        (payload) => {
+          const row = payload.new;
+          if (!row || !row.lead_id) return;
+          setLeads((prev) => prev.map((l) => {
+            if (l.id !== row.lead_id) return l;
+            return {
+              ...l,
+              messages: (l.messages || []).map((m) =>
+                m.id === row.id
+                  ? { ...m, status: row.status, body: row.body }
+                  : m
+              ),
+            };
+          }));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'leads' },
+        (payload) => {
+          const row = payload.new;
+          if (!row?.id) return;
+          // Reflect opt-out status changes immediately in the UI.
+          setLeads((prev) => prev.map((l) =>
+            l.id === row.id
+              ? { ...l, opted_out: row.opted_out, opted_out_at: row.opted_out_at }
+              : l
+          ));
+        }
+      )
+      .subscribe();
+    return () => {
+      try { supa.removeChannel(channel); } catch {}
+    };
+  }, [loaded]);
+
   // In the Supabase world, we only call saveLeads for bulk operations.
   // The main bulk op is "clear all" from the leads list.
   // Individual inserts/updates go through addLead / updateLead.
@@ -687,7 +810,7 @@ export default function App() {
     if (settings.automation?.enabled === false) return;
     const runIt = async () => {
       const now = getNow();
-      const { leadUpdates } = runAutomation({ leads, slots, waitlist, settings, now });
+      const { leadUpdates } = await runAutomation({ leads, slots, waitlist, settings, now });
       const updatedIds = Object.keys(leadUpdates);
       if (updatedIds.length > 0) {
         const merged = leads.map(l => leadUpdates[l.id] || l);
@@ -1026,24 +1149,16 @@ export default function App() {
       ? `Rentals Philly: Welcome ${firstName}! Your matches are ready.`
       : `Rentals Philly: Thanks ${firstName}! I'll reach out 75 days before your move.`;
 
-    const welcomeMsgs = [
-      {
-        id: `m_${Date.now()}_e`,
-        lead_id: id,
-        channel: 'email', direction: 'outbound', status: 'sent',
-        to: lead.email, via: 'gmail',
-        subject: welcomeEmailSubject, body: welcomeEmailBody,
-        automated: true, internal: false,
-      },
-      {
-        id: `m_${Date.now()}_s`,
-        lead_id: id,
-        channel: 'sms', direction: 'outbound', status: 'sent',
-        to: lead.phone, via: 'twilio',
-        subject: null, body: welcomeSmsBody,
-        automated: true, internal: false,
-      },
-    ];
+    // Email message inserted directly to DB below. SMS goes through sendSMS
+    // (server wrapper) which inserts its own messages row — no duplicate.
+    const welcomeEmailMsg = {
+      id: `m_${Date.now()}_e`,
+      lead_id: id,
+      channel: 'email', direction: 'outbound', status: 'sent',
+      to: lead.email, via: 'gmail',
+      subject: welcomeEmailSubject, body: welcomeEmailBody,
+      automated: true, internal: false,
+    };
 
     const welcomeActivity = {
       id: `a_${Date.now()}`,
@@ -1086,17 +1201,25 @@ export default function App() {
         bucket,
         stage: 'new',
       });
-      // Insert welcome messages + activity + any tasks
-      for (const m of welcomeMsgs) await db.insertMessage(m);
+      // Insert welcome email message + activity + any tasks.
+      // SMS row is inserted by the server wrapper (sendSMS) — do NOT also
+      // insert it here or we'll get duplicates.
+      await db.insertMessage(welcomeEmailMsg);
       await db.insertActivity(welcomeActivity);
       for (const t of tasks) await db.insertTask(t);
     } catch (e) {
       console.error('[app] Failed to create lead in Supabase', e);
     }
 
-    // Fire real welcome email + SMS
+    // Fire real welcome email (existing path) + welcome SMS (server wrapper).
     sendEmail({ to: lead.email, subject: welcomeEmailSubject, body: welcomeEmailBody });
-    sendSMS({ to: lead.phone, body: welcomeSmsBody });
+    const smsResult = await sendSMS({
+      leadId: id,
+      body: welcomeSmsBody,
+      kind: 'welcome',
+      idempotencyKey: `welcome-${id}`,
+      automated: true,
+    });
 
     // Build the in-memory lead object for immediate UI use (matches old shape)
     const newLead = {
@@ -1105,11 +1228,28 @@ export default function App() {
       tours: [], followUps: [],
       tasks: tasks.map(t => ({ id: t.id, title: t.title, dueDate: t.due_date, status: t.status, auto: t.auto })),
       activities: [{ id: welcomeActivity.id, type: welcomeActivity.type, message: welcomeActivity.message, timestamp: createdAt }],
-      messages: welcomeMsgs.map(m => ({
-        id: m.id, channel: m.channel, direction: m.direction, status: m.status,
-        to: m.to, via: m.via, subject: m.subject, body: m.body,
-        automated: m.automated, timestamp: createdAt,
-      })),
+      messages: [
+        // Email — inserted optimistically as before.
+        {
+          id: welcomeEmailMsg.id, channel: 'email', direction: 'outbound', status: 'sent',
+          to: welcomeEmailMsg.to, via: welcomeEmailMsg.via,
+          subject: welcomeEmailMsg.subject, body: welcomeEmailMsg.body,
+          automated: true, timestamp: createdAt,
+        },
+        // SMS — actual DB row returned by the server wrapper, if it succeeded.
+        ...(smsResult?.ok && smsResult.message ? [{
+          id: smsResult.message.id,
+          channel: 'sms',
+          direction: 'outbound',
+          status: smsResult.message.status || 'sent',
+          to: smsResult.message.to,
+          via: 'twilio',
+          subject: null,
+          body: smsResult.message.body,
+          automated: true,
+          timestamp: smsResult.message.created_at || createdAt,
+        }] : []),
+      ],
     };
 
     setLeads([newLead, ...leads]);
@@ -1125,12 +1265,32 @@ export default function App() {
       id: `tour_${Date.now()}`, type: 'virtual', tourType: 'virtual', listings,
       status: 'pending-videos', requestedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
     };
+    // Actually send the virtual-tour-request SMS via the server wrapper.
+    const vtSmsBody = `Rentals Philly: Got your video tour request! Videos within 24 hrs.`;
+    const vtEmailSubject = `Your virtual tour videos are on the way`;
+    const vtEmailBody = `Hi ${firstName} — walkthrough videos for ${listings.length} properties within 24 hours.`;
+    sendEmail({ to: lead.email, subject: vtEmailSubject, body: vtEmailBody });
+    const vtSmsResult = await sendSMS({
+      leadId,
+      body: vtSmsBody,
+      kind: 'virtual_tour',
+      idempotencyKey: `vt-${virtualTour.id}`,
+      automated: true,
+    });
+
     await updateLead(leadId, {
       tours: [...(lead.tours || []), virtualTour],
       stage: 'tour-booked',
       messages: [...(lead.messages || []),
-        { id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent', to: lead.email, via: 'gmail', subject: `Your virtual tour videos are on the way`, body: `Hi ${firstName} — walkthrough videos for ${listings.length} properties within 24 hours.`, timestamp: new Date().toISOString(), automated: true },
-        { id: `m_${Date.now()}_s`, channel: 'sms', direction: 'outbound', status: 'sent', to: lead.phone, via: 'twilio', body: `Rentals Philly: Got your video tour request! Videos within 24 hrs.`, timestamp: new Date().toISOString(), automated: true },
+        { id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent', to: lead.email, via: 'gmail', subject: vtEmailSubject, body: vtEmailBody, timestamp: new Date().toISOString(), automated: true },
+        ...(vtSmsResult?.ok && vtSmsResult.message ? [{
+          id: vtSmsResult.message.id, channel: 'sms', direction: 'outbound',
+          status: vtSmsResult.message.status || 'sent',
+          to: vtSmsResult.message.to, via: 'twilio',
+          body: vtSmsResult.message.body,
+          timestamp: vtSmsResult.message.created_at || new Date().toISOString(),
+          automated: true,
+        }] : []),
       ],
       activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'virtual-tour-requested', timestamp: new Date().toISOString(), message: `Virtual tour requested: ${listings.length} properties` }],
       tasks: [...(lead.tasks || []), { id: `t_${Date.now()}_v`, title: `Send video tour to ${firstName}`, dueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', relatedTourId: virtualTour.id }],
@@ -1150,12 +1310,33 @@ export default function App() {
       const fmt = (d) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
       return { ...p, startTime: fmt(propStart), endTime: fmt(propEnd), order: i + 1 };
     });
+    // Actually send the tour-confirmation SMS via the server wrapper.
+    const tourSmsBody = `Rentals Philly: Tour confirmed ${fmtDate(tour.date)} @ ${tour.time}.`;
+    const tourEmailBody = `Hi ${firstName} — tour confirmed for ${fmtDate(tour.date)} starting at ${tour.time}.`;
+    const tourEmailSubject = `Tour confirmed · ${fmtDate(tour.date)} at ${tour.time}`;
+    sendEmail({ to: lead.email, subject: tourEmailSubject, body: tourEmailBody });
+    const tourSmsResult = await sendSMS({
+      leadId,
+      body: tourSmsBody,
+      kind: 'tour_confirmation',
+      idempotencyKey: `tour-conf-${newTour.id}`,
+      automated: true,
+    });
+
     await updateLead(leadId, {
       tours: [...(lead.tours || []), newTour],
       stage: 'tour-booked',
       messages: [...(lead.messages || []),
-        { id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent', to: lead.email, via: 'gmail', subject: `Tour confirmed · ${fmtDate(tour.date)} at ${tour.time}`, body: `Hi ${firstName} — tour confirmed for ${fmtDate(tour.date)} starting at ${tour.time}.`, timestamp: new Date().toISOString(), automated: true },
-        { id: `m_${Date.now()}_s`, channel: 'sms', direction: 'outbound', status: 'sent', to: lead.phone, via: 'twilio', body: `Rentals Philly: Tour confirmed ${fmtDate(tour.date)} @ ${tour.time}.`, timestamp: new Date().toISOString(), automated: true },
+        // Email — optimistic in-memory record. Email path isn't refactored yet.
+        { id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent', to: lead.email, via: 'gmail', subject: tourEmailSubject, body: tourEmailBody, timestamp: new Date().toISOString(), automated: true },
+        // SMS — use the real DB row returned by the server wrapper, if any.
+        ...(tourSmsResult?.ok && tourSmsResult.message ? [{
+          id: tourSmsResult.message.id, channel: 'sms', direction: 'outbound',
+          status: tourSmsResult.message.status || 'sent',
+          to: tourSmsResult.message.to, via: 'twilio',
+          body: tourSmsResult.message.body, timestamp: tourSmsResult.message.created_at || new Date().toISOString(),
+          automated: true,
+        }] : []),
       ],
       activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'tour-booked', timestamp: new Date().toISOString(), message: `Tour booked: ${props.length} properties for ${fmtDate(tour.date)}` }],
     });
@@ -2025,6 +2206,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           { k: 'inbox', label: 'Inbox', icon: Inbox },
           { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
           { k: 'submissions', label: 'Applications', icon: FileCheck },
+          { k: 'blast', label: 'Bulk SMS', icon: Send },
           { k: 'flags', label: 'Tasks', icon: Flag, urgent: flagCount || null },
           { k: 'settings', label: 'Settings', icon: Settings },
         ].map(t => (
@@ -2040,6 +2222,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
       {subview === 'leads' && <LeadsListView leads={leads} search={search} onSelectLead={setSelectedLeadId} saveLeads={saveLeads} waitlist={waitlist} />}
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} />}
       {subview === 'submissions' && <SubmissionsView leads={leads} onSelectLead={setSelectedLeadId} updateSubmissionStatus={updateSubmissionStatus} />}
+      {subview === 'blast' && <BlastView leads={leads} showToast={showToast} />}
       {subview === 'flags' && <FlagsView allTasks={allTasks} updateLead={updateLead} onSelectLead={setSelectedLeadId} showToast={showToast} />}
       {subview === 'tours' && <ToursView upcomingTours={upcomingTours} onSelectLead={setSelectedLeadId} />}
       {subview === 'settings' && <SettingsView settings={settings} saveSettings={saveSettings} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} />}
@@ -2052,16 +2235,53 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
 
       {followUpModal && <LogFollowUpModal lead={followUpModal.lead} submissionId={followUpModal.submissionId} onClose={() => setFollowUpModal(null)} onLog={async (note) => { await logSubmissionFollowUp(followUpModal.lead.id, followUpModal.submissionId, note); setFollowUpModal(null); }} />}
 
-      {composeModal && <ComposeModal {...composeModal} onClose={() => setComposeModal(null)} onSend={(msg) => {
-        const newMsg = {
-          id: `m_${Date.now()}`, channel: msg.channel, direction: 'outbound', status: 'sent',
-          to: msg.channel === 'sms' ? composeModal.lead.phone : composeModal.lead.email,
-          via: msg.channel === 'sms' ? 'twilio' : 'gmail',
-          subject: msg.subject, body: msg.body, timestamp: new Date().toISOString(),
-        };
-        updateLead(composeModal.lead.id, {
-          messages: [...(composeModal.lead.messages || []), newMsg],
-          activities: [...(composeModal.lead.activities || []), { id: `a_${Date.now()}`, type: 'message-sent', timestamp: new Date().toISOString(), message: `${msg.channel === 'sms' ? 'SMS' : 'Email'} sent` }],
+      {composeModal && <ComposeModal {...composeModal} onClose={() => setComposeModal(null)} onSend={async (msg) => {
+        const lead = composeModal.lead;
+        let newMsg;
+        if (msg.channel === 'sms') {
+          // Actually send via the server wrapper.
+          const result = await sendSMS({
+            leadId: lead.id,
+            body: msg.body,
+            kind: 'manual',
+            idempotencyKey: `manual-${lead.id}-${Date.now()}`,
+            automated: false,
+          });
+          if (!result.ok) {
+            const reason =
+              result.error === 'opted_out' ? 'lead has opted out of SMS' :
+              result.error === 'invalid_phone' ? 'invalid phone number' :
+              result.error || 'send failed';
+            showToast(`SMS not sent — ${reason}`);
+            setComposeModal(null);
+            return;
+          }
+          // Pull the real DB row into the in-memory lead so the UI matches.
+          newMsg = {
+            id: result.message.id,
+            channel: 'sms',
+            direction: 'outbound',
+            status: result.message.status || 'sent',
+            to: result.message.to,
+            via: 'twilio',
+            subject: null,
+            body: result.message.body,
+            timestamp: result.message.created_at || new Date().toISOString(),
+            automated: false,
+          };
+        } else {
+          // Email path unchanged for now — calls send-email API as a side effect,
+          // optimistic in-memory message stays as before.
+          sendEmail({ to: lead.email, subject: msg.subject, body: msg.body });
+          newMsg = {
+            id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
+            to: lead.email, via: 'gmail',
+            subject: msg.subject, body: msg.body, timestamp: new Date().toISOString(),
+          };
+        }
+        updateLead(lead.id, {
+          messages: [...(lead.messages || []), newMsg],
+          activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'message-sent', timestamp: new Date().toISOString(), message: `${msg.channel === 'sms' ? 'SMS' : 'Email'} sent` }],
         });
         showToast(`${msg.channel === 'sms' ? 'SMS' : 'Email'} sent`);
         setComposeModal(null);
@@ -3335,6 +3555,181 @@ function InboxView({ leads, onSelectLead }) {
             </button>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// BULK SMS BLAST VIEW
+// ============================================================
+function BlastView({ leads, showToast }) {
+  const [bodyTemplate, setBodyTemplate] = useState('Hi {firstName} — new listing match for you. Want me to send the details?');
+  const [stages, setStages] = useState(['new', 'matched', 'tour-booked', 'post-tour']);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [recent, setRecent] = useState([]);
+
+  // Available stages = union of stages on existing leads
+  const availableStages = useMemo(() => {
+    const s = new Set(leads.map(l => l.stage).filter(Boolean));
+    return Array.from(s);
+  }, [leads]);
+
+  const toggleStage = (s) => setStages(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
+
+  const runDryRun = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch('/api/sms/blast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bodyTemplate, filter: { stages }, dryRun: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Preview failed'); return; }
+      setPreview(data);
+    } catch (e) {
+      showToast(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const queueBlast = async () => {
+    if (!preview) return;
+    const segments = Math.ceil(bodyTemplate.length / 160);
+    const minutes = Math.ceil(preview.sendableCount / 25);
+    const ok = window.confirm(
+      `Queue an SMS blast?\n\n` +
+      `Recipients: ${preview.sendableCount}\n` +
+      `Opted-out (skipped): ${preview.optedOutCount}\n` +
+      `Segments per message: ${segments}\n` +
+      `Estimated wall-clock to drain: ~${minutes} minute${minutes === 1 ? '' : 's'}\n\n` +
+      `Click OK to queue. Messages start sending within ~1 minute.`
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/sms/blast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bodyTemplate, filter: { stages }, dryRun: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Queue failed'); return; }
+      showToast(`Blast queued: ${data.queuedCount} recipients`);
+      setPreview(null);
+      // Refresh recent
+      fetchRecent();
+    } catch (e) {
+      showToast(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fetchRecent = async () => {
+    try {
+      const res = await fetch('/api/sms/blast');
+      const data = await res.json();
+      if (res.ok) setRecent(data.blasts || []);
+    } catch {}
+  };
+
+  useEffect(() => { fetchRecent(); }, []);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">Bulk SMS</h2>
+        <p className="text-sm text-slate-500">Sends pace at ~25 messages/min to stay under A2P 10DLC throughput. Opted-out leads are excluded automatically.</p>
+      </div>
+
+      <Card className="p-5 space-y-4">
+        <div>
+          <label className="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1.5">Message</label>
+          <textarea
+            value={bodyTemplate}
+            onChange={(e) => { setBodyTemplate(e.target.value); setPreview(null); }}
+            rows={4}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-none"
+            placeholder="Hi {firstName} — ..."
+          />
+          <div className="text-xs text-slate-400 mt-1">
+            {bodyTemplate.length} chars · {Math.ceil(bodyTemplate.length / 160)} segment{Math.ceil(bodyTemplate.length / 160) === 1 ? '' : 's'} per recipient · use {'{firstName}'} for personalization
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1.5">Audience — stages</label>
+          <div className="flex flex-wrap gap-2">
+            {availableStages.length === 0 && <span className="text-xs text-slate-400">No leads in DB yet.</span>}
+            {availableStages.map(s => (
+              <button
+                key={s}
+                onClick={() => { toggleStage(s); setPreview(null); }}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                  stages.includes(s) ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-2">
+          <Button onClick={runDryRun} disabled={busy || !bodyTemplate.trim() || stages.length === 0}>
+            {busy ? 'Working…' : 'Preview audience'}
+          </Button>
+          {preview && (
+            <Button variant="primary" onClick={queueBlast} disabled={busy || preview.sendableCount === 0}>
+              Queue blast ({preview.sendableCount})
+            </Button>
+          )}
+        </div>
+
+        {preview && (
+          <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 text-sm">
+            <div className="flex flex-wrap gap-4 mb-3">
+              <div><span className="text-slate-500">Will send:</span> <span className="font-semibold">{preview.sendableCount}</span></div>
+              <div><span className="text-slate-500">Opted out:</span> <span className="font-semibold">{preview.optedOutCount}</span></div>
+              <div><span className="text-slate-500">Audience total:</span> <span className="font-semibold">{preview.totalCount}</span></div>
+            </div>
+            {preview.sample && preview.sample.length > 0 && (
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Sample (first 10):</div>
+                <ul className="text-xs text-slate-700 space-y-0.5">
+                  {preview.sample.map(l => (
+                    <li key={l.id}>• {l.full_name} ({l.phone})</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {recent.length > 0 && (
+        <Card className="p-5">
+          <div className="text-sm font-semibold text-slate-900 mb-3">Recent blasts</div>
+          <div className="space-y-2">
+            {recent.map(b => (
+              <div key={b.id} className="flex items-center justify-between text-sm border border-slate-100 rounded-lg p-3">
+                <div className="min-w-0">
+                  <div className="text-slate-700 truncate">{b.body_template}</div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    {new Date(b.created_at).toLocaleString()} · {b.status}
+                  </div>
+                </div>
+                <div className="text-xs text-slate-500 shrink-0 ml-3">
+                  {b.sent_count}/{b.total_count} sent · {b.failed_count} failed · {b.opted_out_count} opted out
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
       )}
     </div>
   );

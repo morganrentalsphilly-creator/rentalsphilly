@@ -1,38 +1,61 @@
-import twilio from 'twilio';
-import { NextResponse } from 'next/server';
+// Thin HTTP wrapper around lib/sms.server.js. The wrapper is where the actual
+// business logic lives — see that file for opt-out / idempotency / kill-switch
+// behavior. This route is called from the client (via lib/messaging.js).
+//
+// Request body:
+//   {
+//     leadId:           uuid, required
+//     body:             string, required
+//     kind:             string, required (e.g. 'manual', 'tour_confirmation')
+//     to?:              string, optional override
+//     idempotencyKey?:  string, optional
+//     automated?:       boolean, optional
+//   }
+//
+// Backwards-compatible: if `leadId` is missing but legacy { to, body } is
+// supplied, we 400 with a clear message so we can find every old caller.
 
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+import { NextResponse } from 'next/server';
+import { sendSms } from '@/lib/sms.server';
 
 export async function POST(request) {
   try {
-    const { to, body } = await request.json();
+    const payload = await request.json();
+    const { leadId, body, kind, to, idempotencyKey, automated } = payload || {};
 
-    if (!to || !body) {
+    if (!leadId) {
+      // Legacy callers were `{ to, body }`. Make the migration loud.
       return NextResponse.json(
-        { error: 'Missing to or body' },
+        {
+          error:
+            'Missing leadId. /api/send-sms now requires { leadId, body, kind }. ' +
+            'See lib/sms.server.js for the contract.',
+        },
+        { status: 400 }
+      );
+    }
+    if (!body || !kind) {
+      return NextResponse.json(
+        { error: 'Missing body or kind' },
         { status: 400 }
       );
     }
 
-    // Kill switch — logged-only mode when real sending is disabled
-    if (process.env.ENABLE_REAL_SENDING !== 'true') {
-      console.log('[SMS — SIMULATED]', { to, bodyPreview: body.slice(0, 80) });
-      return NextResponse.json({ success: true, simulated: true });
-    }
-
-    const message = await client.messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to,
-      body,
+    const result = await sendSms({
+      leadId, body, kind, to, idempotencyKey, automated,
     });
 
-    console.log('[SMS — SENT]', { to, sid: message.sid });
-    return NextResponse.json({ success: true, sid: message.sid });
+    if (!result.ok) {
+      const status =
+        result.error === 'opted_out' ? 409 :
+        result.error === 'lead_not_found' ? 404 :
+        result.error === 'invalid_phone' ? 422 :
+        500;
+      return NextResponse.json(result, { status });
+    }
+    return NextResponse.json(result);
   } catch (err) {
-    console.error('[SMS — ERROR]', err);
+    console.error('[api/send-sms]', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
