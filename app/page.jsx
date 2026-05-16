@@ -2,7 +2,14 @@
 
 import { sendEmail, sendSMS } from '@/lib/messaging';
 import { loadAll } from '@/lib/db';
-import { createBrowserSupabase } from '@/lib/supabase.client';
+import {
+  createBrowserSupabase,
+  getSession,
+  signInWithMagicLink,
+  signOut,
+  onAuthChange,
+} from '@/lib/supabase.client';
+import { isAdminEmail } from '@/lib/auth';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Home, ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, FastForward, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox } from 'lucide-react';
 // ============================================================
@@ -625,8 +632,25 @@ export default function App() {
   const [adminSubview, setAdminSubview] = useState('dashboard');
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [toast, setToast] = useState(null);
+  // Auth state for the admin views. `session` is the Supabase session (or null);
+  // `authChecked` flips to true after the initial getSession() resolves, so we
+  // can avoid flashing the login screen during the first paint.
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   const getNow = () => new Date(Date.now() + timeOffset);
+
+  // ---- Auth: load initial session + subscribe to changes ------------------
+  useEffect(() => {
+    let unsub = () => {};
+    (async () => {
+      const s = await getSession();
+      setSession(s);
+      setAuthChecked(true);
+    })();
+    unsub = onAuthChange((s) => setSession(s));
+    return () => { try { unsub(); } catch {} };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1368,7 +1392,17 @@ export default function App() {
       {view === 'booking-confirmed' && currentLead && <BookingConfirmed lead={leads.find(l => l.id === currentLead.id) || currentLead} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
       {view === 'waitlist-confirmed' && currentLead && <WaitlistConfirmed lead={currentLead} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
       {view === 'holding' && currentLead && <HoldingPage lead={currentLead} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
-      {view === 'admin' && <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} />}
+      {view === 'admin' && (
+        !authChecked ? (
+          <div className="min-h-[60vh] flex items-center justify-center text-slate-400 text-sm">Checking access…</div>
+        ) : !session ? (
+          <AdminLogin />
+        ) : !isAdminEmail(session.user?.email) ? (
+          <AdminUnauthorized email={session.user?.email} />
+        ) : (
+          <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} />
+        )
+      )}
     </div>
   );
 }
@@ -2148,7 +2182,108 @@ const MESSAGE_TEMPLATES = {
   'custom': { name: 'Custom message', subject: '', body: '' },
 };
 
-function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp }) {
+// ============================================================
+// ADMIN LOGIN — Supabase magic-link email entry
+// ============================================================
+function AdminLogin() {
+  const [email, setEmail] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState(null);
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    if (!email.trim()) return;
+    setSending(true);
+    setError(null);
+    const result = await signInWithMagicLink(email.trim().toLowerCase());
+    setSending(false);
+    if (result.ok) {
+      setSent(true);
+    } else {
+      setError(result.error || 'Could not send sign-in link');
+    }
+  };
+
+  return (
+    <div className="max-w-md mx-auto px-6 py-16">
+      <div className="text-center mb-8">
+        <div className="w-12 h-12 rounded-full bg-slate-900 text-white flex items-center justify-center mx-auto mb-5">
+          <Shield className="w-5 h-5" />
+        </div>
+        <h1 className="text-2xl font-semibold text-slate-900 mb-2">Sign in to admin</h1>
+        <p className="text-sm text-slate-500">We&apos;ll email you a magic link.</p>
+      </div>
+      {sent ? (
+        <Card className="p-6 text-center">
+          <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-3" />
+          <div className="font-semibold text-slate-900 mb-1">Check your inbox</div>
+          <div className="text-sm text-slate-500">
+            A sign-in link is on its way to <span className="font-medium text-slate-700">{email}</span>.
+            Click it from this device.
+          </div>
+        </Card>
+      ) : (
+        <form onSubmit={onSubmit}>
+          <Card className="p-5 space-y-4">
+            <div>
+              <label className="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1.5">Email</label>
+              <input
+                type="email"
+                autoFocus
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400"
+                placeholder="you@example.com"
+              />
+            </div>
+            {error && (
+              <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                {error}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={sending}
+              className="w-full py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-40"
+            >
+              {sending ? 'Sending…' : 'Email me a magic link'}
+            </button>
+          </Card>
+        </form>
+      )}
+      <p className="text-xs text-slate-400 text-center mt-6">
+        Only allow-listed emails can access admin.
+      </p>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN UNAUTHORIZED — signed in but not on the allow-list
+// ============================================================
+function AdminUnauthorized({ email }) {
+  return (
+    <div className="max-w-md mx-auto px-6 py-16 text-center">
+      <div className="w-12 h-12 rounded-full bg-red-50 text-red-600 flex items-center justify-center mx-auto mb-5">
+        <AlertTriangle className="w-5 h-5" />
+      </div>
+      <h1 className="text-2xl font-semibold text-slate-900 mb-2">Access denied</h1>
+      <p className="text-sm text-slate-500 mb-6">
+        <span className="text-slate-700 font-medium">{email || 'This account'}</span> isn&apos;t on the admin allow-list.
+      </p>
+      <button
+        onClick={async () => { await signOut(); }}
+        className="px-5 py-2 rounded-full border border-slate-200 text-sm font-medium hover:border-slate-300 transition-colors"
+      >
+        Sign out
+      </button>
+    </div>
+  );
+}
+
+function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
   const [submitModal, setSubmitModal] = useState(null);
@@ -2193,9 +2328,22 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           <h1 className="text-3xl font-semibold tracking-tight text-slate-900">CRM</h1>
           <p className="text-sm text-slate-500 mt-1">Every lead, every touchpoint, automated.</p>
         </div>
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search leads…" className="pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 w-56" />
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search leads…" className="pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 w-56" />
+          </div>
+          {sessionEmail && (
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="hidden sm:inline">{sessionEmail}</span>
+              <button
+                onClick={async () => { await signOut(); }}
+                className="px-3 py-1.5 rounded-full border border-slate-200 hover:border-slate-300 hover:text-slate-700 transition-colors"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
