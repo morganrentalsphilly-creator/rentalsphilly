@@ -11,7 +11,11 @@ const nextConfig: NextConfig = {
     "lucide-react": {
       transform: "lucide-react/dist/esm/icons/{{ kebabCase member }}",
       preventFullImport: true,
-      skipDefaultConversion: true,
+      // skipDefaultConversion MUST be false (default) here because each
+      // per-icon file exports the icon as the DEFAULT export, not as a named
+      // export. With skipDefaultConversion: true, `import { Zap } from ...`
+      // stays as a named import and breaks since the icon files don't have
+      // a named `Zap` export — they have `export default Zap`.
     },
   },
 
