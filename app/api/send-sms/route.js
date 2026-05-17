@@ -51,11 +51,16 @@ export async function POST(request) {
         result.error === 'lead_not_found' ? 404 :
         result.error === 'invalid_phone' ? 422 :
         500;
+      // Log loudly so we can read this in Vercel logs.
+      console.error('[api/send-sms — RESULT NOT OK]', { status, result });
       return NextResponse.json(result, { status });
     }
     return NextResponse.json(result);
   } catch (err) {
-    console.error('[api/send-sms]', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error('[api/send-sms — UNCAUGHT]', err);
+    return NextResponse.json(
+      { error: err.message, stack: err.stack?.split('\n').slice(0, 5) },
+      { status: 500 }
+    );
   }
 }
