@@ -5,6 +5,7 @@ import { loadAll } from '@/lib/db';
 import {
   createBrowserSupabase,
   getSession,
+  signInWithPassword,
   signInWithMagicLink,
   signOut,
   onAuthChange,
@@ -2183,25 +2184,34 @@ const MESSAGE_TEMPLATES = {
 };
 
 // ============================================================
-// ADMIN LOGIN — Supabase magic-link email entry
+// ADMIN LOGIN — email + password (default), magic-link fallback
 // ============================================================
 function AdminLogin() {
+  // mode: 'password' (default) or 'magic' (fallback for forgot-password)
+  const [mode, setMode] = useState('password');
   const [email, setEmail] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [magicSent, setMagicSent] = useState(false);
   const [error, setError] = useState(null);
 
   const onSubmit = async (e) => {
     e.preventDefault();
     if (!email.trim()) return;
-    setSending(true);
+    if (mode === 'password' && !password) return;
+    setBusy(true);
     setError(null);
-    const result = await signInWithMagicLink(email.trim().toLowerCase());
-    setSending(false);
+    const cleanEmail = email.trim().toLowerCase();
+    const result = mode === 'password'
+      ? await signInWithPassword(cleanEmail, password)
+      : await signInWithMagicLink(cleanEmail);
+    setBusy(false);
     if (result.ok) {
-      setSent(true);
+      if (mode === 'magic') setMagicSent(true);
+      // For password mode, onAuthChange listener will pick up the new session
+      // and re-render the parent into the AdminCRM view automatically.
     } else {
-      setError(result.error || 'Could not send sign-in link');
+      setError(result.error || 'Could not sign in');
     }
   };
 
@@ -2212,9 +2222,12 @@ function AdminLogin() {
           <Shield className="w-5 h-5" />
         </div>
         <h1 className="text-2xl font-semibold text-slate-900 mb-2">Sign in to admin</h1>
-        <p className="text-sm text-slate-500">We&apos;ll email you a magic link.</p>
+        <p className="text-sm text-slate-500">
+          {mode === 'password' ? 'Enter your email and password.' : 'We’ll email you a one-time sign-in link.'}
+        </p>
       </div>
-      {sent ? (
+
+      {magicSent ? (
         <Card className="p-6 text-center">
           <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-3" />
           <div className="font-semibold text-slate-900 mb-1">Check your inbox</div>
@@ -2238,6 +2251,19 @@ function AdminLogin() {
                 placeholder="you@example.com"
               />
             </div>
+            {mode === 'password' && (
+              <div>
+                <label className="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1.5">Password</label>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400"
+                  placeholder="••••••••"
+                />
+              </div>
+            )}
             {error && (
               <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
                 {error}
@@ -2245,14 +2271,40 @@ function AdminLogin() {
             )}
             <button
               type="submit"
-              disabled={sending}
+              disabled={busy}
               className="w-full py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-40"
             >
-              {sending ? 'Sending…' : 'Email me a magic link'}
+              {busy ? (mode === 'password' ? 'Signing in…' : 'Sending…') : (mode === 'password' ? 'Sign in' : 'Email me a magic link')}
             </button>
           </Card>
         </form>
       )}
+
+      {!magicSent && (
+        <p className="text-xs text-slate-500 text-center mt-5">
+          {mode === 'password' ? (
+            <>
+              Forgot your password?{' '}
+              <button
+                type="button"
+                onClick={() => { setMode('magic'); setError(null); }}
+                className="underline hover:text-slate-700"
+              >
+                Email me a magic link instead
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setMode('password'); setError(null); }}
+              className="underline hover:text-slate-700"
+            >
+              ← Back to password sign-in
+            </button>
+          )}
+        </p>
+      )}
+
       <p className="text-xs text-slate-400 text-center mt-6">
         Only allow-listed emails can access admin.
       </p>
