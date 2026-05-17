@@ -618,6 +618,104 @@ function EmptyState({ icon: Icon, title, desc, action }) {
 }
 
 // ============================================================
+// HYDRATION — merge separate DB arrays into nested per-lead shape
+// ============================================================
+// The /api/data?resource=all loader returns leads, tours, messages, etc. as
+// separate top-level arrays. The UI was built expecting per-lead nesting
+// (lead.tours, lead.messages, lead.activities, lead.tasks). Without this
+// merge step, none of that data shows up after a page refresh — which broke
+// tour history, the inbox, and the lead detail view.
+//
+// We also translate snake_case DB columns to camelCase the UI expects.
+function hydrateLeads(data) {
+  const groupBy = (arr) => {
+    const map = {};
+    for (const row of arr || []) {
+      const key = row.lead_id;
+      if (!key) continue;
+      (map[key] = map[key] || []).push(row);
+    }
+    return map;
+  };
+
+  const toursByLead = groupBy(data.tours);
+  const msgsByLead = groupBy(data.messages);
+  const actsByLead = groupBy(data.activities);
+  const tasksByLead = groupBy(data.tasks);
+  const subsByLead = groupBy(data.submissions);
+  const nudgesByLead = groupBy(data.scheduledNudges);
+
+  return (data.leads || []).map((lead) => ({
+    // Original snake_case fields stay (some places read them directly)
+    ...lead,
+    // camelCase aliases for compatibility with the UI written before the refactor
+    fullName: lead.full_name || lead.fullName,
+    moveInDate: lead.move_in_date || lead.moveInDate,
+    budgetMin: lead.budget_min ?? lead.budgetMin,
+    budgetMax: lead.budget_max ?? lead.budgetMax,
+    creditScore: lead.credit_score || lead.creditScore,
+    tourType: lead.tour_type || lead.tourType,
+    applicationStatus: lead.application_status,
+    createdAt: lead.created_at || lead.createdAt,
+    opted_out: !!lead.opted_out,
+
+    tours: (toursByLead[lead.id] || []).map((t) => ({
+      id: t.id,
+      date: t.date,
+      time: t.time,
+      status: t.status,
+      tourType: t.tour_type,
+      listings: t.listings,
+      schedule: t.schedule,
+      completedAt: t.completed_at,
+      autoCompleted: !!t.auto_completed,
+      remindersSent: t.reminders_sent,
+      createdAt: t.created_at,
+    })),
+
+    messages: (msgsByLead[lead.id] || []).map((m) => ({
+      id: m.id,
+      channel: m.channel,
+      direction: m.direction,
+      status: m.status,
+      to: m.to,
+      via: m.via,
+      subject: m.subject,
+      body: m.body,
+      automated: !!m.automated,
+      internal: !!m.internal,
+      kind: m.kind,
+      deliveryStatus: m.delivery_status,
+      twilioSid: m.twilio_sid,
+      timestamp: m.created_at,
+    })),
+
+    activities: (actsByLead[lead.id] || []).map((a) => ({
+      id: a.id,
+      type: a.type,
+      message: a.message,
+      timestamp: a.created_at,
+    })),
+
+    tasks: (tasksByLead[lead.id] || []).map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      auto: !!t.auto,
+      dueDate: t.due_date,
+      completedAt: t.completed_at,
+      relatedTourId: t.related_tour_id,
+      relatedSubmissionId: t.related_submission_id,
+      flags: t.flags,
+    })),
+
+    submissions: subsByLead[lead.id] || [],
+    scheduledNudges: nudgesByLead[lead.id] || [],
+  }));
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 
@@ -657,7 +755,7 @@ export default function App() {
     (async () => {
       try {
         const data = await loadAll();
-        setLeads(data.leads || []);
+        setLeads(hydrateLeads(data));
         setSlots((data.slots || []).length > 0 ? data.slots : generateDefaultSlots());
         setWaitlist(data.waitlist || []);
         if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...data.settings });
@@ -1226,18 +1324,23 @@ export default function App() {
         bucket,
         stage: 'new',
       });
-      // Insert welcome email message + activity + any tasks.
-      // SMS row is inserted by the server wrapper (sendSMS) — do NOT also
-      // insert it here or we'll get duplicates.
-      await db.insertMessage(welcomeEmailMsg);
+      // Activity + tasks. Email + SMS rows are inserted by the server wrappers.
       await db.insertActivity(welcomeActivity);
       for (const t of tasks) await db.insertTask(t);
     } catch (e) {
       console.error('[app] Failed to create lead in Supabase', e);
     }
 
-    // Fire real welcome email (existing path) + welcome SMS (server wrapper).
-    sendEmail({ to: lead.email, subject: welcomeEmailSubject, body: welcomeEmailBody });
+    // Fire welcome email + SMS through the server wrappers. Each wrapper
+    // inserts its own messages row with delivery_status tracking.
+    const emailResult = await sendEmail({
+      leadId: id,
+      subject: welcomeEmailSubject,
+      body: welcomeEmailBody,
+      kind: 'welcome',
+      idempotencyKey: `welcome-email-${id}`,
+      automated: true,
+    });
     const smsResult = await sendSMS({
       leadId: id,
       body: welcomeSmsBody,
@@ -1254,14 +1357,20 @@ export default function App() {
       tasks: tasks.map(t => ({ id: t.id, title: t.title, dueDate: t.due_date, status: t.status, auto: t.auto })),
       activities: [{ id: welcomeActivity.id, type: welcomeActivity.type, message: welcomeActivity.message, timestamp: createdAt }],
       messages: [
-        // Email — inserted optimistically as before.
-        {
-          id: welcomeEmailMsg.id, channel: 'email', direction: 'outbound', status: 'sent',
-          to: welcomeEmailMsg.to, via: welcomeEmailMsg.via,
-          subject: welcomeEmailMsg.subject, body: welcomeEmailMsg.body,
-          automated: true, timestamp: createdAt,
-        },
-        // SMS — actual DB row returned by the server wrapper, if it succeeded.
+        // Email — actual DB row returned by the server wrapper.
+        ...(emailResult?.ok && emailResult.message ? [{
+          id: emailResult.message.id,
+          channel: 'email',
+          direction: 'outbound',
+          status: emailResult.message.status || 'sent',
+          to: emailResult.message.to,
+          via: 'resend',
+          subject: emailResult.message.subject,
+          body: emailResult.message.body,
+          automated: true,
+          timestamp: emailResult.message.created_at || createdAt,
+        }] : []),
+        // SMS — actual DB row returned by the server wrapper.
         ...(smsResult?.ok && smsResult.message ? [{
           id: smsResult.message.id,
           channel: 'sms',
@@ -1290,11 +1399,18 @@ export default function App() {
       id: `tour_${Date.now()}`, type: 'virtual', tourType: 'virtual', listings,
       status: 'pending-videos', requestedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
     };
-    // Actually send the virtual-tour-request SMS via the server wrapper.
+    // Send both via server wrappers.
     const vtSmsBody = `Rentals Philly: Got your video tour request! Videos within 24 hrs.`;
     const vtEmailSubject = `Your virtual tour videos are on the way`;
     const vtEmailBody = `Hi ${firstName} — walkthrough videos for ${listings.length} properties within 24 hours.`;
-    sendEmail({ to: lead.email, subject: vtEmailSubject, body: vtEmailBody });
+    const vtEmailResult = await sendEmail({
+      leadId,
+      subject: vtEmailSubject,
+      body: vtEmailBody,
+      kind: 'virtual_tour',
+      idempotencyKey: `vt-email-${virtualTour.id}`,
+      automated: true,
+    });
     const vtSmsResult = await sendSMS({
       leadId,
       body: vtSmsBody,
@@ -1307,7 +1423,14 @@ export default function App() {
       tours: [...(lead.tours || []), virtualTour],
       stage: 'tour-booked',
       messages: [...(lead.messages || []),
-        { id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent', to: lead.email, via: 'gmail', subject: vtEmailSubject, body: vtEmailBody, timestamp: new Date().toISOString(), automated: true },
+        ...(vtEmailResult?.ok && vtEmailResult.message ? [{
+          id: vtEmailResult.message.id, channel: 'email', direction: 'outbound',
+          status: vtEmailResult.message.status || 'sent',
+          to: vtEmailResult.message.to, via: 'resend',
+          subject: vtEmailResult.message.subject, body: vtEmailResult.message.body,
+          timestamp: vtEmailResult.message.created_at || new Date().toISOString(),
+          automated: true,
+        }] : []),
         ...(vtSmsResult?.ok && vtSmsResult.message ? [{
           id: vtSmsResult.message.id, channel: 'sms', direction: 'outbound',
           status: vtSmsResult.message.status || 'sent',
@@ -1335,11 +1458,18 @@ export default function App() {
       const fmt = (d) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
       return { ...p, startTime: fmt(propStart), endTime: fmt(propEnd), order: i + 1 };
     });
-    // Actually send the tour-confirmation SMS via the server wrapper.
+    // Send both via server wrappers — each logs its own messages row.
     const tourSmsBody = `Rentals Philly: Tour confirmed ${fmtDate(tour.date)} @ ${tour.time}.`;
     const tourEmailBody = `Hi ${firstName} — tour confirmed for ${fmtDate(tour.date)} starting at ${tour.time}.`;
     const tourEmailSubject = `Tour confirmed · ${fmtDate(tour.date)} at ${tour.time}`;
-    sendEmail({ to: lead.email, subject: tourEmailSubject, body: tourEmailBody });
+    const tourEmailResult = await sendEmail({
+      leadId,
+      subject: tourEmailSubject,
+      body: tourEmailBody,
+      kind: 'tour_confirmation',
+      idempotencyKey: `tour-conf-email-${newTour.id}`,
+      automated: true,
+    });
     const tourSmsResult = await sendSMS({
       leadId,
       body: tourSmsBody,
@@ -1352,9 +1482,14 @@ export default function App() {
       tours: [...(lead.tours || []), newTour],
       stage: 'tour-booked',
       messages: [...(lead.messages || []),
-        // Email — optimistic in-memory record. Email path isn't refactored yet.
-        { id: `m_${Date.now()}_e`, channel: 'email', direction: 'outbound', status: 'sent', to: lead.email, via: 'gmail', subject: tourEmailSubject, body: tourEmailBody, timestamp: new Date().toISOString(), automated: true },
-        // SMS — use the real DB row returned by the server wrapper, if any.
+        ...(tourEmailResult?.ok && tourEmailResult.message ? [{
+          id: tourEmailResult.message.id, channel: 'email', direction: 'outbound',
+          status: tourEmailResult.message.status || 'sent',
+          to: tourEmailResult.message.to, via: 'resend',
+          subject: tourEmailResult.message.subject, body: tourEmailResult.message.body,
+          timestamp: tourEmailResult.message.created_at || new Date().toISOString(),
+          automated: true,
+        }] : []),
         ...(tourSmsResult?.ok && tourSmsResult.message ? [{
           id: tourSmsResult.message.id, channel: 'sms', direction: 'outbound',
           status: tourSmsResult.message.status || 'sent',
@@ -2470,12 +2605,34 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
             automated: false,
           };
         } else {
-          // Email path unchanged for now — calls send-email API as a side effect,
-          // optimistic in-memory message stays as before.
-          sendEmail({ to: lead.email, subject: msg.subject, body: msg.body });
-          newMsg = {
+          // Email — go through the server wrapper for delivery_status tracking.
+          const emailResult = await sendEmail({
+            leadId: lead.id,
+            subject: msg.subject,
+            body: msg.body,
+            kind: 'manual',
+            idempotencyKey: `manual-email-${lead.id}-${Date.now()}`,
+            automated: false,
+          });
+          if (!emailResult.ok) {
+            showToast(`Email not sent — ${emailResult.error || 'send failed'}`);
+            setComposeModal(null);
+            return;
+          }
+          newMsg = emailResult.message ? {
+            id: emailResult.message.id,
+            channel: 'email',
+            direction: 'outbound',
+            status: emailResult.message.status || 'sent',
+            to: emailResult.message.to,
+            via: 'resend',
+            subject: emailResult.message.subject,
+            body: emailResult.message.body,
+            timestamp: emailResult.message.created_at || new Date().toISOString(),
+            automated: false,
+          } : {
             id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
-            to: lead.email, via: 'gmail',
+            to: lead.email, via: 'resend',
             subject: msg.subject, body: msg.body, timestamp: new Date().toISOString(),
           };
         }
@@ -2828,26 +2985,48 @@ function ActivityIcon({ type }) {
 // LEADS LIST
 // ============================================================
 function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [] }) {
-  const [filter, setFilter] = useState('all');
+  const [bucketFilter, setBucketFilter] = useState('all');
+  const [stageFilter, setStageFilter] = useState('active');  // 'active' = not leased/lost/archived
+
+  // Stages that actually appear in this list of leads — derived so the chips
+  // only show options that match real data.
+  const availableStages = useMemo(() => {
+    const set = new Set(leads.map(l => l.stage).filter(Boolean));
+    return Array.from(set);
+  }, [leads]);
 
   const filtered = leads.filter(l => {
-    const matchFilter = filter === 'all' || l.bucket === filter;
+    const matchBucket = bucketFilter === 'all' || l.bucket === bucketFilter;
+    const matchStage =
+      stageFilter === 'all' ? true :
+      stageFilter === 'active' ? !['leased', 'lost', 'archived'].includes(l.stage) :
+      l.stage === stageFilter;
     const matchSearch = !search || l.fullName.toLowerCase().includes(search.toLowerCase()) || l.email.toLowerCase().includes(search.toLowerCase());
-    return matchFilter && matchSearch;
+    return matchBucket && matchStage && matchSearch;
   });
 
   const waitlistedLeadIds = new Set(waitlist.filter(w => w.status === 'waiting').map(w => w.leadId));
 
   return (
     <>
-      <div className="flex flex-wrap gap-2 mb-4 items-center">
+      <div className="flex flex-wrap gap-2 mb-3 items-center">
         <Filter className="w-3.5 h-3.5 text-slate-400" />
+        <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mr-1">Bucket</span>
         {['all', 'GCMS', 'GCM75+', 'BCMS', 'BC75+'].map(k => (
-          <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${filter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{k === 'all' ? 'All' : k}</button>
+          <button key={k} onClick={() => setBucketFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${bucketFilter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{k === 'all' ? 'All' : k}</button>
         ))}
         {leads.length > 0 && (
           <button onClick={() => { if (confirm('Clear all leads?')) saveLeads([]); }} className="ml-auto text-xs text-slate-400 hover:text-red-600">Clear all</button>
         )}
+      </div>
+      <div className="flex flex-wrap gap-2 mb-4 items-center">
+        <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mr-1 ml-5">Stage</span>
+        {['active', 'all', ...availableStages].filter((v, i, a) => a.indexOf(v) === i).map(k => {
+          const label = k === 'all' ? 'All' : k === 'active' ? 'Active' : (PIPELINE_STAGES.find(s => s.id === k)?.label || k);
+          return (
+            <button key={k} onClick={() => setStageFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${stageFilter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>
+          );
+        })}
       </div>
 
       {leads.length === 0 ? (
@@ -2878,6 +3057,7 @@ function LeadRow({ lead, isFirst, onClick, waitlisted }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="font-semibold text-slate-900 truncate">{lead.fullName}</div>
+          {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out</Pill>}
           {waitlisted && <Pill tone="warning" icon={Hourglass}>Waitlist</Pill>}
           {hasScreening && <Pill tone="accent" icon={Shield}>Screened</Pill>}
           {hasApp && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
@@ -3402,11 +3582,21 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
           <div className="flex items-center gap-2 flex-wrap">
             <Pill tone="neutral">{stage.label}</Pill>
             <Pill tone="neutral">{lead.bucket}</Pill>
+            {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out of SMS</Pill>}
             {lead.screening?.status === 'completed' && <Pill tone="accent" icon={Shield}>Screened</Pill>}
             {lead.application && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
             {submissionCount > 0 && <Pill tone="info">{submissionCount} {submissionCount === 1 ? 'submission' : 'submissions'}</Pill>}
             <span className="text-xs text-slate-500">Move {fmtDate(lead.moveInDate)}</span>
-            <Button size="sm" icon={MessageSquare} onClick={() => onCompose('sms-custom')} className="ml-auto">Text</Button>
+            <Button
+              size="sm"
+              icon={MessageSquare}
+              onClick={() => onCompose('sms-custom')}
+              disabled={!!lead.opted_out}
+              title={lead.opted_out ? 'Lead has opted out of SMS' : undefined}
+              className="ml-auto"
+            >
+              Text
+            </Button>
           </div>
         </div>
 
@@ -3639,9 +3829,28 @@ function MessagesTab({ lead, onCompose }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" icon={MessageSquare} onClick={() => onCompose('sms-custom')}>Text client</Button>
+        <Button
+          size="sm"
+          icon={MessageSquare}
+          onClick={() => onCompose('sms-custom')}
+          disabled={!!lead.opted_out}
+          title={lead.opted_out ? 'Lead has opted out of SMS' : undefined}
+        >
+          Text client
+        </Button>
         <Button size="sm" variant="secondary" icon={Mail} onClick={() => onCompose('email-custom')}>Email client</Button>
       </div>
+
+      {lead.opted_out && (
+        <div className="flex items-start gap-3 p-3 rounded-xl bg-red-50 border border-red-100">
+          <Shield className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+          <div className="text-sm text-red-700">
+            This lead replied <strong>STOP</strong> and is opted out of SMS.
+            They can still receive email. Inbound replies will reactivate them
+            if they text <strong>START</strong>.
+          </div>
+        </div>
+      )}
 
       <div className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
         <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />

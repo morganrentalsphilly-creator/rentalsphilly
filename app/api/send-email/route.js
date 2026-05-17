@@ -1,41 +1,53 @@
-import { Resend } from 'resend';
-import { NextResponse } from 'next/server';
+// Thin HTTP wrapper around lib/email.server.js.
+//
+// Accepts either:
+//   { leadId, subject, body, kind?, idempotencyKey?, automated?, to? }
+// OR (legacy):
+//   { to, subject, body }
+//
+// Legacy calls send the email but don't get logged to messages (no leadId
+// to attach to). New callers should always pass leadId so the email shows
+// in the lead's inbox.
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+import { NextResponse } from 'next/server';
+import { sendEmail } from '@/lib/email.server';
 
 export async function POST(request) {
   try {
-    const { to, subject, body } = await request.json();
+    const payload = await request.json();
+    const { leadId, subject, body, kind, idempotencyKey, automated, to } = payload || {};
 
-    if (!to || !subject || !body) {
+    if (!subject || !body) {
       return NextResponse.json(
-        { error: 'Missing to, subject, or body' },
+        { error: 'Missing subject or body' },
+        { status: 400 }
+      );
+    }
+    if (!leadId && !to) {
+      return NextResponse.json(
+        { error: 'Missing leadId or to' },
         { status: 400 }
       );
     }
 
-    // Kill switch — logged-only mode when real sending is disabled
-    if (process.env.ENABLE_REAL_SENDING !== 'true') {
-      console.log('[EMAIL — SIMULATED]', { to, subject, bodyPreview: body.slice(0, 80) });
-      return NextResponse.json({ success: true, simulated: true });
-    }
-
-    const { data, error } = await resend.emails.send({
-      from: process.env.RESEND_FROM_EMAIL,
-      to: [to],
-      subject,
-      text: body,
+    const result = await sendEmail({
+      leadId, subject, body, to, kind, idempotencyKey, automated,
     });
 
-    if (error) {
-      console.error('[EMAIL — FAILED]', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!result.ok) {
+      const status =
+        result.error === 'lead_not_found' ? 404 :
+        result.error === 'missing_to' ? 422 :
+        500;
+      console.error('[api/send-email — NOT OK]', { status, result });
+      return NextResponse.json(result, { status });
     }
-
-    console.log('[EMAIL — SENT]', { to, id: data.id });
-    return NextResponse.json({ success: true, id: data.id });
+    return NextResponse.json(result);
   } catch (err) {
-    console.error('[EMAIL — ERROR]', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error('[api/send-email — UNCAUGHT]', err);
+    return NextResponse.json(
+      { error: err.message, stack: err.stack?.split('\n').slice(0, 5) },
+      { status: 500 }
+    );
   }
 }
