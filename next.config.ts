@@ -1,7 +1,24 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Force named imports from lucide-react to be rewritten as direct icon-file
+  // imports so the bundler ships ONLY the icons we use, not all 1,943.
+  //
+  // Without this, a barrel import like `import { Home } from 'lucide-react'`
+  // can pull the entire icon set into the bundle (~tens of MB) — which
+  // tanks first-load performance.
+  modularizeImports: {
+    "lucide-react": {
+      transform: "lucide-react/dist/esm/icons/{{ kebabCase member }}",
+      preventFullImport: true,
+      skipDefaultConversion: true,
+    },
+  },
+
+  // Tell Next.js which packages are safe to optimize on the server too.
+  experimental: {
+    optimizePackageImports: ["lucide-react"],
+  },
 };
 
 export default nextConfig;

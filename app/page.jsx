@@ -1064,24 +1064,21 @@ export default function App() {
     try { await window.storage.set('time-offset', JSON.stringify(offset)); } catch (e) {}
   };
 
-  useEffect(() => {
-    if (!loaded) return;
-    if (view !== 'admin' || !session) return;     // public visitors don't need automation
-    if (!adminDataLoaded) return;                  // wait until CRM data is loaded
-    if (settings.automation?.enabled === false) return;
-    const runIt = async () => {
-      const now = getNow();
-      const { leadUpdates } = await runAutomation({ leads, slots, waitlist, settings, now });
-      const updatedIds = Object.keys(leadUpdates);
-      if (updatedIds.length > 0) {
-        const merged = leads.map(l => leadUpdates[l.id] || l);
-        await saveLeads(merged);
-      }
-    };
-    runIt();
-    const interval = setInterval(runIt, 30000);
-    return () => clearInterval(interval);
-  }, [loaded, view, session, adminDataLoaded, leads, slots, waitlist, settings, timeOffset]);
+  // Client-side automation runner — DISABLED for perf.
+  //
+  // This used to fire every 30s and on every leads/slots/waitlist/settings/
+  // timeOffset change. Combined with awaited sendSMS calls inside runAutomation
+  // and Realtime events that constantly mutate leads, it created a re-render
+  // loop that tanked admin performance.
+  //
+  // The time-critical automation (tour reminders, bulk SMS drain) is already
+  // handled server-side by /api/cron/dispatcher. Post-tour nudges and
+  // auto-archive can move to the same cron later if needed.
+  //
+  // To re-enable for any reason, restore the previous useEffect — but use a
+  // ref pattern to keep `leads` out of the dep array, otherwise the loop
+  // returns.
+  // useEffect(() => { ... }, [...]);
 
   const showToast = (msg) => {
     setToast(msg);
