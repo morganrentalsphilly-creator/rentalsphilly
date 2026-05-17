@@ -1986,46 +1986,168 @@ function ZipMapPicker({ selected, onChange, onClose }) {
   );
 }
 
-// Inline picker used inside the intake form's "Preferred areas" step.
-// Combines: free-text input (compat with existing matchListings) +
-// a "Pick on map" button that opens the ZipMapPicker modal.
-//
-// The selected ZIPs are merged into the comma-separated areas string so
-// the existing matching logic (which splits by , or ;) works without changes.
-function AreasPicker({ value, onChange }) {
-  const [mapOpen, setMapOpen] = useState(false);
+// Picker for the "Preferred areas" intake step. Map-only — no free-text.
+// Stores selected ZIPs as a comma-separated string in `lead.areas`, which is
+// the shape `matchListings()` expects (it splits on comma/semicolon and
+// matches each token against property.zip or property.neighborhood).
+// Dual-range budget slider with snap-to-$100 increments.
+// Renders min and max thumbs on top of a gradient track so the selected
+// range is visually obvious. Falls back to plain inputs at tiny widths.
+function BudgetRange({ min, max, onChange, lo = 500, hi = 5000, step = 100 }) {
+  const minVal = Number(min) || lo;
+  const maxVal = Number(max) || Math.min(hi, Math.max(lo + 500, minVal + 500));
 
-  // Parse current value into individual tokens. ZIPs are 5-digit numbers;
-  // anything else is a free-text neighborhood name.
-  const tokens = (value || '').split(/[,;]/).map((s) => s.trim()).filter(Boolean);
-  const currentZips = tokens.filter((t) => /^\d{5}$/.test(t));
-  const currentText = tokens.filter((t) => !/^\d{5}$/.test(t));
-
-  const handleMapSave = (zips) => {
-    const next = [...currentText, ...zips].join(', ');
-    onChange(next);
+  // Each thumb is independent. Enforce min ≤ max by clamping on change.
+  const onMinChange = (e) => {
+    const v = Number(e.target.value);
+    onChange({ min: v, max: v > maxVal ? v : maxVal });
+  };
+  const onMaxChange = (e) => {
+    const v = Number(e.target.value);
+    onChange({ min: v < minVal ? v : minVal, max: v });
   };
 
+  // Calculate selected-range overlay positions as percentages.
+  const left = ((minVal - lo) / (hi - lo)) * 100;
+  const right = 100 - ((maxVal - lo) / (hi - lo)) * 100;
+
   return (
-    <div className="space-y-3">
-      <FormField label="Preferred areas" icon={MapPin}>
-        <input
-          value={value || ''}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="Rittenhouse, Fishtown, 19147"
-          className="form-input"
+    <div>
+      <div className="flex items-baseline justify-between mb-4">
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wider">Min</div>
+          <div className="text-2xl font-semibold text-slate-900 tabular-nums">${minVal.toLocaleString()}</div>
+        </div>
+        <div className="text-slate-300 text-2xl">—</div>
+        <div className="text-right">
+          <div className="text-xs text-slate-500 uppercase tracking-wider">Max</div>
+          <div className="text-2xl font-semibold text-slate-900 tabular-nums">${maxVal.toLocaleString()}{maxVal >= hi ? '+' : ''}</div>
+        </div>
+      </div>
+
+      {/* Slider track + dual thumbs */}
+      <div className="relative h-7 mb-1 select-none">
+        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-slate-200 rounded-full" />
+        <div
+          className="absolute top-1/2 -translate-y-1/2 h-1.5 bg-slate-900 rounded-full"
+          style={{ left: `${left}%`, right: `${right}%` }}
         />
-      </FormField>
+        <input
+          type="range"
+          min={lo}
+          max={hi}
+          step={step}
+          value={minVal}
+          onChange={onMinChange}
+          className="budget-range absolute inset-0 w-full appearance-none bg-transparent pointer-events-none"
+          style={{ zIndex: 2 }}
+        />
+        <input
+          type="range"
+          min={lo}
+          max={hi}
+          step={step}
+          value={maxVal}
+          onChange={onMaxChange}
+          className="budget-range absolute inset-0 w-full appearance-none bg-transparent pointer-events-none"
+          style={{ zIndex: 3 }}
+        />
+      </div>
+      <div className="flex justify-between text-[10px] text-slate-400 font-medium tabular-nums">
+        <span>${lo.toLocaleString()}</span>
+        <span>${hi.toLocaleString()}+</span>
+      </div>
+
+      <style>{`
+        /* WebKit thumb */
+        .budget-range::-webkit-slider-thumb {
+          appearance: none;
+          width: 22px;
+          height: 22px;
+          background: #fff;
+          border: 2.5px solid #0f172a;
+          border-radius: 9999px;
+          cursor: pointer;
+          pointer-events: auto;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+          margin-top: -10px;
+        }
+        .budget-range::-webkit-slider-runnable-track {
+          height: 2px;
+          background: transparent;
+        }
+        /* Firefox */
+        .budget-range::-moz-range-thumb {
+          width: 22px;
+          height: 22px;
+          background: #fff;
+          border: 2.5px solid #0f172a;
+          border-radius: 9999px;
+          cursor: pointer;
+          pointer-events: auto;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+        }
+        .budget-range::-moz-range-track {
+          height: 2px;
+          background: transparent;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function AreasPicker({ value, onChange }) {
+  const [mapOpen, setMapOpen] = useState(false);
+  const currentZips = (value || '')
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter((t) => /^\d{5}$/.test(t));
+
+  const handleMapSave = (zips) => onChange(zips.join(', '));
+  const removeZip = (zip) => onChange(currentZips.filter((z) => z !== zip).join(', '));
+
+  return (
+    <div className="space-y-4">
+      {/* Selected chips */}
+      {currentZips.length > 0 ? (
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
+            {currentZips.length} {currentZips.length === 1 ? 'neighborhood' : 'neighborhoods'} selected
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {currentZips.map((z) => {
+              const info = PHILLY_ZIPS.find((p) => p.zip === z);
+              return (
+                <button
+                  key={z}
+                  type="button"
+                  onClick={() => removeZip(z)}
+                  className="px-3 py-1.5 rounded-full bg-white border border-slate-200 text-sm font-medium text-slate-900 inline-flex items-center gap-2 hover:border-slate-400 transition-colors"
+                >
+                  <span className="text-slate-400 text-xs tabular-nums">{z}</span>
+                  <span className="truncate max-w-[180px]">{info ? info.name.split(' / ')[0] : 'Philly'}</span>
+                  <X className="w-3 h-3 text-slate-400 hover:text-slate-700" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Primary map CTA. Big and obvious when nothing selected yet. */}
       <button
         type="button"
         onClick={() => setMapOpen(true)}
-        className="w-full py-3 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-400 hover:bg-slate-50 text-sm font-medium text-slate-700 inline-flex items-center justify-center gap-2 transition-colors"
+        className={`w-full rounded-2xl border-2 border-dashed transition-colors inline-flex items-center justify-center gap-3 ${
+          currentZips.length > 0
+            ? 'py-3.5 border-slate-200 text-slate-700 hover:border-slate-400 hover:bg-slate-50 text-sm font-medium'
+            : 'py-10 border-slate-300 text-slate-900 hover:border-slate-900 hover:bg-slate-50 text-base font-semibold'
+        }`}
       >
-        <MapPin className="w-4 h-4" />
-        {currentZips.length > 0
-          ? `Map: ${currentZips.length} ZIP${currentZips.length === 1 ? '' : 's'} picked — tap to edit`
-          : 'Pick neighborhoods on a map'}
+        <MapPin className={currentZips.length > 0 ? 'w-4 h-4' : 'w-5 h-5'} />
+        {currentZips.length > 0 ? 'Edit on map' : 'Pick neighborhoods on a map'}
       </button>
+
       {mapOpen && (
         <ZipMapPicker
           selected={currentZips}
@@ -2068,13 +2190,14 @@ function IntakeForm({ onSubmit, onBack }) {
     },
     {
       title: 'What\'s your budget?',
-      subtitle: 'Monthly rent range.',
+      subtitle: 'Drag to set your monthly rent range.',
       valid: () => data.budgetMin && data.budgetMax && Number(data.budgetMax) >= Number(data.budgetMin),
       fields: (
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="Min" icon={DollarSign}><input type="number" value={data.budgetMin} onChange={e => update('budgetMin', e.target.value)} placeholder="1500" className="form-input" /></FormField>
-          <FormField label="Max" icon={DollarSign}><input type="number" value={data.budgetMax} onChange={e => update('budgetMax', e.target.value)} placeholder="2800" className="form-input" /></FormField>
-        </div>
+        <BudgetRange
+          min={data.budgetMin}
+          max={data.budgetMax}
+          onChange={({ min, max }) => setData({ ...data, budgetMin: String(min), budgetMax: String(max) })}
+        />
       )
     },
     {
@@ -2350,23 +2473,27 @@ function BedBathSelector({ beds, baths, onBedsChange, onBathsChange }) {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-7">
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <Bed className="w-4 h-4 text-slate-400" />
-          <div className="text-sm font-medium text-slate-700">Bedrooms</div>
-          <div className="text-xs text-slate-400 ml-auto">Minimum</div>
+          <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
+            <Bed className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Bedrooms</div>
+            <div className="text-xs text-slate-500">Minimum count</div>
+          </div>
         </div>
-        <div className="grid grid-cols-5 gap-1.5">
+        <div className="grid grid-cols-5 gap-2">
           {bedOptions.map(o => (
             <button
               key={o.value}
               type="button"
               onClick={() => onBedsChange(o.value)}
-              className={`py-3 rounded-xl text-sm font-medium transition-colors border-2 ${
+              className={`py-4 rounded-2xl text-base font-semibold transition-all ${
                 beds === o.value
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  ? 'bg-slate-900 text-white shadow-md scale-[1.02]'
+                  : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
               }`}
             >
               {o.label}
@@ -2377,20 +2504,24 @@ function BedBathSelector({ beds, baths, onBedsChange, onBathsChange }) {
 
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <Bath className="w-4 h-4 text-slate-400" />
-          <div className="text-sm font-medium text-slate-700">Bathrooms</div>
-          <div className="text-xs text-slate-400 ml-auto">Minimum</div>
+          <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
+            <Bath className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Bathrooms</div>
+            <div className="text-xs text-slate-500">Minimum count</div>
+          </div>
         </div>
-        <div className="grid grid-cols-5 gap-1.5">
+        <div className="grid grid-cols-5 gap-2">
           {bathOptions.map(o => (
             <button
               key={o.value}
               type="button"
               onClick={() => onBathsChange(o.value)}
-              className={`py-3 rounded-xl text-sm font-medium transition-colors border-2 ${
+              className={`py-4 rounded-2xl text-base font-semibold transition-all ${
                 baths === o.value
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                  ? 'bg-slate-900 text-white shadow-md scale-[1.02]'
+                  : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
               }`}
             >
               {o.label}
@@ -4630,7 +4761,7 @@ const PROPERTY_CSV_FIELDS = {
   unit:                ['unit', 'unitnumber', 'unit number', 'unit #', 'apt'],
   neighborhood:        ['neighborhood', 'mlsareamajor', 'subdivision', 'subdivisionname', 'community'],
   city:                ['city'],
-  zip:                 ['zip', 'zipcode', 'postalcode', 'postal code'],
+  zip:                 ['zip', 'zipcode', 'postalcode', 'postal code', 'zip code', 'postal_code', 'mailingzip', 'mailing zip', 'postalcodeplusfour', 'postalcodeplus4'],
   price:               ['listprice', 'list price', 'price', 'currentprice'],
   beds:                ['beds', 'bedrooms', 'bedroomstotal', 'bd'],
   baths:               ['baths', 'bathrooms', 'bathroomstotaldecimal', 'bathroomsfull', 'ba'],
@@ -4704,6 +4835,13 @@ function csvToProperties(csvText) {
     const id = mlsId ? `p_${mlsId}` : `p_${Date.now()}_${r}_${Math.random().toString(36).slice(2, 6)}`;
     const address = get('address');
     if (!address) continue;
+    // Fallback ZIP: if no dedicated zip column matched, try to extract a
+    // 5-digit ZIP from the end of the address string (or anywhere in it).
+    let zip = get('zip');
+    if (!zip) {
+      const m = address.match(/\b(\d{5})(?:-\d{4})?\b/);
+      if (m) zip = m[1];
+    }
     out.push({
       id,
       mls: get('mls') || null,
@@ -4711,7 +4849,7 @@ function csvToProperties(csvText) {
       address,
       unit: get('unit') || null,
       neighborhood: get('neighborhood') || get('city') || null,
-      zip: get('zip') || null,
+      zip: zip || null,
       price: parseInt(get('price').replace(/[^\d.]/g, ''), 10) || 0,
       beds: parseFloat(get('beds')) || 0,
       baths: parseFloat(get('baths')) || 0,
