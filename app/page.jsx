@@ -1652,7 +1652,7 @@ export default function App() {
       )}
       {view === 'landing' && <Landing onStart={() => setView('intake')} />}
       {view === 'intake' && <IntakeForm onSubmit={async (data) => { const l = await addLead(data); setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'listings' : 'holding'); }} onBack={() => setView('landing')} />}
-      {view === 'listings' && currentLead && <ListingsView lead={currentLead} properties={properties} excludedBrokerages={settings.excluded_brokerages || []} onBookTour={(listings) => {
+      {view === 'listings' && currentLead && <ListingsView lead={currentLead} properties={properties} excludedBrokerages={settings.excluded_brokerages || []} brightPortalUrls={Array.isArray(settings.bright_portal_urls) ? settings.bright_portal_urls : (settings.bright_portal_url ? [settings.bright_portal_url] : [])} onBookTour={(listings) => {
         setCurrentLead({ ...currentLead, _pendingListings: listings });
         if (currentLead.tourType === 'virtual') setView('virtual-request');
         else setView('booking');
@@ -2186,9 +2186,10 @@ function ChoiceButton({ selected, onClick, children }) {
 // ============================================================
 const MAX_PROPERTIES_PER_TOUR = 5;
 
-function ListingsView({ lead, properties, excludedBrokerages, onBookTour, onDone }) {
+function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, onBookTour, onDone }) {
   const matches = matchListings(lead, properties, excludedBrokerages).slice(0, MAX_PROPERTIES_PER_TOUR);
   const [selected, setSelected] = useState([]);
+  const [photoModal, setPhotoModal] = useState(null);   // { listing, url } or null
   const firstName = lead.fullName.split(' ')[0];
 
   const toggle = (listing) => {
@@ -2196,6 +2197,30 @@ function ListingsView({ lead, properties, excludedBrokerages, onBookTour, onDone
     else if (selected.length < MAX_PROPERTIES_PER_TOUR) setSelected([...selected, listing]);
   };
   const atLimit = selected.length >= MAX_PROPERTIES_PER_TOUR;
+
+  // Pick the most relevant portal URL for a given listing. If we have only one
+  // configured portal, use it. If multiple are configured, prefer one whose
+  // associated neighborhood matches (Morgan can map portals → neighborhoods in
+  // settings). For now: just use the first portal URL.
+  const portalUrlFor = (l) => {
+    const urls = Array.isArray(brightPortalUrls) ? brightPortalUrls : [];
+    if (urls.length === 0) return null;
+    return urls[0];   // future: smarter mapping by neighborhood/criteria
+  };
+
+  const openPhotos = (l, e) => {
+    e?.stopPropagation();
+    const url = portalUrlFor(l);
+    if (!url) {
+      window.alert('No BrightMLS portal configured yet. Ask your agent.');
+      return;
+    }
+    // Some Matrix portal URLs accept &Display=... or &MLSNumber= for deep
+    // links. We append the MLS as a hint — falls back to the portal home
+    // gracefully if the param isn't supported.
+    const deepLink = l.mls ? `${url}${url.includes('?') ? '&' : '?'}MLSNumber=${encodeURIComponent(l.mls)}` : url;
+    setPhotoModal({ listing: l, url: deepLink });
+  };
 
   return (
     <div className="max-w-6xl mx-auto px-6 md:px-8 py-12 md:py-16 pb-32">
@@ -2217,8 +2242,22 @@ function ListingsView({ lead, properties, excludedBrokerages, onBookTour, onDone
             return (
               <div key={l.id} onClick={() => !disabled && toggle(l)} className={`group rounded-2xl overflow-hidden border transition-all cursor-pointer relative bg-white ${isSelected ? 'border-slate-900 shadow-md ring-2 ring-slate-900' : disabled ? 'border-slate-200 opacity-40 cursor-not-allowed' : 'border-slate-200 hover:shadow-md hover:border-slate-300'}`}>
                 {isSelected && <div className="absolute top-3 right-3 z-10 w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center shadow-lg"><Check className="w-4 h-4" strokeWidth={3} /></div>}
-                <div className="aspect-[4/3] bg-slate-100 overflow-hidden">
-                  <img src={l.image} alt={l.address} className="w-full h-full object-cover" />
+                <div className="aspect-[4/3] bg-slate-100 overflow-hidden relative">
+                  {l.image ? (
+                    <img src={l.image} alt={l.address} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400">
+                      <Building2 className="w-8 h-8" />
+                      <span className="text-xs">Photos in BrightMLS portal</span>
+                    </div>
+                  )}
+                  {/* Photo button overlays the image */}
+                  <button
+                    onClick={(e) => openPhotos(l, e)}
+                    className="absolute bottom-2 right-2 bg-white/95 backdrop-blur-sm text-slate-900 text-xs font-medium px-2.5 py-1.5 rounded-full shadow-sm hover:bg-white inline-flex items-center gap-1.5"
+                  >
+                    <Eye className="w-3 h-3" /> Photos
+                  </button>
                 </div>
                 <div className="p-4">
                   <div className="flex items-start justify-between mb-3">
@@ -2234,7 +2273,7 @@ function ListingsView({ lead, properties, excludedBrokerages, onBookTour, onDone
                   <div className="flex items-center gap-4 text-sm text-slate-500">
                     <span className="flex items-center gap-1.5"><Bed className="w-3.5 h-3.5" /> {l.beds === 0 ? 'Studio' : `${l.beds}bd`}</span>
                     <span className="flex items-center gap-1.5"><Bath className="w-3.5 h-3.5" /> {l.baths}ba</span>
-                    <span>{l.sqft} sqft</span>
+                    {l.sqft ? <span>{l.sqft} sqft</span> : null}
                   </div>
                 </div>
               </div>
@@ -2253,12 +2292,65 @@ function ListingsView({ lead, properties, excludedBrokerages, onBookTour, onDone
         <div className="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 shadow-[0_-4px_24px_-8px_rgba(0,0,0,0.08)] z-40">
           <div className="max-w-6xl mx-auto px-6 md:px-8 py-3.5 flex items-center gap-4">
             <div className="flex -space-x-2">
-              {selected.slice(0, 4).map(s => <img key={s.id} src={s.image} alt="" className="w-9 h-9 rounded-full border-2 border-white object-cover" />)}
+              {selected.slice(0, 4).map(s => s.image
+                ? <img key={s.id} src={s.image} alt="" className="w-9 h-9 rounded-full border-2 border-white object-cover" />
+                : <div key={s.id} className="w-9 h-9 rounded-full border-2 border-white bg-slate-200 flex items-center justify-center"><Building2 className="w-3.5 h-3.5 text-slate-500" /></div>
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-slate-900 text-sm">{selected.length} {selected.length === 1 ? 'property' : 'properties'} selected</div>
             </div>
             <Button iconRight={ArrowRight} onClick={() => onBookTour(selected)}>Book tour</Button>
+          </div>
+        </div>
+      )}
+
+      {photoModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-stretch md:items-center justify-center p-0 md:p-6" onClick={() => setPhotoModal(null)}>
+          <div className="bg-white w-full md:max-w-5xl md:rounded-2xl flex flex-col h-full md:h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3.5 flex items-center justify-between shrink-0">
+              <div className="min-w-0">
+                <div className="font-semibold text-slate-900 text-sm truncate">{photoModal.listing.address}</div>
+                <div className="text-xs text-slate-500 truncate">
+                  {photoModal.listing.neighborhood ? `${photoModal.listing.neighborhood} · ` : ''}
+                  {fmtCurrency(photoModal.listing.price)}/mo · {photoModal.listing.beds === 0 ? 'Studio' : `${photoModal.listing.beds}bd`} · {photoModal.listing.baths}ba
+                  {photoModal.listing.mls ? ` · ${photoModal.listing.mls}` : ''}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 ml-3">
+                <a
+                  href={photoModal.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-slate-500 hover:text-slate-900 underline inline-flex items-center gap-1"
+                >
+                  Open in new tab <ExternalLink className="w-3 h-3" />
+                </a>
+                <button onClick={() => setPhotoModal(null)} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+              </div>
+            </div>
+            <iframe
+              src={photoModal.url}
+              title={`Photos for ${photoModal.listing.address}`}
+              className="flex-1 w-full border-0"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            />
+            <div className="border-t border-slate-200 bg-slate-50 px-5 py-3 flex items-center justify-between shrink-0">
+              <div className="text-xs text-slate-500">
+                Photos hosted by BrightMLS.
+                {photoModal.listing.mls ? ` Search MLS# ${photoModal.listing.mls} if you don't see this listing.` : ''}
+              </div>
+              <Button
+                size="sm"
+                onClick={() => {
+                  toggle(photoModal.listing);
+                  setPhotoModal(null);
+                }}
+                disabled={atLimit && !selected.find((s) => s.id === photoModal.listing.id)}
+              >
+                {selected.find((s) => s.id === photoModal.listing.id) ? 'Deselect' : 'Add to tour'}
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -4421,6 +4513,11 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
   // Brokerage blocklist (lives in settings.excluded_brokerages as an array)
   const blocklist = settings.excluded_brokerages || [];
   const [blockText, setBlockText] = useState((blocklist || []).join('\n'));
+  // Bright portal URLs — one per line (one or more shared "Public Portal"
+  // URLs from BrightMLS Matrix). The matched-listings page links here for
+  // photos. Each portal caps at ~500 listings so multiple may be needed.
+  const portalUrls = settings.bright_portal_urls || (settings.bright_portal_url ? [settings.bright_portal_url] : []);
+  const [portalText, setPortalText] = useState(portalUrls.join('\n'));
 
   const filtered = useMemo(() => {
     return (properties || [])
@@ -4460,13 +4557,19 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
     showToast(`Saved ${list.length} blocked brokerage${list.length === 1 ? '' : 's'}`);
   };
 
+  const onSavePortals = async () => {
+    const list = portalText.split('\n').map((s) => s.trim()).filter((s) => s && /^https?:\/\//.test(s));
+    await saveSettings({ ...settings, bright_portal_urls: list, bright_portal_url: list[0] || null });
+    showToast(`Saved ${list.length} portal URL${list.length === 1 ? '' : 's'}`);
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap gap-2 border-b border-slate-200">
         {[
           { k: 'list', label: 'Listings', count: properties.length },
           { k: 'import', label: 'CSV Import' },
-          { k: 'settings', label: 'Brokerage Blocklist', count: blocklist.length },
+          { k: 'settings', label: 'Filters & Portals', count: blocklist.length + (settings.bright_portal_urls?.length || 0) },
         ].map((t) => (
           <button key={t.k} onClick={() => setTab(t.k)} className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px ${tab === t.k ? 'text-slate-900 border-slate-900' : 'text-slate-500 border-transparent hover:text-slate-900'}`}>
             {t.label}{t.count != null && <span className="text-xs text-slate-400 ml-1.5">{t.count}</span>}
@@ -4585,26 +4688,52 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
       )}
 
       {tab === 'settings' && (
-        <Card className="p-5 space-y-3">
-          <div>
-            <div className="text-sm font-semibold text-slate-900 mb-1">Blocked brokerages</div>
-            <div className="text-xs text-slate-500">
-              One brokerage name per line. Listings from these brokerages are hidden from
-              all leads. Match is case-insensitive but otherwise exact — paste the exact name
-              as it appears in BrightMLS&apos;s &ldquo;List Office Name&rdquo; field.
+        <div className="space-y-5">
+          <Card className="p-5 space-y-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-900 mb-1">BrightMLS portal URLs (for photos)</div>
+              <div className="text-xs text-slate-500 leading-relaxed">
+                Paste one or more <strong>Matrix Public Portal</strong> URLs from BrightMLS.
+                When a lead clicks &ldquo;View photos&rdquo; on a matched listing, your app
+                opens this portal in a modal. The first URL is used for now —
+                multi-portal smart routing comes in a later release.
+                <br />
+                <span className="text-slate-400">To get one: BrightMLS Matrix → run your search → Share → &ldquo;Send to client&rdquo; → copy the link.</span>
+              </div>
             </div>
-          </div>
-          <textarea
-            value={blockText}
-            onChange={(e) => setBlockText(e.target.value)}
-            rows={10}
-            placeholder="Acme Realty&#10;BadBroker LLC&#10;..."
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 resize-none"
-          />
-          <div className="flex justify-end">
-            <Button onClick={onSaveBlocklist}>Save blocklist</Button>
-          </div>
-        </Card>
+            <textarea
+              value={portalText}
+              onChange={(e) => setPortalText(e.target.value)}
+              rows={4}
+              placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 resize-none"
+            />
+            <div className="flex justify-end">
+              <Button onClick={onSavePortals}>Save portal URLs</Button>
+            </div>
+          </Card>
+
+          <Card className="p-5 space-y-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-900 mb-1">Blocked brokerages</div>
+              <div className="text-xs text-slate-500">
+                One brokerage name per line. Listings from these brokerages are hidden from
+                all leads. Match is case-insensitive but otherwise exact — paste the exact name
+                as it appears in BrightMLS&apos;s &ldquo;List Office Name&rdquo; field.
+              </div>
+            </div>
+            <textarea
+              value={blockText}
+              onChange={(e) => setBlockText(e.target.value)}
+              rows={10}
+              placeholder="Acme Realty&#10;BadBroker LLC&#10;..."
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 resize-none"
+            />
+            <div className="flex justify-end">
+              <Button onClick={onSaveBlocklist}>Save blocklist</Button>
+            </div>
+          </Card>
+        </div>
       )}
 
       {editing && <PropertyFormModal property={editing} onClose={() => setEditing(null)} onSave={async (p) => { await saveProperty(p); setEditing(null); showToast('Property saved'); }} onDelete={editing.id ? async () => { if (confirm('Delete this property?')) { await removeProperty(editing.id); setEditing(null); showToast('Property deleted'); } } : null} />}
