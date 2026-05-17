@@ -1804,6 +1804,239 @@ function Landing({ onStart }) {
 // ============================================================
 // INTAKE FORM
 // ============================================================
+// Philadelphia ZIP codes with approximate centroids + neighborhood label.
+// Used by ZipMapPicker. Lat/lng are good enough for marker placement;
+// the map shows zips as clickable circles, not polygons.
+const PHILLY_ZIPS = [
+  { zip: '19102', lat: 39.9509, lng: -75.1656, name: 'Rittenhouse / Center City W' },
+  { zip: '19103', lat: 39.9519, lng: -75.1731, name: 'Rittenhouse / Fitler Sq' },
+  { zip: '19104', lat: 39.9569, lng: -75.1969, name: 'University City / Powelton' },
+  { zip: '19106', lat: 39.9498, lng: -75.1452, name: 'Old City / Society Hill' },
+  { zip: '19107', lat: 39.9509, lng: -75.1568, name: 'Center City East / Washington Sq' },
+  { zip: '19111', lat: 40.0589, lng: -75.0808, name: 'Fox Chase' },
+  { zip: '19114', lat: 40.0656, lng: -75.0153, name: 'Torresdale' },
+  { zip: '19115', lat: 40.0934, lng: -75.0567, name: 'Bustleton' },
+  { zip: '19116', lat: 40.1180, lng: -75.0245, name: 'Somerton' },
+  { zip: '19118', lat: 40.0734, lng: -75.2103, name: 'Chestnut Hill' },
+  { zip: '19119', lat: 40.0488, lng: -75.1973, name: 'Mt Airy' },
+  { zip: '19120', lat: 40.0345, lng: -75.1244, name: 'Olney / Logan' },
+  { zip: '19121', lat: 39.9842, lng: -75.1689, name: 'North Phila / Brewerytown' },
+  { zip: '19122', lat: 39.9802, lng: -75.1469, name: 'Norris Sq / South Kensington' },
+  { zip: '19123', lat: 39.9648, lng: -75.1421, name: 'Northern Liberties / Poplar' },
+  { zip: '19124', lat: 40.0188, lng: -75.0900, name: 'Frankford / Juniata' },
+  { zip: '19125', lat: 39.9785, lng: -75.1289, name: 'Fishtown / East Kensington' },
+  { zip: '19126', lat: 40.0501, lng: -75.1335, name: 'West Oak Lane' },
+  { zip: '19127', lat: 40.0289, lng: -75.2218, name: 'Manayunk' },
+  { zip: '19128', lat: 40.0353, lng: -75.2273, name: 'Roxborough' },
+  { zip: '19129', lat: 40.0117, lng: -75.1881, name: 'East Falls' },
+  { zip: '19130', lat: 39.9678, lng: -75.1789, name: 'Fairmount / Art Museum' },
+  { zip: '19131', lat: 39.9870, lng: -75.2148, name: 'Overbrook / Wynnefield' },
+  { zip: '19132', lat: 39.9970, lng: -75.1666, name: 'North Phila / Strawberry Mansion' },
+  { zip: '19133', lat: 39.9912, lng: -75.1391, name: 'Fairhill' },
+  { zip: '19134', lat: 39.9912, lng: -75.1170, name: 'Kensington / Port Richmond' },
+  { zip: '19135', lat: 40.0186, lng: -75.0535, name: 'Tacony / Wissinoming' },
+  { zip: '19136', lat: 40.0334, lng: -75.0259, name: 'Holmesburg / Mayfair' },
+  { zip: '19137', lat: 39.9947, lng: -75.0786, name: 'Bridesburg' },
+  { zip: '19138', lat: 40.0628, lng: -75.1568, name: 'Cedarbrook / E. Germantown' },
+  { zip: '19139', lat: 39.9622, lng: -75.2360, name: 'Cobbs Creek / W. Phila' },
+  { zip: '19140', lat: 40.0145, lng: -75.1450, name: 'Tioga / Nicetown' },
+  { zip: '19141', lat: 40.0421, lng: -75.1488, name: 'Logan / Fern Rock' },
+  { zip: '19142', lat: 39.9259, lng: -75.2294, name: 'Elmwood / SW Phila' },
+  { zip: '19143', lat: 39.9418, lng: -75.2257, name: 'Cedar Park / Kingsessing' },
+  { zip: '19144', lat: 40.0341, lng: -75.1727, name: 'Germantown' },
+  { zip: '19145', lat: 39.9220, lng: -75.1797, name: 'South Phila W / Girard Estates' },
+  { zip: '19146', lat: 39.9388, lng: -75.1786, name: 'Graduate Hospital / Point Breeze' },
+  { zip: '19147', lat: 39.9356, lng: -75.1510, name: 'Queen Village / Bella Vista / Pennsport' },
+  { zip: '19148', lat: 39.9201, lng: -75.1574, name: 'South Phila E / Whitman' },
+  { zip: '19149', lat: 40.0364, lng: -75.0703, name: 'Rhawnhurst / Oxford Circle' },
+  { zip: '19150', lat: 40.0698, lng: -75.1750, name: 'Cedarbrook' },
+  { zip: '19151', lat: 39.9756, lng: -75.2581, name: 'Overbrook Park' },
+  { zip: '19152', lat: 40.0608, lng: -75.0584, name: 'Pennypack / Lexington Park' },
+  { zip: '19153', lat: 39.8923, lng: -75.2316, name: 'Eastwick' },
+  { zip: '19154', lat: 40.0967, lng: -74.9920, name: 'Far Northeast / Parkwood' },
+];
+
+// Interactive Philly ZIP map picker. Renders Leaflet inside a modal. Loads
+// Leaflet's JS via CDN on demand so it doesn't bloat the initial bundle.
+function ZipMapPicker({ selected, onChange, onClose }) {
+  const mapDivRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef({});
+  const [selSet, setSelSet] = useState(new Set(selected || []));
+
+  // Sync selSet back to parent on close (handled by Save button).
+  const toggle = (zip) => {
+    setSelSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(zip)) next.delete(zip); else next.add(zip);
+      // Update marker color immediately.
+      const m = markersRef.current[zip];
+      if (m && typeof m.setStyle === 'function') {
+        m.setStyle(markerStyle(next.has(zip)));
+      }
+      return next;
+    });
+  };
+
+  const markerStyle = (isSelected) => isSelected
+    ? { color: '#0f172a', fillColor: '#0f172a', fillOpacity: 0.7, weight: 2, radius: 14 }
+    : { color: '#64748b', fillColor: '#e2e8f0', fillOpacity: 0.7, weight: 2, radius: 12 };
+
+  useEffect(() => {
+    // Dynamically load Leaflet JS if not already present.
+    const init = () => {
+      if (!window.L || !mapDivRef.current || mapRef.current) return;
+      const L = window.L;
+      const map = L.map(mapDivRef.current, {
+        zoomControl: true,
+        scrollWheelZoom: true,
+      }).setView([39.9826, -75.1652], 11);
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap',
+        maxZoom: 18,
+      }).addTo(map);
+
+      PHILLY_ZIPS.forEach((z) => {
+        const isSel = selSet.has(z.zip);
+        const marker = L.circleMarker([z.lat, z.lng], markerStyle(isSel));
+        marker.bindTooltip(`${z.zip} · ${z.name}`, { direction: 'top', offset: [0, -8] });
+        marker.on('click', () => toggle(z.zip));
+        marker.addTo(map);
+        markersRef.current[z.zip] = marker;
+      });
+
+      mapRef.current = map;
+    };
+
+    if (window.L) {
+      init();
+    } else {
+      const existing = document.querySelector('script[data-leaflet="1"]');
+      if (existing) {
+        existing.addEventListener('load', init);
+      } else {
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        s.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+        s.crossOrigin = '';
+        s.setAttribute('data-leaflet', '1');
+        s.onload = init;
+        document.head.appendChild(s);
+      }
+    }
+
+    return () => {
+      try {
+        if (mapRef.current) {
+          mapRef.current.remove();
+          mapRef.current = null;
+          markersRef.current = {};
+        }
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onSave = () => {
+    onChange(Array.from(selSet));
+    onClose();
+  };
+
+  const sortedSelected = Array.from(selSet).sort();
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-stretch md:items-center justify-center p-0 md:p-6" onClick={onClose}>
+      <div className="bg-white w-full md:max-w-4xl md:rounded-2xl flex flex-col h-full md:h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="border-b border-slate-200 px-5 py-3.5 flex items-center justify-between shrink-0">
+          <div>
+            <div className="font-semibold text-slate-900 text-sm">Pick neighborhoods on the map</div>
+            <div className="text-xs text-slate-500">Tap a ZIP to select / deselect. {selSet.size} selected.</div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="flex-1 relative">
+          <div ref={mapDivRef} className="absolute inset-0" />
+        </div>
+        {sortedSelected.length > 0 && (
+          <div className="border-t border-slate-200 px-5 py-3 bg-slate-50 max-h-32 overflow-y-auto shrink-0">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">Selected ZIPs</div>
+            <div className="flex flex-wrap gap-1.5">
+              {sortedSelected.map((z) => {
+                const info = PHILLY_ZIPS.find((p) => p.zip === z);
+                return (
+                  <button
+                    key={z}
+                    onClick={() => toggle(z)}
+                    className="px-2.5 py-1 rounded-full bg-slate-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-slate-700"
+                  >
+                    {z}{info ? ` · ${info.name.split(' / ')[0]}` : ''} <X className="w-3 h-3" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        <div className="border-t border-slate-200 px-5 py-3 flex items-center justify-end gap-2 shrink-0">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={onSave}>Use {selSet.size} {selSet.size === 1 ? 'ZIP' : 'ZIPs'}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Inline picker used inside the intake form's "Preferred areas" step.
+// Combines: free-text input (compat with existing matchListings) +
+// a "Pick on map" button that opens the ZipMapPicker modal.
+//
+// The selected ZIPs are merged into the comma-separated areas string so
+// the existing matching logic (which splits by , or ;) works without changes.
+function AreasPicker({ value, onChange }) {
+  const [mapOpen, setMapOpen] = useState(false);
+
+  // Parse current value into individual tokens. ZIPs are 5-digit numbers;
+  // anything else is a free-text neighborhood name.
+  const tokens = (value || '').split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+  const currentZips = tokens.filter((t) => /^\d{5}$/.test(t));
+  const currentText = tokens.filter((t) => !/^\d{5}$/.test(t));
+
+  const handleMapSave = (zips) => {
+    const next = [...currentText, ...zips].join(', ');
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-3">
+      <FormField label="Preferred areas" icon={MapPin}>
+        <input
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Rittenhouse, Fishtown, 19147"
+          className="form-input"
+        />
+      </FormField>
+      <button
+        type="button"
+        onClick={() => setMapOpen(true)}
+        className="w-full py-3 rounded-xl border-2 border-dashed border-slate-300 hover:border-slate-400 hover:bg-slate-50 text-sm font-medium text-slate-700 inline-flex items-center justify-center gap-2 transition-colors"
+      >
+        <MapPin className="w-4 h-4" />
+        {currentZips.length > 0
+          ? `Map: ${currentZips.length} ZIP${currentZips.length === 1 ? '' : 's'} picked — tap to edit`
+          : 'Pick neighborhoods on a map'}
+      </button>
+      {mapOpen && (
+        <ZipMapPicker
+          selected={currentZips}
+          onChange={handleMapSave}
+          onClose={() => setMapOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
 function IntakeForm({ onSubmit, onBack }) {
   const [step, setStep] = useState(0);
   const [data, setData] = useState({
@@ -1852,9 +2085,14 @@ function IntakeForm({ onSubmit, onBack }) {
     },
     {
       title: 'Where do you want to live?',
-      subtitle: 'Neighborhoods or zip codes — comma separated.',
+      subtitle: 'Tap ZIPs on the map, or type neighborhood names.',
       valid: () => true,
-      fields: <FormField label="Preferred areas" icon={MapPin}><input value={data.areas} onChange={e => update('areas', e.target.value)} placeholder="Rittenhouse, Fishtown, 19147" className="form-input" /></FormField>
+      fields: (
+        <AreasPicker
+          value={data.areas}
+          onChange={(v) => update('areas', v)}
+        />
+      )
     },
     {
       title: 'A few financial details',
