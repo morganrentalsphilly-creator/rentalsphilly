@@ -9,8 +9,32 @@ export async function GET(request) {
   try {
     const db = supabaseAdmin();
 
+    if (resource === 'public') {
+      // Lightweight load for landing / intake / listings flow. Skips all the
+      // heavy CRM tables (leads, messages, activities, tasks, etc).
+      const [properties, settingsRow] = await Promise.all([
+        db.from('properties').select('*').eq('status', 'active').order('created_at', { ascending: false }),
+        db.from('settings').select('*').eq('id', 1).single(),
+      ]);
+      // Cache at the Vercel edge for 60s; subsequent visitors within that
+      // window get an instant edge response instead of a fresh DB roundtrip.
+      // stale-while-revalidate lets us serve stale data for up to 10 min while
+      // the next refresh runs in the background.
+      return NextResponse.json(
+        {
+          properties: properties.data || [],
+          settings: settingsRow.data || null,
+        },
+        {
+          headers: {
+            'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=600',
+          },
+        }
+      );
+    }
+
     if (resource === 'all') {
-      // Load everything needed to hydrate the app
+      // Load everything needed to hydrate the admin CRM.
       const [leads, tours, slots, waitlist, messages, activities, tasks, submissions, nudges, properties, settingsRow] =
         await Promise.all([
           db.from('leads').select('*').order('created_at', { ascending: false }),

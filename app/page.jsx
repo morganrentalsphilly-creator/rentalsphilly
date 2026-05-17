@@ -1,7 +1,7 @@
 'use client';
 
 import { sendEmail, sendSMS } from '@/lib/messaging';
-import { loadAll } from '@/lib/db';
+import { loadAll, loadPublic } from '@/lib/db';
 import {
   createBrowserSupabase,
   getSession,
@@ -795,7 +795,29 @@ export default function App() {
     return () => { try { unsub(); } catch {} };
   }, []);
 
+  // On mount: load only the lightweight public data (properties + settings).
+  // Heavy CRM data loads lazily when the user enters admin (see effect below).
   useEffect(() => {
+    (async () => {
+      try {
+        const data = await loadPublic();
+        setProperties(hydrateProperties(data.properties || []));
+        if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...data.settings });
+      } catch (e) {
+        console.error('[app] Failed to load public data', e);
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  // Lazy: when the user enters admin AND is authed, fetch the full CRM dataset.
+  // Cached after the first load — won't refetch on every admin visit within
+  // the same session.
+  const [adminDataLoaded, setAdminDataLoaded] = useState(false);
+  useEffect(() => {
+    if (view !== 'admin') return;
+    if (!session) return;
+    if (adminDataLoaded) return;
     (async () => {
       try {
         const data = await loadAll();
@@ -803,25 +825,29 @@ export default function App() {
         setSlots((data.slots || []).length > 0 ? data.slots : generateDefaultSlots());
         setWaitlist(data.waitlist || []);
         setProperties(hydrateProperties(data.properties || []));
-        if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...data.settings });
-        // Still load timeOffset from localStorage (dev-only feature, not worth a DB trip)
+        if (data.settings) setSettings((prev) => ({ ...DEFAULT_AGENT_SETTINGS, ...prev, ...data.settings }));
         try {
           const offsetRes = await window.storage.get('time-offset').catch(() => null);
           if (offsetRes && offsetRes.value) setTimeOffset(JSON.parse(offsetRes.value));
         } catch (e) {}
+        setAdminDataLoaded(true);
       } catch (e) {
-        console.error('[app] Failed to load data from Supabase', e);
+        console.error('[app] Failed to load admin data', e);
       }
-      setLoaded(true);
     })();
-  }, []);
+  }, [view, session, adminDataLoaded]);
 
   // ---- Supabase Realtime: live inbox updates ------------------------------
   // Subscribe to INSERTs on the `messages` table and merge each new row into
-  // the matching lead's in-memory messages array. This is how inbound SMS
-  // replies and outbound status changes show up in the inbox without a refresh.
+  // the matching lead's in-memory messages array. Only runs when:
+  //   - in admin AND authed (public visitors don't need it)
+  //   - on the inbox subview OR with a lead detail open
+  // This avoids constant re-renders when viewing properties, blast, etc.
   useEffect(() => {
     if (!loaded) return;
+    if (view !== 'admin') return;
+    if (!session) return;
+    if (adminSubview !== 'inbox' && !selectedLeadId) return;
     const supa = createBrowserSupabase();
     if (!supa) return;
     const channel = supa
@@ -889,7 +915,7 @@ export default function App() {
     return () => {
       try { supa.removeChannel(channel); } catch {}
     };
-  }, [loaded]);
+  }, [loaded, view, session, adminSubview, selectedLeadId]);
 
   // In the Supabase world, we only call saveLeads for bulk operations.
   // The main bulk op is "clear all" from the leads list.
@@ -1040,6 +1066,8 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded) return;
+    if (view !== 'admin' || !session) return;     // public visitors don't need automation
+    if (!adminDataLoaded) return;                  // wait until CRM data is loaded
     if (settings.automation?.enabled === false) return;
     const runIt = async () => {
       const now = getNow();
@@ -1053,7 +1081,7 @@ export default function App() {
     runIt();
     const interval = setInterval(runIt, 30000);
     return () => clearInterval(interval);
-  }, [loaded, leads, slots, waitlist, settings, timeOffset]);
+  }, [loaded, view, session, adminDataLoaded, leads, slots, waitlist, settings, timeOffset]);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -1645,6 +1673,11 @@ export default function App() {
           <AdminLogin />
         ) : !isAdminEmail(session.user?.email) ? (
           <AdminUnauthorized email={session.user?.email} />
+        ) : !adminDataLoaded ? (
+          <div className="min-h-[60vh] flex flex-col items-center justify-center gap-2 text-slate-400 text-sm">
+            <div className="w-5 h-5 border-2 border-slate-200 border-t-slate-900 rounded-full animate-spin" />
+            Loading your CRM…
+          </div>
         ) : (
           <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
         )
