@@ -24,3 +24,20 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Shared form input style — used by intake form, property form, and other admin modals.
+   Was previously inlined inside IntakeForm; hoisted here so it's available app-wide. */
+.form-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1.5px solid rgb(226 232 240);
+  border-radius: 0.75rem;
+  font-size: 0.95rem;
+  outline: none;
+  transition: all 0.15s;
+  background: white;
+}
+.form-input:focus {
+  border-color: rgb(15 23 42);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+}

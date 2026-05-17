@@ -57,15 +57,26 @@ const bucketInfo = {
   'BC75+': { label: 'Limited credit, moving later' },
 };
 
-const matchListings = (lead) => {
-  return MOCK_LISTINGS.filter(l => {
-    const priceOk = l.price >= (lead.budgetMin || 0) && l.price <= (lead.budgetMax || 99999);
+// Filter the active property pool against a lead's criteria.
+// Takes `pool` as a parameter so the caller passes in the live DB-backed
+// properties array (or MOCK_LISTINGS as a fallback if the DB is empty).
+// `excludedBrokerages` is a lowercased Set of brokerage names to hide globally.
+const matchListings = (lead, pool, excludedBrokerages) => {
+  const source = (pool && pool.length > 0) ? pool : MOCK_LISTINGS;
+  const blocked = excludedBrokerages instanceof Set
+    ? excludedBrokerages
+    : new Set((excludedBrokerages || []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
+  return source.filter(l => {
+    if (l.status && l.status !== 'active') return false;
+    const office = String(l.listOffice || l.leasingOffice || '').trim().toLowerCase();
+    if (office && blocked.has(office)) return false;
+    const priceOk = l.price >= (Number(lead.budgetMin) || 0) && l.price <= (Number(lead.budgetMax) || 99999);
     const bedsOk = !lead.beds || l.beds >= parseInt(lead.beds);
     const bathsOk = !lead.baths || l.baths >= parseInt(lead.baths);
     const areaOk = !lead.areas || lead.areas.trim() === '' ||
       lead.areas.toLowerCase().split(/[,;]/).some(a => {
         const q = a.trim();
-        return q && (l.neighborhood.toLowerCase().includes(q) || l.zip.includes(q));
+        return q && ((l.neighborhood || '').toLowerCase().includes(q) || (l.zip || '').includes(q));
       });
     return priceOk && bedsOk && bathsOk && areaOk;
   });
@@ -716,6 +727,38 @@ function hydrateLeads(data) {
 }
 
 // ============================================================
+// PROPERTY HYDRATION — DB snake_case → UI camelCase (matches MOCK_LISTINGS shape)
+// ============================================================
+function hydrateProperties(rows) {
+  return (rows || []).map((p) => ({
+    id: p.id,
+    mls: p.mls || '',
+    address: p.unit ? `${p.address}, ${p.unit}` : p.address,
+    neighborhood: p.neighborhood || '',
+    zip: p.zip || '',
+    price: Number(p.price),
+    beds: Number(p.beds),
+    baths: Number(p.baths),
+    sqft: p.sqft != null ? Number(p.sqft) : null,
+    image: (p.photos && p.photos[0]) || '',
+    photos: p.photos || [],
+    leasingContact: p.leasing_contact || '',
+    leasingOffice: p.leasing_office || p.list_office || '',
+    listOffice: p.list_office || p.leasing_office || '',
+    listingAgent: p.listing_agent || '',
+    listingAgentPhone: p.listing_agent_phone || '',
+    availableDate: p.available_date || null,
+    petPolicy: p.pet_policy || '',
+    notes: p.notes || '',
+    source: p.source || 'manual',
+    status: p.status || 'active',
+    createdAt: p.created_at,
+    // Raw fields too — for the admin edit form
+    _raw: p,
+  }));
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 
@@ -724,6 +767,7 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const [slots, setSlots] = useState([]);
   const [waitlist, setWaitlist] = useState([]);
+  const [properties, setProperties] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_AGENT_SETTINGS);
   const [timeOffset, setTimeOffset] = useState(0);
   const [currentLead, setCurrentLead] = useState(null);
@@ -758,6 +802,7 @@ export default function App() {
         setLeads(hydrateLeads(data));
         setSlots((data.slots || []).length > 0 ? data.slots : generateDefaultSlots());
         setWaitlist(data.waitlist || []);
+        setProperties(hydrateProperties(data.properties || []));
         if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...data.settings });
         // Still load timeOffset from localStorage (dev-only feature, not worth a DB trip)
         try {
@@ -888,6 +933,71 @@ export default function App() {
       console.error('[app] Failed to save slots', e);
     }
   };
+  // Property CRUD — DB-backed. Optimistic update + persist.
+  const saveProperty = async (property) => {
+    // property is the camelCase UI shape. Translate to DB shape.
+    const row = {
+      id: property.id || `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      mls: property.mls || null,
+      source: property.source || 'manual',
+      address: property.address,
+      unit: property.unit || null,
+      neighborhood: property.neighborhood || null,
+      zip: property.zip || null,
+      price: Number(property.price) || 0,
+      beds: Number(property.beds) || 0,
+      baths: Number(property.baths) || 0,
+      sqft: property.sqft != null && property.sqft !== '' ? Number(property.sqft) : null,
+      photos: Array.isArray(property.photos) ? property.photos : (property.image ? [property.image] : []),
+      list_office: property.listOffice || property.leasingOffice || null,
+      leasing_office: property.leasingOffice || property.listOffice || null,
+      leasing_contact: property.leasingContact || null,
+      listing_agent: property.listingAgent || null,
+      listing_agent_phone: property.listingAgentPhone || null,
+      available_date: property.availableDate || null,
+      pet_policy: property.petPolicy || null,
+      notes: property.notes || null,
+      status: property.status || 'active',
+    };
+    const db = await import('@/lib/db');
+    const upserted = await db.upsertProperty(row);
+    // Hydrate and merge into state
+    const [hydrated] = hydrateProperties([upserted]);
+    setProperties((prev) => {
+      const idx = prev.findIndex((p) => p.id === hydrated.id);
+      if (idx >= 0) {
+        const next = prev.slice();
+        next[idx] = hydrated;
+        return next;
+      }
+      return [hydrated, ...prev];
+    });
+    return hydrated;
+  };
+
+  const removeProperty = async (id) => {
+    const db = await import('@/lib/db');
+    await db.deleteProperty(id);
+    setProperties((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  // Bulk import: take an array of UI-shape property objects and upsert all.
+  // Returns { imported, errors }.
+  const bulkImportProperties = async (items) => {
+    let imported = 0;
+    let errors = 0;
+    for (const item of items) {
+      try {
+        await saveProperty(item);
+        imported++;
+      } catch (e) {
+        console.error('[bulk import] failed for', item.address, e);
+        errors++;
+      }
+    }
+    return { imported, errors };
+  };
+
   const saveWaitlist = async (newWaitlist) => {
     setWaitlist(newWaitlist);
     try {
@@ -1517,7 +1627,7 @@ export default function App() {
       )}
       {view === 'landing' && <Landing onStart={() => setView('intake')} />}
       {view === 'intake' && <IntakeForm onSubmit={async (data) => { const l = await addLead(data); setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'listings' : 'holding'); }} onBack={() => setView('landing')} />}
-      {view === 'listings' && currentLead && <ListingsView lead={currentLead} onBookTour={(listings) => {
+      {view === 'listings' && currentLead && <ListingsView lead={currentLead} properties={properties} excludedBrokerages={settings.excluded_brokerages || []} onBookTour={(listings) => {
         setCurrentLead({ ...currentLead, _pendingListings: listings });
         if (currentLead.tourType === 'virtual') setView('virtual-request');
         else setView('booking');
@@ -1536,7 +1646,7 @@ export default function App() {
         ) : !isAdminEmail(session.user?.email) ? (
           <AdminUnauthorized email={session.user?.email} />
         ) : (
-          <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} />
+          <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
         )
       )}
     </div>
@@ -2046,8 +2156,8 @@ function ChoiceButton({ selected, onClick, children }) {
 // ============================================================
 const MAX_PROPERTIES_PER_TOUR = 5;
 
-function ListingsView({ lead, onBookTour, onDone }) {
-  const matches = matchListings(lead).slice(0, MAX_PROPERTIES_PER_TOUR);
+function ListingsView({ lead, properties, excludedBrokerages, onBookTour, onDone }) {
+  const matches = matchListings(lead, properties, excludedBrokerages).slice(0, MAX_PROPERTIES_PER_TOUR);
   const [selected, setSelected] = useState([]);
   const firstName = lead.fullName.split(' ')[0];
 
@@ -2470,7 +2580,7 @@ function AdminUnauthorized({ email }) {
   );
 }
 
-function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail }) {
+function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
   const [submitModal, setSubmitModal] = useState(null);
@@ -2540,6 +2650,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
           { k: 'inbox', label: 'Inbox', icon: Inbox },
           { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
+          { k: 'properties', label: 'Properties', icon: Building2, count: (properties || []).filter(p => p.status === 'active').length },
           { k: 'submissions', label: 'Applications', icon: FileCheck },
           { k: 'blast', label: 'Bulk SMS', icon: Send },
           { k: 'flags', label: 'Tasks', icon: Flag, urgent: flagCount || null },
@@ -2556,6 +2667,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
       {subview === 'dashboard' && <DashboardView metrics={metrics} leads={leads} recentActivity={recentActivity} upcomingTours={upcomingTours} overdueTasks={overdueTasks} todayTasks={todayTasks} onSelectLead={setSelectedLeadId} settings={settings} saveSettings={saveSettings} />}
       {subview === 'leads' && <LeadsListView leads={leads} search={search} onSelectLead={setSelectedLeadId} saveLeads={saveLeads} waitlist={waitlist} />}
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} />}
+      {subview === 'properties' && <PropertiesView properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} settings={settings} saveSettings={saveSettings} showToast={showToast} />}
       {subview === 'submissions' && <SubmissionsView leads={leads} onSelectLead={setSelectedLeadId} updateSubmissionStatus={updateSubmissionStatus} />}
       {subview === 'blast' && <BlastView leads={leads} showToast={showToast} />}
       {subview === 'flags' && <FlagsView allTasks={allTasks} updateLead={updateLead} onSelectLead={setSelectedLeadId} showToast={showToast} />}
@@ -4140,6 +4252,421 @@ function BlastView({ leads, showToast }) {
           </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// PROPERTIES VIEW — manual pool of rentals + bulk CSV import + blocklist
+// ============================================================
+
+// Map of common BrightMLS / RESO CSV column names → our internal field names.
+// Case-insensitive; we lowercase headers before lookup. Multiple aliases per
+// field cover different export variations.
+const PROPERTY_CSV_FIELDS = {
+  id:                  ['listingid', 'listing id', 'mls', 'mls#', 'mls #', 'mlsnumber', 'listing key', 'listingkey'],
+  mls:                 ['listingid', 'listing id', 'mls', 'mls#', 'mls #', 'mlsnumber', 'listing key', 'listingkey'],
+  address:             ['streetaddress', 'street address', 'address', 'unparsedaddress', 'street name', 'streetname'],
+  unit:                ['unit', 'unitnumber', 'unit number', 'unit #', 'apt'],
+  neighborhood:        ['neighborhood', 'mlsareamajor', 'subdivision', 'subdivisionname', 'community'],
+  city:                ['city'],
+  zip:                 ['zip', 'zipcode', 'postalcode', 'postal code'],
+  price:               ['listprice', 'list price', 'price', 'currentprice'],
+  beds:                ['beds', 'bedrooms', 'bedroomstotal', 'bd'],
+  baths:               ['baths', 'bathrooms', 'bathroomstotaldecimal', 'bathroomsfull', 'ba'],
+  sqft:                ['sqft', 'sq ft', 'livingarea', 'aboveGradeFinishedArea', 'totalsqft', 'living area'],
+  photos:              ['photo', 'photourl', 'photo url', 'media', 'photos', 'image', 'imageurl', 'image url'],
+  list_office:         ['listofficename', 'list office name', 'list office', 'listingoffice', 'listingofficename', 'brokerage', 'office', 'companyname'],
+  listing_agent:       ['listagentfullname', 'list agent', 'listingagentname', 'agent', 'agent name', 'agentname'],
+  listing_agent_phone: ['listagentdirectphone', 'list agent direct phone', 'agentphone', 'agent phone'],
+  leasing_contact:     ['listagentemail', 'list agent email', 'agent email', 'agentemail'],
+  available_date:      ['availabilitydate', 'available date', 'availabledate', 'available'],
+  pet_policy:          ['petspermitted', 'pets', 'pet policy', 'petpolicy'],
+};
+
+// Tiny CSV parser — handles quoted fields with commas and escaped quotes.
+function parseCsv(text) {
+  const lines = [];
+  let cur = '';
+  let row = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { cur += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        cur += c;
+      }
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(cur); cur = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(cur); cur = '';
+        if (row.some((v) => v !== '')) lines.push(row);
+        row = [];
+      } else cur += c;
+    }
+  }
+  if (cur !== '' || row.length > 0) { row.push(cur); if (row.some((v) => v !== '')) lines.push(row); }
+  return lines;
+}
+
+function csvToProperties(csvText) {
+  const rows = parseCsv(csvText.trim());
+  if (rows.length === 0) return { properties: [], errors: ['No rows found in CSV'] };
+  const header = rows[0].map((h) => String(h || '').trim().toLowerCase());
+  const errors = [];
+
+  // Build a header → field-name map by checking each PROPERTY_CSV_FIELDS aliases.
+  const colMap = {};
+  for (const [field, aliases] of Object.entries(PROPERTY_CSV_FIELDS)) {
+    const aliasSet = new Set(aliases.map((a) => a.toLowerCase()));
+    const idx = header.findIndex((h) => aliasSet.has(h));
+    if (idx >= 0) colMap[field] = idx;
+  }
+  if (colMap.address == null) errors.push('No address column found. Looked for: ' + PROPERTY_CSV_FIELDS.address.join(', '));
+  if (colMap.price == null) errors.push('No price column found. Looked for: ' + PROPERTY_CSV_FIELDS.price.join(', '));
+
+  if (errors.length > 0) return { properties: [], errors };
+
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const get = (k) => colMap[k] != null ? String(row[colMap[k]] || '').trim() : '';
+    const photoRaw = get('photos');
+    const photos = photoRaw
+      ? photoRaw.split(/[,;|\s]+/).map((u) => u.trim()).filter((u) => u && /^https?:\/\//.test(u))
+      : [];
+    const mlsId = get('id') || get('mls');
+    const id = mlsId ? `p_${mlsId}` : `p_${Date.now()}_${r}_${Math.random().toString(36).slice(2, 6)}`;
+    const address = get('address');
+    if (!address) continue;
+    out.push({
+      id,
+      mls: get('mls') || null,
+      source: 'brightmls',
+      address,
+      unit: get('unit') || null,
+      neighborhood: get('neighborhood') || get('city') || null,
+      zip: get('zip') || null,
+      price: parseInt(get('price').replace(/[^\d.]/g, ''), 10) || 0,
+      beds: parseFloat(get('beds')) || 0,
+      baths: parseFloat(get('baths')) || 0,
+      sqft: get('sqft') ? parseInt(get('sqft').replace(/[^\d]/g, ''), 10) : null,
+      photos,
+      image: photos[0] || '',
+      list_office: get('list_office') || null,
+      listOffice: get('list_office') || null,
+      leasingOffice: get('list_office') || null,
+      listing_agent: get('listing_agent') || null,
+      listingAgent: get('listing_agent') || null,
+      listing_agent_phone: get('listing_agent_phone') || null,
+      listingAgentPhone: get('listing_agent_phone') || null,
+      leasing_contact: get('leasing_contact') || null,
+      leasingContact: get('leasing_contact') || null,
+      available_date: get('available_date') || null,
+      availableDate: get('available_date') || null,
+      pet_policy: get('pet_policy') || null,
+      petPolicy: get('pet_policy') || null,
+      status: 'active',
+    });
+  }
+  return { properties: out, errors: [] };
+}
+
+function PropertiesView({ properties, saveProperty, removeProperty, bulkImportProperties, settings, saveSettings, showToast }) {
+  const [tab, setTab] = useState('list');   // list | import | settings
+  const [statusFilter, setStatusFilter] = useState('active');
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState(null);
+
+  // CSV import state
+  const [csvText, setCsvText] = useState('');
+  const [preview, setPreview] = useState(null);     // { properties, errors }
+  const [busy, setBusy] = useState(false);
+
+  // Brokerage blocklist (lives in settings.excluded_brokerages as an array)
+  const blocklist = settings.excluded_brokerages || [];
+  const [blockText, setBlockText] = useState((blocklist || []).join('\n'));
+
+  const filtered = useMemo(() => {
+    return (properties || [])
+      .filter((p) => statusFilter === 'all' ? true : p.status === statusFilter)
+      .filter((p) => !search ||
+        p.address.toLowerCase().includes(search.toLowerCase()) ||
+        (p.neighborhood || '').toLowerCase().includes(search.toLowerCase()) ||
+        (p.listOffice || '').toLowerCase().includes(search.toLowerCase()) ||
+        (p.mls || '').toLowerCase().includes(search.toLowerCase())
+      );
+  }, [properties, statusFilter, search]);
+
+  // CSV import handlers
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const text = await f.text();
+    setCsvText(text);
+    setPreview(csvToProperties(text));
+  };
+  const onPaste = () => setPreview(csvToProperties(csvText));
+  const onConfirmImport = async () => {
+    if (!preview || preview.properties.length === 0) return;
+    setBusy(true);
+    const result = await bulkImportProperties(preview.properties);
+    setBusy(false);
+    showToast(`Imported ${result.imported} properties (${result.errors} errors)`);
+    setCsvText('');
+    setPreview(null);
+    setTab('list');
+  };
+
+  // Blocklist save
+  const onSaveBlocklist = async () => {
+    const list = blockText.split('\n').map((s) => s.trim()).filter(Boolean);
+    await saveSettings({ ...settings, excluded_brokerages: list });
+    showToast(`Saved ${list.length} blocked brokerage${list.length === 1 ? '' : 's'}`);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap gap-2 border-b border-slate-200">
+        {[
+          { k: 'list', label: 'Listings', count: properties.length },
+          { k: 'import', label: 'CSV Import' },
+          { k: 'settings', label: 'Brokerage Blocklist', count: blocklist.length },
+        ].map((t) => (
+          <button key={t.k} onClick={() => setTab(t.k)} className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px ${tab === t.k ? 'text-slate-900 border-slate-900' : 'text-slate-500 border-transparent hover:text-slate-900'}`}>
+            {t.label}{t.count != null && <span className="text-xs text-slate-400 ml-1.5">{t.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'list' && (
+        <>
+          <div className="flex flex-wrap gap-2 items-center">
+            {['active', 'inactive', 'leased', 'all'].map((k) => (
+              <button key={k} onClick={() => setStatusFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium ${statusFilter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>{k}</button>
+            ))}
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search address, neighborhood, brokerage…" className="flex-1 min-w-[200px] border border-slate-200 rounded-full px-4 py-1.5 text-sm focus:outline-none focus:border-slate-400" />
+            <Button size="sm" icon={Plus} onClick={() => setEditing({ status: 'active', source: 'manual', photos: [] })}>Add property</Button>
+          </div>
+
+          {filtered.length === 0 ? (
+            <EmptyState icon={Building2} title={properties.length === 0 ? 'No properties yet' : 'No matches'} desc={properties.length === 0 ? 'Import a CSV from BrightMLS or add a property manually.' : 'Try a different filter or search term.'} />
+          ) : (
+            <Card className="overflow-hidden">
+              {filtered.map((p, i) => (
+                <button key={p.id} onClick={() => setEditing(p)} className={`w-full text-left p-4 hover:bg-slate-50 flex items-center gap-4 ${i > 0 ? 'border-t border-slate-100' : ''}`}>
+                  {p.image
+                    ? <img src={p.image} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                    : <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center shrink-0"><Building2 className="w-4 h-4 text-slate-400" /></div>
+                  }
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="font-semibold text-slate-900 truncate">{p.address}</div>
+                      {p.status !== 'active' && <Pill tone="neutral">{p.status}</Pill>}
+                      {p.mls && <span className="text-[10px] text-slate-400 font-mono">{p.mls}</span>}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate mt-0.5">
+                      {p.neighborhood ? `${p.neighborhood} · ` : ''}{p.beds}bd · {p.baths}ba · {fmtCurrency(p.price)}/mo
+                      {p.listOffice ? ` · ${p.listOffice}` : ''}
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                </button>
+              ))}
+            </Card>
+          )}
+        </>
+      )}
+
+      {tab === 'import' && (
+        <div className="space-y-4">
+          <Card className="p-5">
+            <div className="text-sm text-slate-700 mb-3">
+              Upload a CSV exported from BrightMLS. Auto-maps standard RESO column names
+              (ListingId, ListPrice, BedroomsTotal, etc.). Existing properties with the same
+              MLS# are updated; new ones are inserted. Old properties stay (use status filter to archive).
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <label className="px-4 py-2 bg-slate-900 text-white rounded-full text-sm font-medium cursor-pointer hover:bg-slate-800 inline-flex items-center gap-2">
+                <Upload className="w-4 h-4" /> Choose CSV file
+                <input type="file" accept=".csv,text/csv" onChange={onFile} className="hidden" />
+              </label>
+              <span className="text-xs text-slate-400 self-center">or paste CSV text below</span>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <textarea
+              value={csvText}
+              onChange={(e) => setCsvText(e.target.value)}
+              rows={8}
+              placeholder="ListingId,ListPrice,StreetAddress,City,Zip,BedroomsTotal,BathroomsTotalDecimal,ListOfficeName&#10;PAPH...,2400,&quot;1420 Pine St&quot;,Philadelphia,19102,1,1,Acme Realty"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-slate-400 resize-none"
+            />
+            <div className="flex justify-end mt-3">
+              <Button size="sm" onClick={onPaste} disabled={!csvText.trim()}>Preview parse</Button>
+            </div>
+          </Card>
+
+          {preview && (
+            <Card className="p-5">
+              {preview.errors.length > 0 ? (
+                <div className="text-sm text-red-600">
+                  <div className="font-semibold mb-2">CSV parse problems:</div>
+                  <ul className="list-disc pl-5 space-y-1">
+                    {preview.errors.map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                </div>
+              ) : (
+                <>
+                  <div className="text-sm mb-3">
+                    <span className="font-semibold text-slate-900">{preview.properties.length}</span>
+                    <span className="text-slate-500"> properties ready to import. Sample:</span>
+                  </div>
+                  <div className="border border-slate-200 rounded-lg overflow-hidden text-xs">
+                    <div className="grid grid-cols-5 gap-2 px-3 py-2 bg-slate-50 font-semibold text-slate-600">
+                      <span>Address</span><span>Beds/Baths</span><span>Price</span><span>Brokerage</span><span>MLS</span>
+                    </div>
+                    {preview.properties.slice(0, 6).map((p, i) => (
+                      <div key={i} className="grid grid-cols-5 gap-2 px-3 py-2 border-t border-slate-100 text-slate-700">
+                        <span className="truncate">{p.address}</span>
+                        <span>{p.beds}/{p.baths}</span>
+                        <span>{fmtCurrency(p.price)}</span>
+                        <span className="truncate">{p.list_office || '—'}</span>
+                        <span className="font-mono text-slate-400 truncate">{p.mls || '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex justify-end mt-4">
+                    <Button onClick={onConfirmImport} disabled={busy}>
+                      {busy ? 'Importing…' : `Import ${preview.properties.length} properties`}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
+      {tab === 'settings' && (
+        <Card className="p-5 space-y-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-900 mb-1">Blocked brokerages</div>
+            <div className="text-xs text-slate-500">
+              One brokerage name per line. Listings from these brokerages are hidden from
+              all leads. Match is case-insensitive but otherwise exact — paste the exact name
+              as it appears in BrightMLS&apos;s &ldquo;List Office Name&rdquo; field.
+            </div>
+          </div>
+          <textarea
+            value={blockText}
+            onChange={(e) => setBlockText(e.target.value)}
+            rows={10}
+            placeholder="Acme Realty&#10;BadBroker LLC&#10;..."
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 resize-none"
+          />
+          <div className="flex justify-end">
+            <Button onClick={onSaveBlocklist}>Save blocklist</Button>
+          </div>
+        </Card>
+      )}
+
+      {editing && <PropertyFormModal property={editing} onClose={() => setEditing(null)} onSave={async (p) => { await saveProperty(p); setEditing(null); showToast('Property saved'); }} onDelete={editing.id ? async () => { if (confirm('Delete this property?')) { await removeProperty(editing.id); setEditing(null); showToast('Property deleted'); } } : null} />}
+    </div>
+  );
+}
+
+function PropertyFormModal({ property, onClose, onSave, onDelete }) {
+  const [form, setForm] = useState({
+    id: property.id || '',
+    mls: property.mls || '',
+    address: property.address || '',
+    unit: property.unit || '',
+    neighborhood: property.neighborhood || '',
+    zip: property.zip || '',
+    price: property.price || '',
+    beds: property.beds || '',
+    baths: property.baths || '',
+    sqft: property.sqft || '',
+    photos: (property.photos || []).join('\n'),
+    listOffice: property.listOffice || property.leasingOffice || '',
+    listingAgent: property.listingAgent || '',
+    listingAgentPhone: property.listingAgentPhone || '',
+    leasingContact: property.leasingContact || '',
+    availableDate: property.availableDate || '',
+    petPolicy: property.petPolicy || '',
+    notes: property.notes || '',
+    status: property.status || 'active',
+  });
+  const upd = (k, v) => setForm({ ...form, [k]: v });
+  const isNew = !property.id;
+  const submit = async () => {
+    if (!form.address || !form.price) return;
+    await onSave({
+      ...form,
+      price: Number(form.price),
+      beds: Number(form.beds),
+      baths: Number(form.baths),
+      sqft: form.sqft ? Number(form.sqft) : null,
+      photos: form.photos.split('\n').map((s) => s.trim()).filter((s) => s && /^https?:\/\//.test(s)),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
+      <div className="bg-white w-full md:max-w-2xl md:rounded-2xl rounded-t-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
+          <div>
+            <div className="font-semibold text-slate-900 text-sm">{isNew ? 'Add property' : 'Edit property'}</div>
+            {!isNew && <div className="text-xs text-slate-500">{form.mls || form.id}</div>}
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <FormField label="Address *"><input value={form.address} onChange={(e) => upd('address', e.target.value)} className="form-input" placeholder="1420 Pine St" /></FormField>
+            <FormField label="Unit"><input value={form.unit} onChange={(e) => upd('unit', e.target.value)} className="form-input" placeholder="3B" /></FormField>
+            <FormField label="Neighborhood"><input value={form.neighborhood} onChange={(e) => upd('neighborhood', e.target.value)} className="form-input" placeholder="Rittenhouse" /></FormField>
+            <FormField label="ZIP"><input value={form.zip} onChange={(e) => upd('zip', e.target.value)} className="form-input" placeholder="19102" /></FormField>
+            <FormField label="Price ($/mo) *"><input type="number" value={form.price} onChange={(e) => upd('price', e.target.value)} className="form-input" placeholder="2400" /></FormField>
+            <FormField label="Sqft"><input type="number" value={form.sqft} onChange={(e) => upd('sqft', e.target.value)} className="form-input" placeholder="720" /></FormField>
+            <FormField label="Beds *"><input type="number" step="0.5" value={form.beds} onChange={(e) => upd('beds', e.target.value)} className="form-input" placeholder="1" /></FormField>
+            <FormField label="Baths *"><input type="number" step="0.5" value={form.baths} onChange={(e) => upd('baths', e.target.value)} className="form-input" placeholder="1" /></FormField>
+            <FormField label="MLS #"><input value={form.mls} onChange={(e) => upd('mls', e.target.value)} className="form-input" placeholder="PAPH2301420" /></FormField>
+            <FormField label="Status">
+              <select value={form.status} onChange={(e) => upd('status', e.target.value)} className="form-input">
+                <option value="active">Active</option>
+                <option value="inactive">Inactive (hidden)</option>
+                <option value="leased">Leased</option>
+              </select>
+            </FormField>
+            <FormField label="Brokerage / List Office"><input value={form.listOffice} onChange={(e) => upd('listOffice', e.target.value)} className="form-input" placeholder="Rittenhouse Residential" /></FormField>
+            <FormField label="Listing Agent"><input value={form.listingAgent} onChange={(e) => upd('listingAgent', e.target.value)} className="form-input" /></FormField>
+            <FormField label="Agent Phone"><input value={form.listingAgentPhone} onChange={(e) => upd('listingAgentPhone', e.target.value)} className="form-input" /></FormField>
+            <FormField label="Leasing Email"><input value={form.leasingContact} onChange={(e) => upd('leasingContact', e.target.value)} className="form-input" /></FormField>
+            <FormField label="Available Date"><input type="date" value={form.availableDate || ''} onChange={(e) => upd('availableDate', e.target.value)} className="form-input" /></FormField>
+            <FormField label="Pet Policy"><input value={form.petPolicy} onChange={(e) => upd('petPolicy', e.target.value)} className="form-input" placeholder="Cats OK, no dogs" /></FormField>
+          </div>
+          <FormField label="Photo URLs (one per line)">
+            <textarea value={form.photos} onChange={(e) => upd('photos', e.target.value)} rows={3} className="form-input resize-none font-mono text-xs" placeholder="https://images.unsplash.com/..." />
+          </FormField>
+          <FormField label="Internal notes">
+            <textarea value={form.notes} onChange={(e) => upd('notes', e.target.value)} rows={2} className="form-input resize-none" placeholder="Anything only you should see…" />
+          </FormField>
+          <div className="flex gap-2 pt-2">
+            {onDelete && <Button variant="danger" onClick={onDelete}>Delete</Button>}
+            <div className="flex-1" />
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button onClick={submit} disabled={!form.address || !form.price}>{isNew ? 'Add property' : 'Save changes'}</Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

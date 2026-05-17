@@ -11,7 +11,7 @@ export async function GET(request) {
 
     if (resource === 'all') {
       // Load everything needed to hydrate the app
-      const [leads, tours, slots, waitlist, messages, activities, tasks, submissions, nudges, settingsRow] =
+      const [leads, tours, slots, waitlist, messages, activities, tasks, submissions, nudges, properties, settingsRow] =
         await Promise.all([
           db.from('leads').select('*').order('created_at', { ascending: false }),
           db.from('tours').select('*'),
@@ -22,6 +22,7 @@ export async function GET(request) {
           db.from('tasks').select('*'),
           db.from('submissions').select('*'),
           db.from('scheduled_nudges').select('*'),
+          db.from('properties').select('*').order('created_at', { ascending: false }),
           db.from('settings').select('*').eq('id', 1).single(),
         ]);
 
@@ -35,6 +36,7 @@ export async function GET(request) {
         tasks: tasks.data || [],
         submissions: submissions.data || [],
         scheduledNudges: nudges.data || [],
+        properties: properties.data || [],
         settings: settingsRow.data || null,
       });
     }
@@ -185,6 +187,21 @@ export async function POST(request) {
         if (error) throw error;
         return NextResponse.json({ ok: true });
       }
+
+      case 'upsert_property': {
+        const { property } = body;
+        const { data, error } = await db.from('properties').upsert(property).select().single();
+        if (error) throw error;
+        return NextResponse.json({ property: data });
+      }
+
+      case 'delete_property': {
+        const { id } = body;
+        const { error } = await db.from('properties').delete().eq('id', id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true });
+      }
+
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
