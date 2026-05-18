@@ -4504,20 +4504,29 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 // LEAD DETAIL
 // ============================================================
 // Curated-link panel — the agent's primary action for a new lead.
-// Workflow: paste a BrightMLS portal URL → click Send → app SMSes + emails
-// the lead a branded /c/[token] page that embeds the portal in an iframe.
-// Lead browses photos in the portal, then replies via SMS to schedule.
-// All scheduling conversation lands in the agent's inbox.
+// Two inputs:
+//   1. BrightMLS portal URL (lead sees this in iframe to browse photos)
+//   2. Addresses — one per line (lead checks the ones they want to tour)
+// On send: app SMSes + emails the lead a branded /c/[token] page.
 function CuratedLinkPanel({ lead, updateLead, showToast }) {
   const [url, setUrl] = useState(lead.raw?.curated_portal_url || '');
+  const [addressesText, setAddressesText] = useState(
+    Array.isArray(lead.raw?.curated_addresses) ? lead.raw.curated_addresses.join('\n') : ''
+  );
   const [busy, setBusy] = useState(false);
   const alreadySent = !!lead.curatedLinkSentAt;
   const firstName = (lead.fullName || '').split(' ')[0];
+
+  const addresses = addressesText.split('\n').map(s => s.trim()).filter(Boolean);
 
   const onSend = async () => {
     const cleanUrl = url.trim();
     if (!cleanUrl || !/^https?:\/\//.test(cleanUrl)) {
       showToast('Paste a valid BrightMLS portal URL first');
+      return;
+    }
+    if (addresses.length === 0) {
+      showToast('Add at least one address');
       return;
     }
     setBusy(true);
@@ -4530,13 +4539,13 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       'https://rentalsphilly.vercel.app';
     const curatedUrl = `${appBase}/c/${token}`;
 
-    const smsBody = `Rentals Philly: Your curated rentals are ready — browse photos & reply with the ones you want to tour: ${curatedUrl}`;
-    const emailSubject = 'Your hand-picked Philly rentals';
+    const smsBody = `Rentals Philly: ${addresses.length} hand-picked rentals for you — view photos & pick which you want to tour: ${curatedUrl}`;
+    const emailSubject = `Your hand-picked Philly rentals (${addresses.length})`;
     const emailBody =
       `Hi ${firstName},\n\n` +
-      `I've hand-picked rentals that match your criteria. Click below to browse photos and details:\n\n` +
+      `I picked ${addresses.length} rentals that match your criteria. Click below to view photos and pick which ones you'd like to tour, plus times that work for you:\n\n` +
       `${curatedUrl}\n\n` +
-      `When you find ones you'd like to tour, just reply to this email or text me back with the addresses and what days/times work for you. I'll get them on the calendar.\n\n` +
+      `If anything looks off or you want me to refine the list, just reply to this email.\n\n` +
       `— Morgan`;
 
     try {
@@ -4571,6 +4580,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
           ...(lead.raw || {}),
           curated_token: token,
           curated_portal_url: cleanUrl,
+          curated_addresses: addresses,
           curated_link_url: curatedUrl,
           curated_link_sent_at: new Date().toISOString(),
         },
@@ -4582,10 +4592,10 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
           id: `a_${Date.now()}`,
           type: 'curated-link-sent',
           timestamp: new Date().toISOString(),
-          message: `Curated link sent to ${firstName}`,
+          message: `Curated link sent to ${firstName} (${addresses.length} addresses)`,
         }],
       });
-      showToast('Curated link sent — lead got SMS + email');
+      showToast(`Sent · ${addresses.length} ${addresses.length === 1 ? 'address' : 'addresses'}`);
     } catch (err) {
       console.error('[curated link] send failed', err);
       showToast('Send failed — check logs');
@@ -4595,7 +4605,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
   };
 
   return (
-    <Card className="p-5 space-y-3 bg-amber-50 border-amber-200">
+    <Card className="p-5 space-y-4 bg-amber-50 border-amber-200">
       <div className="flex items-start gap-3">
         <div className="w-8 h-8 rounded-lg bg-amber-200 text-amber-900 flex items-center justify-center shrink-0">
           <Sparkles className="w-4 h-4" />
@@ -4605,27 +4615,53 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
             {alreadySent ? 'Update curated link' : 'Send curated link'}
           </div>
           <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-            In BrightMLS Matrix: run a search for this lead → <strong>Share → Send to client</strong> →
-            copy the URL → paste below. Lead will get a branded page with the portal embedded; replies
-            land in your inbox.
+            Lead gets a branded page with the BrightMLS portal embedded for photos +
+            checkboxes to pick which units they want to tour + a time picker.
           </div>
         </div>
       </div>
-      <input
-        type="url"
-        value={url}
-        onChange={(e) => setUrl(e.target.value)}
-        placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
-        className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono"
-      />
+
+      <div>
+        <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+          BrightMLS portal URL
+        </label>
+        <input
+          type="url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
+          className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+          Addresses — one per line ({addresses.length} parsed)
+        </label>
+        <textarea
+          value={addressesText}
+          onChange={(e) => setAddressesText(e.target.value)}
+          rows={6}
+          placeholder={`1420 Pine St #3B
+234 N 3rd St
+876 S 4th St
+1500 Locust St #12A`}
+          className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono resize-y"
+        />
+        <div className="text-[11px] text-slate-500 mt-1.5">
+          Just paste addresses — photos live in the BrightMLS portal. Lead checks the ones they want to tour.
+        </div>
+      </div>
+
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] text-slate-500">
           Sends to: <span className="font-mono">{lead.phone}</span> · <span className="font-mono">{lead.email}</span>
         </div>
-        <Button onClick={onSend} disabled={busy || !url.trim()}>
-          {busy ? 'Sending…' : (alreadySent ? 'Re-send' : 'Send link')}
+        <Button onClick={onSend} disabled={busy || !url.trim() || addresses.length === 0}>
+          {busy ? 'Sending…' : (alreadySent ? `Re-send · ${addresses.length}` : `Send · ${addresses.length} ${addresses.length === 1 ? 'address' : 'addresses'}`)}
         </Button>
       </div>
+
       {alreadySent && (
         <div className="text-[11px] text-slate-500 pt-2 border-t border-amber-200">
           Last sent {new Date(lead.curatedLinkSentAt).toLocaleString()} ·{' '}
@@ -5012,6 +5048,24 @@ function InboxView({ leads, onSelectLead }) {
     return ids;
   }, [leads]);
 
+  // Today action cards — what you actually need to do.
+  const newLeadsNoCurate = useMemo(() => leads.filter(l =>
+    l.stage === 'new' && !l.curatedLinkSentAt
+  ), [leads]);
+
+  const requestedTours = useMemo(() => leads.filter(l =>
+    l.stage === 'tour-requested' || (l.tours || []).some(t => t.status === 'requested')
+  ), [leads]);
+
+  const toursToday = useMemo(() => {
+    const today = new Date().toDateString();
+    return leads.flatMap(l => (l.tours || []).filter(t => {
+      if (t.status === 'cancelled' || t.status === 'completed') return false;
+      const d = t.date ? new Date(t.date + 'T00:00:00').toDateString() : null;
+      return d === today;
+    }).map(t => ({ ...t, lead: l })));
+  }, [leads]);
+
   const filtered = allMessages.filter(m => {
     if (filter === 'needs-reply') return needsReplyLeadIds.has(m.lead.id) && m.direction === 'inbound';
     if (filter === 'sms') return m.channel === 'sms';
@@ -5021,6 +5075,81 @@ function InboxView({ leads, onSelectLead }) {
 
   return (
     <div>
+      {/* TODAY — actionable cards at the top */}
+      {(newLeadsNoCurate.length > 0 || requestedTours.length > 0 || toursToday.length > 0) && (
+        <div className="mb-6 space-y-3">
+          {newLeadsNoCurate.length > 0 && (
+            <button
+              onClick={() => onSelectLead(newLeadsNoCurate[0].id)}
+              className="w-full text-left rounded-2xl p-4 flex items-center gap-4 border-2 transition-all"
+              style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}
+            >
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white" style={{ backgroundColor: 'var(--brand-gold)' }}>
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900 text-sm">
+                  {newLeadsNoCurate.length} new {newLeadsNoCurate.length === 1 ? 'lead is' : 'leads are'} waiting for a curated link
+                </div>
+                <div className="text-xs text-slate-600 mt-0.5 truncate">
+                  Send {newLeadsNoCurate.slice(0, 2).map(l => l.fullName).join(', ')}{newLeadsNoCurate.length > 2 ? ` +${newLeadsNoCurate.length - 2}` : ''} their BrightMLS portal
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+            </button>
+          )}
+          {requestedTours.length > 0 && (
+            <button
+              onClick={() => onSelectLead(requestedTours[0].id)}
+              className="w-full text-left rounded-2xl p-4 flex items-center gap-4 border-2 border-blue-200 bg-blue-50 transition-all hover:border-blue-300"
+            >
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
+                <Calendar className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900 text-sm">
+                  {requestedTours.length} {requestedTours.length === 1 ? 'lead has' : 'leads have'} requested tours
+                </div>
+                <div className="text-xs text-slate-600 mt-0.5 truncate">
+                  Confirm specific times: {requestedTours.slice(0, 2).map(l => l.fullName).join(', ')}{requestedTours.length > 2 ? ` +${requestedTours.length - 2}` : ''}
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+            </button>
+          )}
+          {needsReplyLeadIds.size > 0 && (
+            <button
+              onClick={() => setFilter('needs-reply')}
+              className="w-full text-left rounded-2xl p-4 flex items-center gap-4 border-2 border-red-200 bg-red-50 transition-all hover:border-red-300"
+            >
+              <div className="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center shrink-0">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900 text-sm">
+                  {needsReplyLeadIds.size} {needsReplyLeadIds.size === 1 ? 'conversation needs' : 'conversations need'} a reply
+                </div>
+                <div className="text-xs text-slate-600 mt-0.5">Leads are waiting — reply via text or email</div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+            </button>
+          )}
+          {toursToday.length > 0 && (
+            <div className="rounded-2xl p-4 border-2 border-emerald-200 bg-emerald-50 flex items-center gap-4">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <CalendarDays className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900 text-sm">{toursToday.length} {toursToday.length === 1 ? 'tour' : 'tours'} today</div>
+                <div className="text-xs text-slate-600 mt-0.5 truncate">
+                  {toursToday.slice(0, 3).map(t => `${t.time || ''} ${t.lead.fullName.split(' ')[0]}`).join(' · ')}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2 mb-4">
         {[
           { k: 'needs-reply', label: 'Needs reply', count: needsReplyLeadIds.size },

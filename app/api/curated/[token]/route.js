@@ -55,9 +55,13 @@ export async function GET(_request, ctx) {
       leadId: lead.id,
       firstName: (lead.full_name || '').split(' ')[0] || 'there',
       portalUrl: lead.raw?.curated_portal_url || null,
+      // Preferred: simple list of address strings ("1420 Pine St #3B").
+      addresses: Array.isArray(lead.raw?.curated_addresses) ? lead.raw.curated_addresses : [],
+      // Legacy: structured per-property objects (from older flow).
       properties: Array.isArray(lead.raw?.curated_properties) ? lead.raw.curated_properties : [],
       agentName,
       agentPhone,
+      alreadySubmitted: !!lead.raw?.curated_submitted_at,
     },
     {
       // Don't cache aggressively — lead might revisit after we update properties.
