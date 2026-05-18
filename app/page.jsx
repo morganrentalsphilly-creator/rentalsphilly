@@ -794,7 +794,7 @@ export default function App() {
   const [timeOffset, setTimeOffset] = useState(0);
   const [currentLead, setCurrentLead] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  const [adminSubview, setAdminSubview] = useState('dashboard');
+  const [adminSubview, setAdminSubview] = useState('inbox');
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [toast, setToast] = useState(null);
   // Auth state for the admin views. `session` is the Supabase session (or null);
@@ -1730,6 +1730,43 @@ export default function App() {
 }
 
 // ============================================================
+// BRAND LOGO — uses /logo.png if present, falls back to a styled text mark
+// that matches the brand colors so we can ship the redesign without
+// blocking on the image file.
+// ============================================================
+function Logo({ size = 'md', white = false, className = '' }) {
+  // Size presets — applied to the image OR the text fallback.
+  const sizes = {
+    xs: { img: 'h-5', text: 'text-[11px]' },
+    sm: { img: 'h-6', text: 'text-xs' },
+    md: { img: 'h-8', text: 'text-base' },
+    lg: { img: 'h-12', text: 'text-2xl' },
+    xl: { img: 'h-20', text: 'text-4xl md:text-5xl' },
+  };
+  const s = sizes[size] || sizes.md;
+  const [imgFailed, setImgFailed] = useState(false);
+
+  if (imgFailed) {
+    // Styled text fallback — gold "RENTALS" over dark "PHILLY", echoing the logo.
+    return (
+      <div className={`inline-flex items-baseline gap-0 leading-none font-bold tracking-[0.02em] ${s.text} ${className}`}>
+        <span style={{ color: 'var(--brand-gold)' }}>RENTALS</span>
+        <span className={white ? 'text-white' : 'text-brand-ink'}>PHILLY</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src="/logo.png"
+      alt="Rentals Philly"
+      onError={() => setImgFailed(true)}
+      className={`${s.img} w-auto select-none ${white ? 'brightness-0 invert' : ''} ${className}`}
+      draggable={false}
+    />
+  );
+}
+
+// ============================================================
 // NAV
 // ============================================================
 function Nav({ view, setView }) {
@@ -1756,22 +1793,28 @@ function Nav({ view, setView }) {
   const isAdmin = view === 'admin';
 
   return (
-    <nav className="border-b border-slate-200 sticky top-0 bg-white/90 backdrop-blur-md z-40">
-      <div className="max-w-6xl mx-auto px-6 md:px-8 h-14 flex items-center justify-between">
-        <button onClick={() => setView('landing')} className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-slate-900 flex items-center justify-center">
-            <Home className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
-          </div>
-          <span className="font-semibold text-slate-900 tracking-tight text-[15px]">
-            {isAdmin ? 'Rentals Philly · Admin' : 'Rentals Philly'}
-          </span>
+    <nav className="border-b border-slate-200 sticky top-0 bg-white/95 backdrop-blur-md z-40">
+      <div className="max-w-7xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between">
+        <button onClick={() => setView('landing')} className="flex items-center gap-3 -ml-1 px-1 py-1 rounded-lg hover:bg-slate-50 transition-colors">
+          <Logo size="md" />
+          {isAdmin && (
+            <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-slate-900 text-white">
+              Admin
+            </span>
+          )}
         </button>
         {isAdmin ? (
-          <button onClick={() => { setView('landing'); if (typeof window !== 'undefined') window.location.hash = ''; }} className="px-3 py-1.5 text-sm rounded-full text-slate-500 hover:text-slate-900 transition-colors">
+          <button onClick={() => { setView('landing'); if (typeof window !== 'undefined') window.location.hash = ''; }} className="px-3 py-1.5 text-sm rounded-full text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors">
             Exit admin
           </button>
         ) : (
-          <button onClick={() => setView('landing')} className="px-3 py-1.5 text-sm rounded-full text-slate-900 font-medium">Find a home</button>
+          <button
+            onClick={() => setView('intake')}
+            className="px-4 py-2 text-sm rounded-full font-semibold text-white hover:bg-brand-gold-hover transition-colors"
+            style={{ backgroundColor: 'var(--brand-gold)' }}
+          >
+            Find a rental
+          </button>
         )}
       </div>
     </nav>
@@ -1784,51 +1827,72 @@ function Nav({ view, setView }) {
 function Landing({ onStart }) {
   return (
     <div>
-      <div className="max-w-6xl mx-auto px-6 md:px-8">
-        <div className="pt-24 md:pt-32 pb-20 md:pb-24">
-          <div className="max-w-3xl">
-            <Pill icon={Sparkles} className="mb-8">Philadelphia rentals</Pill>
-            <h1 className="text-5xl md:text-7xl font-semibold text-slate-900 tracking-[-0.03em] leading-[1.02] mb-6">
-              Your next home,<br />without the noise.
+      {/* HERO */}
+      <div className="relative overflow-hidden">
+        {/* Soft gradient backdrop in brand tones */}
+        <div className="absolute inset-0 bg-gradient-to-br from-white via-white to-[#f5ecdc]/40 pointer-events-none" aria-hidden />
+        <div className="relative max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-24 pb-16 md:pb-24">
+          <div className="flex justify-center mb-10 md:mb-12">
+            <Logo size="xl" />
+          </div>
+          <div className="max-w-3xl mx-auto text-center">
+            <h1 className="text-4xl md:text-6xl font-semibold text-brand-ink tracking-[-0.03em] leading-[1.05] mb-5">
+              Hand-picked Philly rentals,<br className="hidden md:block" />
+              <span style={{ color: 'var(--brand-gold)' }}> scheduled in 2 minutes.</span>
             </h1>
-            <p className="text-lg md:text-xl text-slate-600 leading-relaxed mb-10 max-w-xl">
-              Tell us what you're looking for. We'll hand-match you with rentals that actually fit — and handle the tours, paperwork, and everything in between.
+            <p className="text-lg md:text-xl text-slate-600 leading-relaxed mb-9 max-w-2xl mx-auto">
+              Tell us what you&apos;re looking for. We&apos;ll match you with rentals that actually fit and lock in your tour times — no scrolling endless listings.
             </p>
-            <Button size="xl" iconRight={ArrowRight} onClick={onStart}>Start your search</Button>
+            <button
+              onClick={onStart}
+              className="inline-flex items-center gap-2 px-7 py-4 text-base font-semibold text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+            >
+              Find my rental
+              <ArrowRight className="w-4 h-4" />
+            </button>
+            <div className="text-xs text-slate-500 mt-4">Free · 2-minute form · Hand-picked by your agent</div>
           </div>
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 md:px-8 py-20 md:py-24">
-        <div className="mb-12 max-w-2xl">
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">How it works</div>
-          <h2 className="text-3xl md:text-5xl font-semibold text-slate-900 tracking-tight leading-[1.1]">Three steps from searching to moving in.</h2>
+      {/* HOW IT WORKS */}
+      <div className="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-24">
+        <div className="text-center mb-12 md:mb-14">
+          <div className="text-xs font-semibold uppercase tracking-[0.15em] mb-3" style={{ color: 'var(--brand-gold)' }}>How it works</div>
+          <h2 className="text-3xl md:text-4xl font-semibold text-brand-ink tracking-tight leading-tight">Three steps. That&apos;s it.</h2>
         </div>
-        <div className="grid md:grid-cols-3 gap-4">
+        <div className="grid md:grid-cols-3 gap-5">
           {[
-            { icon: FileText, title: 'Tell us your story', desc: 'A short form — budget, timeline, must-haves. Takes 2 minutes.' },
-            { icon: Building2, title: 'See curated listings', desc: 'Only homes that fit your criteria. Select up to 5 to tour in one outing.' },
-            { icon: Calendar, title: 'Tour, apply, move in', desc: 'We coordinate tours, handle the leasing office, and guide you through the application.' },
+            { icon: FileText,  title: 'Tell us what you want', desc: 'Budget, beds, neighborhoods, move-in date. Two minutes max.' },
+            { icon: Sparkles,  title: 'Get a personalized link', desc: 'Your agent hand-picks rentals that actually fit and texts you a private portal.' },
+            { icon: Calendar,  title: 'Pick a tour time', desc: 'Reply with the ones you want to see. Confirmation + reminders by SMS — done.' },
           ].map((f, i) => (
-            <Card key={i} className="p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center">
-                  <f.icon className="w-4 h-4" />
-                </div>
-                <div className="text-xs font-semibold text-slate-400 tracking-wider">STEP {i + 1}</div>
+            <div key={i} className="relative bg-white rounded-2xl border border-slate-200 p-7 hover:border-slate-300 transition-colors">
+              <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5" style={{ backgroundColor: 'var(--brand-gold-soft)', color: 'var(--brand-gold)' }}>
+                <f.icon className="w-5 h-5" strokeWidth={2} />
               </div>
-              <div className="font-semibold text-slate-900 mb-2 text-lg">{f.title}</div>
+              <div className="text-[10px] font-semibold text-slate-400 tracking-[0.15em] uppercase mb-1.5">Step {i + 1}</div>
+              <div className="font-semibold text-brand-ink mb-1.5 text-lg">{f.title}</div>
               <div className="text-[15px] text-slate-600 leading-relaxed">{f.desc}</div>
-            </Card>
+            </div>
           ))}
         </div>
       </div>
 
-      <div className="border-t border-slate-200">
-        <div className="max-w-4xl mx-auto px-6 md:px-8 py-20 md:py-24 text-center">
-          <h2 className="text-3xl md:text-5xl font-semibold text-slate-900 tracking-tight leading-[1.1] mb-6">Ready when you are.</h2>
-          <p className="text-lg text-slate-600 mb-10 max-w-xl mx-auto">Two-minute form. Hand-matched listings. A realtor in your corner from search to signed lease.</p>
-          <Button size="xl" iconRight={ArrowRight} onClick={onStart}>Start your search</Button>
+      {/* CLOSING CTA */}
+      <div className="border-t border-slate-200 bg-brand-ink text-white">
+        <div className="max-w-4xl mx-auto px-5 md:px-8 py-16 md:py-20 text-center">
+          <h2 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight mb-4">Ready when you are.</h2>
+          <p className="text-lg text-slate-300 mb-8 max-w-xl mx-auto">A real agent. Curated listings. Your tour times locked in by text.</p>
+          <button
+            onClick={onStart}
+            className="inline-flex items-center gap-2 px-7 py-4 text-base font-semibold text-brand-ink rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
+            style={{ backgroundColor: 'var(--brand-gold)' }}
+          >
+            Find my rental
+            <ArrowRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
@@ -2145,14 +2209,19 @@ function BudgetRange({ min, max, onChange, lo = 500, hi = 5000, step = 100 }) {
 // Tour availability — multi-select chip picker. Stored as an array of strings
 // in lead.tour_availability. The agent sees these windows in the lead detail
 // when scheduling so they only offer slots that work for the lead.
+// Specific, actionable showing windows. These map to times Morgan typically
+// runs tours so the agent can book directly within a chosen window without
+// going back to the lead. Each option is a concrete day + 2-hour block.
 const TOUR_WINDOWS = [
-  { id: 'weekday-morning',   label: 'Weekday mornings',    sub: '8a – 12p' },
-  { id: 'weekday-afternoon', label: 'Weekday afternoons',  sub: '12p – 5p' },
-  { id: 'weekday-evening',   label: 'Weekday evenings',    sub: '5p – 8p' },
-  { id: 'sat-morning',       label: 'Saturday mornings',   sub: '8a – 12p' },
-  { id: 'sat-afternoon',     label: 'Saturday afternoons', sub: '12p – 5p' },
-  { id: 'sun-morning',       label: 'Sunday mornings',     sub: '8a – 12p' },
-  { id: 'sun-afternoon',     label: 'Sunday afternoons',   sub: '12p – 5p' },
+  { id: 'tue-eve',    label: 'Tuesday evening',    sub: '5 – 7 PM' },
+  { id: 'wed-eve',    label: 'Wednesday evening',  sub: '5 – 7 PM' },
+  { id: 'thu-eve',    label: 'Thursday evening',   sub: '5 – 7 PM' },
+  { id: 'fri-eve',    label: 'Friday evening',     sub: '5 – 7 PM' },
+  { id: 'sat-am',     label: 'Saturday morning',   sub: '10 AM – 12 PM' },
+  { id: 'sat-early',  label: 'Saturday early afternoon', sub: '12 – 2 PM' },
+  { id: 'sat-late',   label: 'Saturday late afternoon',  sub: '2 – 4 PM' },
+  { id: 'sun-early',  label: 'Sunday early afternoon',   sub: '12 – 2 PM' },
+  { id: 'sun-late',   label: 'Sunday late afternoon',    sub: '2 – 4 PM' },
 ];
 
 function TourAvailabilityPicker({ value, onChange }) {
@@ -2310,17 +2379,6 @@ function IntakeForm({ onSubmit, onBack }) {
         <AreasPicker
           value={data.areas}
           onChange={(v) => update('areas', v)}
-        />
-      )
-    },
-    {
-      title: 'When are you free to tour?',
-      subtitle: 'Pick all the windows that work — we\'ll book showings within these.',
-      valid: () => Array.isArray(data.tourAvailability) && data.tourAvailability.length > 0,
-      fields: (
-        <TourAvailabilityPicker
-          value={data.tourAvailability}
-          onChange={(v) => update('tourAvailability', v)}
         />
       )
     },
@@ -3036,56 +3094,75 @@ function BookingConfirmed({ lead, onDone }) {
 // coming via SMS + email shortly. Replaces the previous "here are 8 matches"
 // screen since real matched listings (with photos) require BrightMLS API
 // access we don't have yet.
-function CuratingConfirmed({ lead, agentName, onDone }) {
+function CuratingConfirmed({ lead, agentName /* unused, onDone */ }) {
   const firstName = (lead.fullName || '').split(' ')[0] || 'there';
-  const agent = agentName && agentName !== '[Your name]' ? agentName : 'your agent';
-  const windowsByLabel = (lead.tourAvailability || [])
-    .map((id) => TOUR_WINDOWS.find((w) => w.id === id)?.label)
-    .filter(Boolean);
+  const agentLabel = agentName && agentName !== '[Your name]' ? agentName : 'Your agent';
+  const subline = `${agentLabel} is hand-picking rentals that match your criteria. Expect a personalized link by text and email within a few hours — you'll be able to pick which ones to tour and a time that works.`;
+
+  // Pretty bed/bath summary that handles ranges + studios + 4+ caps.
+  const bedSummary = lead.bedsMin === lead.bedsMax
+    ? (lead.bedsMin === '0' ? 'Studio' : `${lead.bedsMin} bd`)
+    : `${lead.bedsMin === '0' ? 'Studio' : lead.bedsMin}–${lead.bedsMax === '4' ? '4+' : lead.bedsMax} bd`;
+  const bathSummary = lead.bathsMin === lead.bathsMax
+    ? `${lead.bathsMin} ba`
+    : `${lead.bathsMin}–${lead.bathsMax === '3' ? '3+' : lead.bathsMax} ba`;
+
   return (
     <div className="max-w-xl mx-auto px-6 md:px-8 py-16">
-      <div className="text-center mb-8">
+      <div className="text-center mb-10">
         <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6">
           <CheckCircle2 className="w-6 h-6" strokeWidth={2.5} />
         </div>
-        <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight mb-4">
+        <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight mb-3">
           Got it, {firstName}.
         </h1>
-        <p className="text-slate-600 leading-relaxed max-w-md mx-auto">
-          {agent} is hand-picking rentals that match your criteria. You&apos;ll get a
-          personalized link via text and email within a few hours.
-        </p>
+        <p className="text-slate-600 leading-relaxed max-w-md mx-auto">{subline}</p>
       </div>
 
-      <Card className="p-5 space-y-4 mb-6">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Your criteria</div>
-          <div className="text-sm text-slate-700 space-y-1">
-            <div><span className="text-slate-500">Move-in:</span> {fmtDate(lead.moveInDate)}</div>
-            <div><span className="text-slate-500">Budget:</span> ${Number(lead.budgetMin || 0).toLocaleString()} – ${Number(lead.budgetMax || 0).toLocaleString()}/mo</div>
-            <div><span className="text-slate-500">Beds:</span> {lead.bedsMin === lead.bedsMax ? (lead.bedsMin === '0' ? 'Studio' : `${lead.bedsMin}`) : `${lead.bedsMin === '0' ? 'Studio' : lead.bedsMin}–${lead.bedsMax === '4' ? '4+' : lead.bedsMax}`}{' · '}
-              <span className="text-slate-500">Baths:</span> {lead.bathsMin === lead.bathsMax ? lead.bathsMin : `${lead.bathsMin}–${lead.bathsMax === '3' ? '3+' : lead.bathsMax}`}</div>
-            {lead.areas && <div><span className="text-slate-500">Areas:</span> {lead.areas}</div>}
-          </div>
-        </div>
-        {windowsByLabel.length > 0 && (
+      <Card className="p-5 mb-5">
+        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Your search</div>
+        <div className="grid grid-cols-2 gap-y-3 gap-x-6 text-sm">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Tour windows</div>
-            <div className="flex flex-wrap gap-1.5">
-              {windowsByLabel.map((label) => (
-                <Pill key={label} tone="neutral">{label}</Pill>
-              ))}
-            </div>
+            <div className="text-[11px] text-slate-500 mb-0.5">Move-in</div>
+            <div className="font-medium text-slate-900">{fmtDate(lead.moveInDate)}</div>
           </div>
-        )}
+          <div>
+            <div className="text-[11px] text-slate-500 mb-0.5">Budget</div>
+            <div className="font-medium text-slate-900">${Number(lead.budgetMin || 0).toLocaleString()} – ${Number(lead.budgetMax || 0).toLocaleString()}/mo</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-500 mb-0.5">Size</div>
+            <div className="font-medium text-slate-900">{bedSummary} · {bathSummary}</div>
+          </div>
+          {lead.areas && (
+            <div>
+              <div className="text-[11px] text-slate-500 mb-0.5">Neighborhoods</div>
+              <div className="font-medium text-slate-900 truncate">{lead.areas}</div>
+            </div>
+          )}
+        </div>
       </Card>
 
-      <div className="text-center text-xs text-slate-500 mb-8">
-        Watch your inbox at <span className="text-slate-700 font-medium">{lead.email}</span> and
-        text messages at <span className="text-slate-700 font-medium">{lead.phone}</span>.
-      </div>
-      <div className="flex justify-center">
-        <Button variant="ghost" onClick={onDone}>Done</Button>
+      {windows.length > 0 && (
+        <Card className="p-5 mb-5">
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Tour windows you picked</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {windows.map((w) => (
+              <div key={w.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
+                <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-900 truncate">{w.label}</div>
+                  <div className="text-[11px] text-slate-500">{w.sub}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div className="text-center text-xs text-slate-500 mt-6 leading-relaxed">
+        Your link will arrive at <span className="text-slate-700 font-medium">{lead.email}</span><br />
+        and by text to <span className="text-slate-700 font-medium">{lead.phone}</span>.
       </div>
     </div>
   );
@@ -3314,6 +3391,18 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
       .slice(0, 15);
   }, [leads]);
 
+  // Count of leads whose latest non-internal message is INBOUND — i.e., waiting
+  // on your reply. Drives the gold badge on the Inbox tab.
+  const needsReplyBadge = useMemo(() => {
+    let n = 0;
+    for (const l of leads) {
+      const msgs = (l.messages || []).filter(m => !m.internal);
+      const last = msgs[msgs.length - 1];
+      if (last && last.direction === 'inbound') n++;
+    }
+    return n;
+  }, [leads]);
+
   const metrics = useMemo(() => {
     const total = leads.length;
     const activeTours = leads.flatMap(l => l.tours || []).filter(t => t.status === 'scheduled').length;
@@ -3348,35 +3437,75 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         </div>
       </div>
 
-      <div className="flex gap-0.5 mb-8 border-b border-slate-200 overflow-x-auto">
+      {/* 4-tab top nav. Inbox is the default; everything else routes under here. */}
+      <div className="flex gap-1 mb-6 border-b border-slate-200 overflow-x-auto">
         {[
-          { k: 'dashboard', label: 'Today', icon: Zap },
+          { k: 'inbox', label: 'Inbox', icon: Inbox, badge: needsReplyBadge },
           { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
-          { k: 'inbox', label: 'Inbox', icon: Inbox },
           { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
-          { k: 'properties', label: 'Properties', icon: Building2, count: (properties || []).filter(p => p.status === 'active').length },
-          { k: 'submissions', label: 'Applications', icon: FileCheck },
-          { k: 'blast', label: 'Bulk SMS', icon: Send },
-          { k: 'flags', label: 'Tasks', icon: Flag, urgent: flagCount || null },
           { k: 'settings', label: 'Settings', icon: Settings },
         ].map(t => (
-          <button key={t.k} onClick={() => setSubview(t.k)} className={`px-4 py-3 text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap border-b-2 -mb-px ${subview === t.k ? 'text-slate-900 border-slate-900' : 'text-slate-500 border-transparent hover:text-slate-900'}`}>
+          <button
+            key={t.k}
+            onClick={() => setSubview(t.k)}
+            className={`px-5 py-3 text-[15px] font-semibold transition-colors flex items-center gap-2.5 whitespace-nowrap border-b-2 -mb-px ${
+              subview === t.k
+                ? 'text-brand-ink border-brand-ink'
+                : 'text-slate-500 border-transparent hover:text-slate-900'
+            }`}
+          >
             <t.icon className="w-4 h-4" />
             {t.label}
-            {t.urgent ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-500 text-white">{t.urgent}</span> : t.count > 0 ? <span className="text-[10px] text-slate-400">{t.count}</span> : null}
+            {t.badge > 0 && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--brand-gold)', color: 'white' }}>{t.badge}</span>}
+            {!t.badge && t.count > 0 && <span className="text-[11px] text-slate-400 font-medium tabular-nums">{t.count}</span>}
           </button>
         ))}
       </div>
 
-      {subview === 'dashboard' && <DashboardView metrics={metrics} leads={leads} recentActivity={recentActivity} upcomingTours={upcomingTours} overdueTasks={overdueTasks} todayTasks={todayTasks} onSelectLead={setSelectedLeadId} settings={settings} saveSettings={saveSettings} />}
-      {subview === 'leads' && <LeadsListView leads={leads} search={search} onSelectLead={setSelectedLeadId} saveLeads={saveLeads} waitlist={waitlist} />}
+      {/* Today snapshot — always visible above the tab content for at-a-glance counts */}
+      <TodayStrip
+        metrics={metrics}
+        upcomingTours={upcomingTours}
+        overdueTasks={overdueTasks}
+        todayTasks={todayTasks}
+        leads={leads}
+      />
+
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} />}
-      {subview === 'properties' && <PropertiesView properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} settings={settings} saveSettings={saveSettings} showToast={showToast} />}
-      {subview === 'submissions' && <SubmissionsView leads={leads} onSelectLead={setSelectedLeadId} updateSubmissionStatus={updateSubmissionStatus} />}
-      {subview === 'blast' && <BlastView leads={leads} showToast={showToast} />}
-      {subview === 'flags' && <FlagsView allTasks={allTasks} updateLead={updateLead} onSelectLead={setSelectedLeadId} showToast={showToast} />}
-      {subview === 'tours' && <ToursView upcomingTours={upcomingTours} onSelectLead={setSelectedLeadId} />}
-      {subview === 'settings' && <SettingsView settings={settings} saveSettings={saveSettings} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} />}
+      {subview === 'leads' && (
+        <LeadsListView
+          leads={leads}
+          search={search}
+          onSelectLead={setSelectedLeadId}
+          saveLeads={saveLeads}
+          waitlist={waitlist}
+          allTasks={allTasks}
+          updateLead={updateLead}
+          showToast={showToast}
+        />
+      )}
+      {subview === 'tours' && (
+        <ToursSection
+          upcomingTours={upcomingTours}
+          leads={leads}
+          onSelectLead={setSelectedLeadId}
+          updateSubmissionStatus={updateSubmissionStatus}
+        />
+      )}
+      {subview === 'settings' && (
+        <SettingsSection
+          settings={settings}
+          saveSettings={saveSettings}
+          showToast={showToast}
+          timeOffset={timeOffset}
+          saveTimeOffset={saveTimeOffset}
+          properties={properties}
+          saveProperty={saveProperty}
+          removeProperty={removeProperty}
+          bulkImportProperties={bulkImportProperties}
+          leads={leads}
+        />
+      )}
 
       {selectedLead && <LeadDetailCRM lead={selectedLead} onClose={() => setSelectedLeadId(null)} updateLead={updateLead} onCompose={(template) => setComposeModal({ lead: selectedLead, template })} showToast={showToast} onOpenScreening={() => setScreeningModal({ lead: selectedLead })} onOpenSubmit={() => setSubmitModal({ lead: selectedLead })} onOpenFollowUp={(submissionId) => setFollowUpModal({ lead: selectedLead, submissionId })} settings={settings} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} updateSubmissionStatus={updateSubmissionStatus} />}
 
@@ -3800,7 +3929,7 @@ function ActivityIcon({ type }) {
 // ============================================================
 // LEADS LIST
 // ============================================================
-function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [] }) {
+function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], allTasks, updateLead, showToast }) {
   const [bucketFilter, setBucketFilter] = useState('all');
   const [stageFilter, setStageFilter] = useState('active');  // 'active' = not leased/lost/archived
 
@@ -4375,16 +4504,15 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 // LEAD DETAIL
 // ============================================================
 // Curated-link panel — the agent's primary action for a new lead.
-// Paste a BrightMLS Matrix portal URL → click Send → app SMSes + emails the
-// lead with the link, marks the lead's curation task done, logs activity,
-// stores the URL on the lead so we don't re-send.
+// Workflow: paste a BrightMLS portal URL → click Send → app SMSes + emails
+// the lead a branded /c/[token] page that embeds the portal in an iframe.
+// Lead browses photos in the portal, then replies via SMS to schedule.
+// All scheduling conversation lands in the agent's inbox.
 function CuratedLinkPanel({ lead, updateLead, showToast }) {
-  const [url, setUrl] = useState(lead.curatedLinkUrl || '');
+  const [url, setUrl] = useState(lead.raw?.curated_portal_url || '');
   const [busy, setBusy] = useState(false);
   const alreadySent = !!lead.curatedLinkSentAt;
-
   const firstName = (lead.fullName || '').split(' ')[0];
-  const defaultMessage = `Hi ${firstName} — here are the rentals I hand-picked for you. Browse the photos and reply with which ones you'd like to tour. — ${'-'}`;
 
   const onSend = async () => {
     const cleanUrl = url.trim();
@@ -4394,17 +4522,24 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
     }
     setBusy(true);
 
-    const smsBody = `Rentals Philly: Hand-picked rentals for you — ${cleanUrl} Reply with the ones you want to tour.`;
+    const token = lead.raw?.curated_token || (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+      : Math.random().toString(36).slice(2, 18));
+    const appBase =
+      (typeof window !== 'undefined' ? window.location.origin : '') ||
+      'https://rentalsphilly.vercel.app';
+    const curatedUrl = `${appBase}/c/${token}`;
+
+    const smsBody = `Rentals Philly: Your curated rentals are ready — browse photos & reply with the ones you want to tour: ${curatedUrl}`;
     const emailSubject = 'Your hand-picked Philly rentals';
     const emailBody =
       `Hi ${firstName},\n\n` +
-      `I picked these rentals based on what you told me. Click below to see photos and details on BrightMLS:\n\n` +
-      `${cleanUrl}\n\n` +
-      `Reply to this email (or text me back) with the addresses you'd like to tour and I'll get them on the calendar.\n\n` +
+      `I've hand-picked rentals that match your criteria. Click below to browse photos and details:\n\n` +
+      `${curatedUrl}\n\n` +
+      `When you find ones you'd like to tour, just reply to this email or text me back with the addresses and what days/times work for you. I'll get them on the calendar.\n\n` +
       `— Morgan`;
 
     try {
-      // Fire the SMS (server wrapper logs to messages + handles opt-out).
       const smsResult = await sendSMS({
         leadId: lead.id,
         body: smsBody,
@@ -4417,7 +4552,6 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         setBusy(false);
         return;
       }
-      // Email in parallel.
       await sendEmail({
         leadId: lead.id,
         subject: emailSubject,
@@ -4427,15 +4561,20 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         automated: false,
       });
 
-      // Mark curation task done + update lead with stored URL + activity log.
       const updatedTasks = (lead.tasks || []).map((t) =>
         Array.isArray(t.flags) && t.flags.includes('curate-portal') && t.status === 'pending'
           ? { ...t, status: 'done', completedAt: new Date().toISOString() }
           : t
       );
       await updateLead(lead.id, {
-        raw: { ...(lead.raw || {}), curated_link_url: cleanUrl, curated_link_sent_at: new Date().toISOString() },
-        curatedLinkUrl: cleanUrl,
+        raw: {
+          ...(lead.raw || {}),
+          curated_token: token,
+          curated_portal_url: cleanUrl,
+          curated_link_url: curatedUrl,
+          curated_link_sent_at: new Date().toISOString(),
+        },
+        curatedLinkUrl: curatedUrl,
         curatedLinkSentAt: new Date().toISOString(),
         stage: lead.stage === 'new' ? 'matched' : lead.stage,
         tasks: updatedTasks,
@@ -4443,10 +4582,10 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
           id: `a_${Date.now()}`,
           type: 'curated-link-sent',
           timestamp: new Date().toISOString(),
-          message: `Curated BrightMLS portal link sent to ${firstName}`,
+          message: `Curated link sent to ${firstName}`,
         }],
       });
-      showToast('Portal link sent — lead got SMS + email');
+      showToast('Curated link sent — lead got SMS + email');
     } catch (err) {
       console.error('[curated link] send failed', err);
       showToast('Send failed — check logs');
@@ -4454,33 +4593,6 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       setBusy(false);
     }
   };
-
-  // Compact "already sent" state once link has been delivered.
-  if (alreadySent && !url.trim()) {
-    return (
-      <Card className="p-4 bg-emerald-50 border-emerald-200">
-        <div className="flex items-start gap-3">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-slate-900">Curated link sent</div>
-            <div className="text-xs text-slate-600 mt-0.5">
-              Sent {new Date(lead.curatedLinkSentAt).toLocaleString()} ·{' '}
-              <a href={lead.curatedLinkUrl} target="_blank" rel="noopener noreferrer" className="underline text-slate-700">
-                view the portal <ExternalLink className="w-3 h-3 inline" />
-              </a>
-            </div>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => { setUrl(lead.curatedLinkUrl || ''); }}
-          >
-            Resend / update
-          </Button>
-        </div>
-      </Card>
-    );
-  }
 
   return (
     <Card className="p-5 space-y-3 bg-amber-50 border-amber-200">
@@ -4490,11 +4602,12 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-slate-900">
-            {alreadySent ? 'Update curated portal link' : 'Send curated portal link'}
+            {alreadySent ? 'Update curated link' : 'Send curated link'}
           </div>
           <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-            In BrightMLS Matrix: run a search matching this lead&apos;s criteria → <strong>Share → Send to client</strong> → copy the URL → paste below.
-            One click sends the link via SMS + email.
+            In BrightMLS Matrix: run a search for this lead → <strong>Share → Send to client</strong> →
+            copy the URL → paste below. Lead will get a branded page with the portal embedded; replies
+            land in your inbox.
           </div>
         </div>
       </div>
@@ -4507,12 +4620,20 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       />
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] text-slate-500">
-          Lead will get text to <span className="font-mono">{lead.phone}</span> + email to <span className="font-mono">{lead.email}</span>
+          Sends to: <span className="font-mono">{lead.phone}</span> · <span className="font-mono">{lead.email}</span>
         </div>
         <Button onClick={onSend} disabled={busy || !url.trim()}>
           {busy ? 'Sending…' : (alreadySent ? 'Re-send' : 'Send link')}
         </Button>
       </div>
+      {alreadySent && (
+        <div className="text-[11px] text-slate-500 pt-2 border-t border-amber-200">
+          Last sent {new Date(lead.curatedLinkSentAt).toLocaleString()} ·{' '}
+          <a href={lead.curatedLinkUrl} target="_blank" rel="noopener noreferrer" className="underline text-slate-700">
+            open the lead&apos;s page <ExternalLink className="w-3 h-3 inline" />
+          </a>
+        </div>
+      )}
     </Card>
   );
 }
@@ -4559,21 +4680,20 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
           </div>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — collapsed: only show Pipeline if there's screening/app/submission activity */}
         <div className="flex gap-1 px-5 border-b border-slate-200 shrink-0 overflow-x-auto">
           {[
             { k: 'overview', label: 'Overview' },
-            { k: 'application', label: 'Application', dot: !!lead.application, alert: lead.application && !lead.application.reviewed },
-            { k: 'submissions', label: 'Submissions', count: submissionCount },
-            { k: 'screening', label: 'Screening', dot: lead.screening?.status === 'completed' },
             { k: 'messages', label: 'Messages', count: (lead.messages || []).length },
+            { k: 'pipeline', label: 'Pipeline', count: submissionCount, dot: !!lead.application || !!lead.screening, alert: lead.application && !lead.application.reviewed,
+              show: !!lead.application || !!lead.screening || submissionCount > 0 },
             { k: 'activity', label: 'Activity' },
-          ].map(t => (
-            <button key={t.k} onClick={() => setTab(t.k)} className={`px-3 py-3 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex items-center gap-1.5 ${tab === t.k ? 'text-slate-900 border-slate-900' : 'text-slate-500 border-transparent hover:text-slate-900'}`}>
+          ].filter(t => t.show !== false).map(t => (
+            <button key={t.k} onClick={() => setTab(t.k)} className={`px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex items-center gap-1.5 ${tab === t.k ? 'text-brand-ink border-brand-ink' : 'text-slate-500 border-transparent hover:text-slate-900'}`}>
               {t.label}
               {t.count > 0 && <span className="text-xs text-slate-400">{t.count}</span>}
               {t.alert && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />}
-              {t.dot && !t.alert && <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />}
+              {t.dot && !t.alert && <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--brand-gold)' }} />}
             </button>
           ))}
         </div>
@@ -4649,6 +4769,16 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
           )}
 
           {tab === 'submissions' && <SubmissionsTab lead={lead} onOpenSubmit={onOpenSubmit} onOpenFollowUp={onOpenFollowUp} updateSubmissionStatus={updateSubmissionStatus} />}
+
+          {/* Pipeline = consolidated screening + application + submissions, single tab */}
+          {tab === 'pipeline' && (
+            <div className="space-y-6">
+              <ScreeningTab lead={lead} onOpenScreening={onOpenScreening} settings={settings} />
+              <div className="border-t border-slate-200 pt-6">
+                <SubmissionsTab lead={lead} onOpenSubmit={onOpenSubmit} onOpenFollowUp={onOpenFollowUp} updateSubmissionStatus={updateSubmissionStatus} />
+              </div>
+            </div>
+          )}
 
           {tab === 'screening' && <ScreeningTab lead={lead} onOpenScreening={onOpenScreening} settings={settings} />}
 
@@ -5110,6 +5240,133 @@ function BlastView({ leads, showToast }) {
           </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// ============================================================
+// TODAY STRIP — at-a-glance KPI bar that lives above every admin tab
+// ============================================================
+function TodayStrip({ metrics, upcomingTours, overdueTasks, todayTasks }) {
+  const today = upcomingTours.filter(t => {
+    const d = new Date(t.date + 'T00:00:00');
+    const now = new Date();
+    return d.toDateString() === now.toDateString();
+  }).length;
+  const stats = [
+    { label: 'Tours today', value: today, icon: CalendarDays, tone: today > 0 ? 'accent' : 'neutral' },
+    { label: 'Upcoming', value: upcomingTours.length, icon: Clock },
+    { label: 'Overdue tasks', value: overdueTasks.length, icon: AlertTriangle, tone: overdueTasks.length > 0 ? 'danger' : 'neutral' },
+    { label: 'Today\'s tasks', value: todayTasks.length, icon: Flag },
+    { label: 'Active leads', value: metrics.total - metrics.leased, icon: Users },
+    { label: 'Leased', value: metrics.leased, icon: Award, tone: 'positive' },
+  ];
+  return (
+    <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-6">
+      {stats.map((s, i) => (
+        <div
+          key={i}
+          className={`rounded-xl border border-slate-200 bg-white px-3 py-2.5 ${
+            s.tone === 'accent' ? 'ring-1 ring-offset-1 ring-amber-200' :
+            s.tone === 'danger' && s.value > 0 ? 'ring-1 ring-offset-1 ring-red-200' :
+            ''
+          }`}
+        >
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+            <s.icon className="w-3 h-3" />
+            <span className="truncate">{s.label}</span>
+          </div>
+          <div className={`text-xl font-bold tabular-nums ${s.tone === 'danger' && s.value > 0 ? 'text-red-600' : s.tone === 'positive' ? 'text-emerald-700' : 'text-brand-ink'}`}>
+            {s.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================
+// TOURS SECTION — sub-tabs for the consolidated Tours nav (calendar +
+// applications). Keeps existing per-view components untouched.
+// ============================================================
+function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStatus }) {
+  const [tab, setTab] = useState('upcoming');
+  const appsCount = leads.flatMap(l => l.submissions || []).length;
+  return (
+    <div className="space-y-5">
+      <div className="flex gap-1 border-b border-slate-200">
+        {[
+          { k: 'upcoming', label: 'Upcoming', count: upcomingTours.length },
+          { k: 'apps', label: 'Applications', count: appsCount },
+        ].map(t => (
+          <button
+            key={t.k}
+            onClick={() => setTab(t.k)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === t.k ? 'text-brand-ink border-brand-ink' : 'text-slate-500 border-transparent hover:text-slate-900'
+            }`}
+          >
+            {t.label}
+            {t.count > 0 && <span className="text-[11px] text-slate-400 ml-1.5 tabular-nums">{t.count}</span>}
+          </button>
+        ))}
+      </div>
+      {tab === 'upcoming' && <ToursView upcomingTours={upcomingTours} onSelectLead={onSelectLead} />}
+      {tab === 'apps' && <SubmissionsView leads={leads} onSelectLead={onSelectLead} updateSubmissionStatus={updateSubmissionStatus} />}
+    </div>
+  );
+}
+
+// ============================================================
+// SETTINGS SECTION — sub-tabs that pull in the formerly top-level Properties,
+// Bulk SMS, and Filters views. Keeps each view as-is so we don't break them.
+// ============================================================
+function SettingsSection({
+  settings, saveSettings, showToast, timeOffset, saveTimeOffset,
+  properties, saveProperty, removeProperty, bulkImportProperties, leads,
+}) {
+  const [tab, setTab] = useState('agent');
+  return (
+    <div className="space-y-5">
+      <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
+        {[
+          { k: 'agent',      label: 'Agent & automation' },
+          { k: 'properties', label: 'Properties' },
+          { k: 'blast',      label: 'Bulk SMS' },
+        ].map(t => (
+          <button
+            key={t.k}
+            onClick={() => setTab(t.k)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${
+              tab === t.k ? 'text-brand-ink border-brand-ink' : 'text-slate-500 border-transparent hover:text-slate-900'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'agent' && (
+        <SettingsView
+          settings={settings}
+          saveSettings={saveSettings}
+          showToast={showToast}
+          timeOffset={timeOffset}
+          saveTimeOffset={saveTimeOffset}
+        />
+      )}
+      {tab === 'properties' && (
+        <PropertiesView
+          properties={properties}
+          saveProperty={saveProperty}
+          removeProperty={removeProperty}
+          bulkImportProperties={bulkImportProperties}
+          settings={settings}
+          saveSettings={saveSettings}
+          showToast={showToast}
+        />
+      )}
+      {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
     </div>
   );
 }

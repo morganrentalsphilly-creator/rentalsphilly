@@ -2,7 +2,14 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0f172a;
+
+  /* Brand tokens — pulled from logo. Used by .brand-gold, .brand-ink, and
+     custom buttons throughout the app. */
+  --brand-gold: #b58e54;
+  --brand-gold-hover: #9d7a44;
+  --brand-gold-soft: #f5ecdc;
+  --brand-ink: #1c1f2a;
 }
 
 @theme inline {
@@ -11,6 +18,15 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
+
+/* Brand utility classes (used alongside Tailwind for the gold accent). */
+.brand-gold { color: var(--brand-gold); }
+.bg-brand-gold { background-color: var(--brand-gold); }
+.bg-brand-gold-soft { background-color: var(--brand-gold-soft); }
+.border-brand-gold { border-color: var(--brand-gold); }
+.bg-brand-ink { background-color: var(--brand-ink); }
+.text-brand-ink { color: var(--brand-ink); }
+.hover\:bg-brand-gold-hover:hover { background-color: var(--brand-gold-hover); }
 
 @media (prefers-color-scheme: dark) {
   :root {
