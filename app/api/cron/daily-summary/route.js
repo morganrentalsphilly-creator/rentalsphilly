@@ -159,17 +159,63 @@ export async function GET(request) {
     </div>
   `;
 
+  // ---- TOUR-DAY MORNING SMS ----
+  // If there are tours today, also text Morgan a compact tour brief.
+  // Goes through Twilio directly (not sendSms wrapper) because the recipient
+  // is the AGENT, not a lead — we don't want to log it on a lead's thread.
+  let tourSmsResult = null;
+  if (toursToday.length > 0) {
+    try {
+      const leadById = Object.fromEntries(leads.map((l) => [l.id, l]));
+      const lines = toursToday
+        .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
+        .map((t) => {
+          const lead = leadById[t.lead_id];
+          const name = (lead?.full_name || 'Lead').split(' ')[0];
+          const phone = lead?.phone || '';
+          const addr = (t.listings || []).map((l) => l.address).filter(Boolean).join(', ') || 'address TBD';
+          return `${t.time || '?'} — ${name} (${phone}) @ ${addr}`;
+        });
+      const smsBody = `Today's tours (${toursToday.length}):\n${lines.join('\n')}`;
+      const agentPhone = settings.agent_phone || settings.agentPhone;
+
+      if (agentPhone && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        const twilioClient = (await import('twilio')).default(
+          process.env.TWILIO_ACCOUNT_SID,
+          process.env.TWILIO_AUTH_TOKEN
+        );
+        const fromNumber = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID;
+        if (process.env.ENABLE_REAL_SENDING === 'true' && fromNumber) {
+          const opts = { to: agentPhone, body: smsBody };
+          if (fromNumber.startsWith('MG')) opts.messagingServiceSid = fromNumber;
+          else opts.from = fromNumber;
+          const msg = await twilioClient.messages.create(opts);
+          tourSmsResult = { ok: true, sid: msg.sid, tours: toursToday.length };
+          console.log('[tour brief SMS] sent', { sid: msg.sid });
+        } else {
+          tourSmsResult = { ok: true, simulated: true, body: smsBody, tours: toursToday.length };
+          console.log('[tour brief SMS — SIMULATED]', { body: smsBody });
+        }
+      } else {
+        tourSmsResult = { ok: false, error: 'agent_phone_or_twilio_env_missing' };
+      }
+    } catch (smsErr) {
+      console.error('[tour brief SMS] failed', smsErr);
+      tourSmsResult = { ok: false, error: smsErr.message };
+    }
+  }
+
   // Send via Resend directly (we don't want this in a per-lead messages row).
   try {
     const resend = new Resend(process.env.RESEND_API_KEY);
     const to = settings.agent_email || settings.agentEmail || 'morganrentalsphilly@gmail.com';
     const from = process.env.RESEND_FROM_EMAIL;
     if (!from) {
-      return NextResponse.json({ ok: false, error: 'RESEND_FROM_EMAIL not set' });
+      return NextResponse.json({ ok: false, error: 'RESEND_FROM_EMAIL not set', tourSms: tourSmsResult });
     }
     if (process.env.ENABLE_REAL_SENDING !== 'true') {
       console.log('[daily summary — SIMULATED]', { to, sections: sections.length });
-      return NextResponse.json({ ok: true, simulated: true, sections: sections.length });
+      return NextResponse.json({ ok: true, simulated: true, sections: sections.length, tourSms: tourSmsResult });
     }
     const { error } = await resend.emails.send({
       from,
@@ -180,13 +226,13 @@ export async function GET(request) {
     });
     if (error) {
       console.error('[daily summary] send failed', error);
-      return NextResponse.json({ ok: false, error: error.message });
+      return NextResponse.json({ ok: false, error: error.message, tourSms: tourSmsResult });
     }
     console.log('[daily summary] sent to', to);
-    return NextResponse.json({ ok: true, to, sections: sections.length });
+    return NextResponse.json({ ok: true, to, sections: sections.length, tourSms: tourSmsResult });
   } catch (err) {
     console.error('[daily summary] error', err);
-    return NextResponse.json({ ok: false, error: err.message });
+    return NextResponse.json({ ok: false, error: err.message, tourSms: tourSmsResult });
   }
 }
 

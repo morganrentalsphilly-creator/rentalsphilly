@@ -3462,10 +3462,11 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         </div>
       </div>
 
-      {/* 4-tab top nav. Inbox is the default; everything else routes under here. */}
+      {/* 5-tab top nav. Inbox is the default; everything else routes under here. */}
       <div className="flex gap-1 mb-6 border-b border-slate-200 overflow-x-auto">
         {[
           { k: 'inbox', label: 'Inbox', icon: Inbox, badge: needsReplyBadge },
+          { k: 'pipeline', label: 'Pipeline', icon: Activity, count: leads.filter(l => l.stage && !['lost', 'paid'].includes(l.stage)).length },
           { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
           { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
           { k: 'settings', label: 'Settings', icon: Settings },
@@ -3497,6 +3498,9 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
       />
 
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} updateLead={updateLead} settings={settings} showToast={showToast} />}
+      {subview === 'pipeline' && (
+        <PipelineView leads={leads} updateLead={updateLead} onSelectLead={setSelectedLeadId} showToast={showToast} />
+      )}
       {subview === 'leads' && (
         <LeadsListView
           leads={leads}
@@ -5875,6 +5879,192 @@ function MessagesTab({ lead, onCompose }) {
 }
 
 // ============================================================
+// PIPELINE — kanban view of all leads grouped by stage.
+// Click a card to open lead. Quick "→" advances stage with auto-tasks.
+// ============================================================
+function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
+  const [showWon, setShowWon] = useState(false);
+  const [search, setSearch] = useState('');
+
+  // Group leads by stage.
+  const byStage = useMemo(() => {
+    const m = {};
+    for (const s of PIPELINE_STAGES) m[s.id] = [];
+    for (const lead of leads) {
+      const stage = lead.stage || 'new';
+      if (!m[stage]) m[stage] = [];
+      m[stage].push(lead);
+    }
+    // Sort each column: most recently created or updated first.
+    for (const k of Object.keys(m)) {
+      m[k].sort((a, b) =>
+        new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)
+      );
+    }
+    return m;
+  }, [leads]);
+
+  // Default columns hide paid/lost unless toggled (keeps the active funnel clean).
+  const visibleStages = useMemo(() =>
+    PIPELINE_STAGES.filter((s) => showWon || !['paid', 'lost'].includes(s.id)),
+    [showWon]
+  );
+
+  const advanceStage = async (lead, e) => {
+    e?.stopPropagation();
+    const idx = PIPELINE_STAGES.findIndex((s) => s.id === (lead.stage || 'new'));
+    if (idx < 0 || idx >= PIPELINE_STAGES.length - 2) return; // skip if at leased/paid/lost
+    const next = PIPELINE_STAGES[idx + 1];
+    const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+    const newTasks = stageDefaultTasks(next.id, lead, firstName);
+    await updateLead(lead.id, {
+      stage: next.id,
+      tasks: [...(lead.tasks || []), ...newTasks],
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`, type: 'stage-advanced',
+        timestamp: new Date().toISOString(),
+        message: `Stage → ${next.label}`,
+      }],
+    });
+    showToast(`${firstName} → ${next.label}${newTasks.length ? ` · +${newTasks.length} task${newTasks.length === 1 ? '' : 's'}` : ''}`);
+  };
+
+  // Search filter applied to lead names + emails + phones.
+  const matchesSearch = (lead) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      (lead.fullName || '').toLowerCase().includes(q) ||
+      (lead.email || '').toLowerCase().includes(q) ||
+      (lead.phone || '').toLowerCase().includes(q)
+    );
+  };
+
+  const totalCommission = useMemo(() => {
+    return leads
+      .filter((l) => l.commission?.amount && (l.stage === 'leased' || l.stage === 'paid'))
+      .reduce((sum, l) => sum + Number(l.commission.amount || 0), 0);
+  }, [leads]);
+
+  const toneClass = (tone) => ({
+    neutral: 'bg-slate-100 text-slate-700 border-slate-200',
+    info: 'bg-blue-50 text-blue-700 border-blue-200',
+    warning: 'bg-amber-50 text-amber-800 border-amber-200',
+    accent: 'bg-violet-50 text-violet-700 border-violet-200',
+    positive: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    danger: 'bg-red-50 text-red-700 border-red-200',
+  }[tone] || 'bg-slate-100 text-slate-700 border-slate-200');
+
+  const lastActivityLabel = (lead) => {
+    const msgs = (lead.messages || []).filter((m) => !m.internal);
+    const last = msgs[msgs.length - 1];
+    if (last) return `${last.direction === 'inbound' ? 'They' : 'You'}: ${(last.body || '').slice(0, 36)}`;
+    if (lead.createdAt) return `Created ${timeAgo(lead.createdAt)}`;
+    return '';
+  };
+
+  const needsAttention = (lead) => {
+    // Last message is inbound = needs reply
+    const msgs = (lead.messages || []).filter((m) => !m.internal);
+    return msgs.length > 0 && msgs[msgs.length - 1].direction === 'inbound';
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Top summary bar */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, email, phone…"
+            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 bg-white"
+          />
+        </div>
+        <label className="text-xs text-slate-600 inline-flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={showWon} onChange={(e) => setShowWon(e.target.checked)} className="rounded" />
+          Show Won / Lost
+        </label>
+        {totalCommission > 0 && (
+          <div className="text-xs text-emerald-700 font-medium ml-auto">
+            <Award className="w-3.5 h-3.5 inline mr-1" />
+            {fmtCurrency(totalCommission)} earned this period
+          </div>
+        )}
+      </div>
+
+      {/* Kanban columns */}
+      <div className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1">
+        {visibleStages.map((stage) => {
+          const all = byStage[stage.id] || [];
+          const filtered = all.filter(matchesSearch);
+          return (
+            <div key={stage.id} className="flex-shrink-0 w-72 flex flex-col">
+              <div className={`px-3 py-2 rounded-t-xl border-t border-x ${toneClass(stage.tone)}`}>
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold text-xs uppercase tracking-wider">{stage.label}</div>
+                  <div className="text-[10px] font-bold tabular-nums">{filtered.length}{filtered.length !== all.length && ` / ${all.length}`}</div>
+                </div>
+              </div>
+              <div className="flex-1 bg-slate-50 border-x border-b border-slate-200 rounded-b-xl p-2 space-y-2 min-h-[200px] max-h-[calc(100vh-260px)] overflow-y-auto">
+                {filtered.length === 0 ? (
+                  <div className="text-[11px] italic text-slate-400 text-center py-4">Empty</div>
+                ) : filtered.map((lead) => {
+                  const attention = needsAttention(lead);
+                  const canAdvance = !['leased', 'paid', 'lost'].includes(lead.stage || 'new');
+                  return (
+                    <button
+                      key={lead.id}
+                      onClick={() => onSelectLead(lead.id)}
+                      className={`w-full text-left bg-white rounded-lg p-2.5 border transition-all hover:shadow-sm hover:border-slate-300 ${
+                        attention ? 'border-amber-300 ring-1 ring-amber-200' : 'border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        {attention && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />}
+                        <div className="font-semibold text-sm text-slate-900 truncate flex-1">{lead.fullName}</div>
+                        {canAdvance && (
+                          <button
+                            onClick={(e) => advanceStage(lead, e)}
+                            title={`Advance to ${PIPELINE_STAGES[PIPELINE_STAGES.findIndex((s) => s.id === (lead.stage || 'new')) + 1]?.label}`}
+                            className="text-slate-300 hover:text-emerald-600 shrink-0 p-0.5"
+                          >
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-500 mb-1 truncate">
+                        {lead.budgetMin && lead.budgetMax
+                          ? `${fmtCurrency(Number(lead.budgetMin))}–${fmtCurrency(Number(lead.budgetMax))}`
+                          : 'No budget'}
+                        {' · '}
+                        {lead.beds === '0' ? 'Studio' : `${lead.beds || '?'}+ bd`}
+                      </div>
+                      {lead.moveInDate && (
+                        <div className="text-[10px] text-slate-400 mb-1">Move {fmtDate(lead.moveInDate)}</div>
+                      )}
+                      <div className="text-[11px] text-slate-600 line-clamp-1">{lastActivityLabel(lead)}</div>
+                      {lead.commission?.amount && (
+                        <div className="mt-1.5 text-[10px] font-semibold text-emerald-700">
+                          {fmtCurrency(Number(lead.commission.amount))}
+                          {lead.commission.received_at && ' ✓ paid'}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // UNIFIED INBOX — split-pane: thread list + conversation + lead context
 // ============================================================
 const QUICK_REPLY_TEMPLATES = [
@@ -7472,20 +7662,68 @@ ${settings.agentEmail || ''}` : '';
 
   const [editedSubject, setEditedSubject] = useState('');
   const [editedBody, setEditedBody] = useState('');
+  const [editedTo, setEditedTo] = useState('');
   const [copied, setCopied] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendStatus, setSendStatus] = useState(null); // 'sent' | 'failed'
 
   // Update edited fields when activeListing changes
   useEffect(() => {
     setEditedSubject(emailSubject);
     setEditedBody(emailBody);
+    setEditedTo(activeListing?.leasingContact || '');
+    setSendStatus(null);
   }, [activeListing?.id]);
 
   const handleCopyEmail = () => {
-    const toLine = activeListing?.leasingContact ? `To: ${activeListing.leasingContact}\n` : '';
+    const toLine = editedTo ? `To: ${editedTo}\n` : '';
     const fullEmail = `${toLine}Subject: ${editedSubject}\n\n${editedBody}`;
     navigator.clipboard?.writeText(fullEmail);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  // Actually send the email via Resend (logged in lead's inbox).
+  const handleSendEmail = async () => {
+    if (!activeListing || !editedTo) return;
+    setSending(true);
+    try {
+      const res = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadId: lead.id,
+          to: editedTo,
+          subject: editedSubject,
+          body: editedBody,
+          kind: 'application_submission',
+          idempotencyKey: `submission-${lead.id}-${activeListing.id}-${Date.now()}`,
+          automated: false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setSendStatus('failed');
+        setSending(false);
+        alert(`Email send failed: ${data.error || 'unknown error'}`);
+        return;
+      }
+      setSendStatus('sent');
+      // Still log the submission row + create follow-up tasks.
+      onSubmit({
+        listing: activeListing,
+        landlordEmail: editedTo,
+        landlordName: activeListing.listingAgent || activeListing.leasingOffice || '',
+        emailSubject: editedSubject,
+        emailBody: editedBody,
+        sentAt: new Date().toISOString(),
+        sentVia: 'resend',
+      });
+    } catch (err) {
+      setSendStatus('failed');
+      alert(`Send failed: ${err.message}`);
+    }
+    setSending(false);
   };
 
   const handleSubmit = () => {
@@ -7567,12 +7805,19 @@ ${settings.agentEmail || ''}` : '';
             {activeListing && (
               <>
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">2. Email preview — edit as needed</div>
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 mb-3 flex items-center gap-2">
-                    <Mail className="w-3.5 h-3.5 shrink-0" />
-                    <span>To: <span className="font-medium text-slate-900">{activeListing.leasingContact || '[no email on file — add manually when you paste]'}</span></span>
-                  </div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">2. Email — edit before sending</div>
                   <div className="space-y-2">
+                    <div className="flex items-center gap-2 p-2.5 rounded-xl border border-slate-200 bg-slate-50">
+                      <Mail className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                      <span className="text-xs text-slate-500 shrink-0">To:</span>
+                      <input
+                        type="email"
+                        value={editedTo}
+                        onChange={(e) => setEditedTo(e.target.value)}
+                        placeholder="landlord@example.com"
+                        className="flex-1 text-sm bg-transparent outline-none"
+                      />
+                    </div>
                     <input value={editedSubject} onChange={e => setEditedSubject(e.target.value)} placeholder="Subject" className="form-input-inline font-medium" />
                     <textarea value={editedBody} onChange={e => setEditedBody(e.target.value)} rows={12} className="form-input-inline resize-none font-mono text-xs" />
                   </div>
@@ -7602,26 +7847,42 @@ ${settings.agentEmail || ''}` : '';
 
         {/* Actions */}
         <div className="sticky bottom-0 bg-white border-t border-slate-200 px-5 py-3.5">
-          <div className="flex gap-2">
-            <Button variant="outline" size="lg" onClick={onClose} className="flex-1">Cancel</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="lg" onClick={onClose} className="flex-1 min-w-[100px]">Cancel</Button>
             <button
               onClick={handleCopyEmail}
               disabled={!canSubmit}
-              className="flex-1 py-3 rounded-full bg-slate-100 text-slate-900 text-sm font-medium hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors"
+              className="flex-1 min-w-[120px] py-3 rounded-full bg-slate-100 text-slate-900 text-sm font-medium hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors"
             >
-              {copied ? <><Check className="w-4 h-4" /> Copied!</> : <><ClipboardPaste className="w-4 h-4" /> Copy email</>}
+              {copied ? <><Check className="w-4 h-4" /> Copied!</> : <><ClipboardPaste className="w-4 h-4" /> Copy</>}
             </button>
             <button
               onClick={handleSubmit}
               disabled={!canSubmit}
-              className="flex-1 py-3 rounded-full bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors"
+              className="flex-1 min-w-[120px] py-3 rounded-full bg-slate-100 text-slate-900 text-sm font-medium hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors"
             >
-              <Send className="w-4 h-4" /> Log as sent
+              Log only
+            </button>
+            <button
+              onClick={handleSendEmail}
+              disabled={!canSubmit || !editedTo || sending}
+              className="flex-1 min-w-[140px] py-3 rounded-full bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors"
+            >
+              {sending ? 'Sending…' :
+                sendStatus === 'sent' ? <><Check className="w-4 h-4" /> Sent!</> :
+                <><Send className="w-4 h-4" /> Send email now</>}
             </button>
           </div>
           <div className="text-xs text-slate-500 text-center mt-2">
-            "Log as sent" tracks this in the CRM — click after you've pasted + sent the email from Gmail.
+            <strong>Send email now:</strong> delivers via your Resend address (no manual paste).<br/>
+            <strong>Copy:</strong> copies the email to clipboard for manual sending in Gmail (e.g. to attach the PDF).<br/>
+            <strong>Log only:</strong> records the submission without sending — for when you sent it elsewhere.
           </div>
+          {lead.application && (
+            <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+              <strong>Heads up:</strong> the application PDF can&apos;t be attached when sending via "Send email now". For applications that need the PDF attached, use "Copy" and send from Gmail.
+            </div>
+          )}
         </div>
 
         <style>{`.form-input-inline { width: 100%; padding: 0.625rem 0.75rem; border: 1.5px solid rgb(226 232 240); border-radius: 0.625rem; font-size: 0.875rem; outline: none; transition: all 0.15s; background: white; } .form-input-inline:focus { border-color: rgb(15 23 42); box-shadow: 0 0 0 3px rgba(15,23,42,0.06); }`}</style>
