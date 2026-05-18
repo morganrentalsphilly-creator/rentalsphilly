@@ -45,13 +45,30 @@ export async function GET(_request, ctx) {
 
   let agentName = null;
   let agentPhone = null;
+  let availability = null;
   try {
     const db = supabaseAdmin();
     const { data: settings } = await db.from('settings').select('*').eq('id', 1).single();
     if (settings) {
       agentName = settings.agent_name || settings.agentName || null;
       agentPhone = settings.twilio_number || settings.twilioNumber || settings.agent_phone || settings.agentPhone || null;
+      availability = settings.agent_availability || null;
     }
+  } catch {}
+
+  // Also exclude any time slots that already have a booked tour. The
+  // scheduling page filters these out so leads can't double-book.
+  let bookedSlots = [];
+  try {
+    const db = supabaseAdmin();
+    const { data: tours } = await db
+      .from('tours')
+      .select('date, time, status')
+      .gte('date', new Date().toISOString().slice(0, 10))
+      .lte('date', new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10));
+    bookedSlots = (tours || [])
+      .filter((t) => t.status !== 'cancelled')
+      .map((t) => `${t.date}_${(t.time || '').replace(/[:\s]/g, '')}`);
   } catch {}
 
   return NextResponse.json(
@@ -67,6 +84,8 @@ export async function GET(_request, ctx) {
       pickedTimes: Array.isArray(lead.raw?.picked_times) ? lead.raw.picked_times : [],
       agentName,
       agentPhone,
+      availability,
+      bookedSlots,
     },
     { headers: { 'Cache-Control': 'private, no-store' } }
   );

@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 
-const SLOT_TEMPLATE = {
+const DEFAULT_SLOT_TEMPLATE = {
   0: [],
   1: [],
   2: ['5:00 PM', '6:00 PM'],
@@ -25,7 +25,17 @@ const SLOT_TEMPLATE = {
 };
 const DAYS_AHEAD = 14;
 
-function generateSlots() {
+// Generate slots from availability data (or default if none). Excludes:
+//   - slots within 24h (lead time buffer)
+//   - dates in blocked_dates
+//   - slots already booked by other tours
+function generateSlots(availability, bookedSlots) {
+  const template = (availability?.weekly && Object.keys(availability.weekly).length > 0)
+    ? availability.weekly
+    : DEFAULT_SLOT_TEMPLATE;
+  const blockedDates = new Set(availability?.blocked_dates || []);
+  const bookedSet = new Set(bookedSlots || []);
+
   const slots = [];
   const now = new Date();
   const minStart = new Date(now.getTime() + 24 * 60 * 60 * 1000);
@@ -33,8 +43,10 @@ function generateSlots() {
     const d = new Date(now);
     d.setDate(now.getDate() + i);
     d.setHours(0, 0, 0, 0);
+    const dateStr = d.toISOString().slice(0, 10);
+    if (blockedDates.has(dateStr)) continue;
     const dow = d.getDay();
-    const times = SLOT_TEMPLATE[dow] || [];
+    const times = template[dow] || template[String(dow)] || [];
     for (const t of times) {
       const [hStr, mStrAmpm] = t.split(':');
       const h12 = parseInt(hStr, 10);
@@ -44,11 +56,9 @@ function generateSlots() {
       const slotDate = new Date(d);
       slotDate.setHours(h24, m, 0, 0);
       if (slotDate < minStart) continue;
-      slots.push({
-        id: `${d.toISOString().slice(0, 10)}_${t.replace(/[:\s]/g, '')}`,
-        date: d.toISOString().slice(0, 10),
-        time: t,
-      });
+      const slotId = `${dateStr}_${t.replace(/[:\s]/g, '')}`;
+      if (bookedSet.has(slotId)) continue;
+      slots.push({ id: slotId, date: dateStr, time: t });
     }
   }
   return slots;
@@ -115,7 +125,10 @@ export default function CuratedPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const slots = useMemo(() => generateSlots(), []);
+  const slots = useMemo(
+    () => generateSlots(data?.availability, data?.bookedSlots),
+    [data?.availability, data?.bookedSlots]
+  );
   const slotsByDate = useMemo(() => {
     const map = {};
     for (const s of slots) (map[s.date] = map[s.date] || []).push(s);

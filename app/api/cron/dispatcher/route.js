@@ -199,6 +199,113 @@ async function runBlastDrain(db) {
   return { sent: totalSent, failed: totalFailed };
 }
 
+// Per-stage nudge engine. Finds leads stuck in a given stage past the
+// cooldown and fires the appropriate re-engagement message. Idempotent via
+// lead.raw.nudge_history (keyed by stage+rule so we don't re-nudge).
+async function runStageNudges(db) {
+  const now = new Date();
+  const hoursAgo = (h) => new Date(now.getTime() - h * 60 * 60 * 1000);
+
+  // The rule set. Each rule: which stage, how long stuck (hours), what to send.
+  const rules = [
+    // 1. Lead got the curated link but hasn't picked properties after 48h
+    {
+      key: 'matched_48h_no_pick',
+      stage: 'matched',
+      stuckHours: 48,
+      check: (lead) => !lead.raw?.curated_submitted_at,
+      message: (firstName) =>
+        `Rentals Philly: Hey ${firstName} — any of those rentals catch your eye? Reply with the ones you want to tour and I'll set it up.`,
+    },
+    // 2. Lead picked properties but agent hasn't sent scheduling link in 24h
+    //    (this nudges the AGENT via activity log — surfaces in Today cards).
+    //    Implemented passively — the Inbox card already shows requested tours.
+    //    No SMS needed here.
+    // 3. Scheduling link sent but lead hasn't picked times in 48h
+    {
+      key: 'scheduling_48h_no_pick',
+      stage: 'tour-requested',
+      stuckHours: 48,
+      check: (lead) => lead.raw?.scheduling_open_at && !lead.raw?.times_submitted_at,
+      message: (firstName) =>
+        `Rentals Philly: Hey ${firstName} — just a reminder, you can still pick tour times here: ${lead?.raw?.curated_link_url || '[link]'}`,
+    },
+    // 4. Post-tour silent at 48h
+    {
+      key: 'post_tour_48h',
+      stage: 'post-tour',
+      stuckHours: 48,
+      check: () => true,
+      message: (firstName) =>
+        `Rentals Philly: Hey ${firstName}, any favorites from the tour? Happy to put together an application if so.`,
+    },
+    // 5. Post-tour silent at 5 days
+    {
+      key: 'post_tour_5d',
+      stage: 'post-tour',
+      stuckHours: 120,
+      check: () => true,
+      message: (firstName) =>
+        `Rentals Philly: Want me to send a fresh batch of rentals, ${firstName}? Things move fast — happy to refine the search.`,
+    },
+    // 6. Applied but no decision in 7 days — nudge the AGENT (no SMS)
+    //    Implemented passively via the auto-task created on stage change.
+  ];
+
+  let sent = 0;
+  let errors = 0;
+  const SEND_CAP = 25;   // safety: don't burst more than 25 nudges per tick
+
+  for (const rule of rules) {
+    if (sent >= SEND_CAP) break;
+    const { data: candidates } = await db
+      .from('leads')
+      .select('id, full_name, phone, raw, opted_out, stage, created_at')
+      .eq('stage', rule.stage)
+      .eq('opted_out', false)
+      .limit(50);
+
+    for (const lead of (candidates || [])) {
+      if (sent >= SEND_CAP) break;
+      // Check stuck time — use latest of stage entry hints we have.
+      const stageEnteredAt = new Date(
+        lead.raw?.curated_link_sent_at ||
+        lead.raw?.curated_submitted_at ||
+        lead.raw?.scheduling_open_at ||
+        lead.created_at
+      );
+      if (stageEnteredAt > hoursAgo(rule.stuckHours)) continue;
+      if (!rule.check(lead)) continue;
+      const history = lead.raw?.nudge_history || {};
+      if (history[rule.key]) continue;   // already nudged for this rule
+
+      try {
+        const firstName = (lead.full_name || '').split(' ')[0] || 'there';
+        const result = await sendSms({
+          leadId: lead.id,
+          kind: 'nudge_48hr',
+          body: rule.message(firstName),
+          idempotencyKey: `nudge-${rule.key}-${lead.id}`,
+        });
+        if (result.ok) sent++;
+        // Mark as nudged regardless of opt-out outcome (we don't want to retry).
+        await db.from('leads').update({
+          raw: {
+            ...(lead.raw || {}),
+            nudge_history: { ...history, [rule.key]: new Date().toISOString() },
+          },
+        }).eq('id', lead.id);
+        await sleep(PER_MESSAGE_DELAY_MS);
+      } catch (err) {
+        console.error('[cron stage nudge] failed', { leadId: lead.id, rule: rule.key, err: err.message });
+        errors++;
+      }
+    }
+  }
+
+  return { sent, errors };
+}
+
 export async function GET(request) {
   if (!authorized(request)) {
     return new NextResponse('Unauthorized', { status: 401 });
@@ -206,8 +313,9 @@ export async function GET(request) {
   const db = supabaseAdmin();
   const reminders = await runReminders(db);
   const blast = await runBlastDrain(db);
-  console.log('[cron] dispatcher tick', { reminders, blast });
-  return NextResponse.json({ ok: true, reminders, blast });
+  const nudges = await runStageNudges(db);
+  console.log('[cron] dispatcher tick', { reminders, blast, nudges });
+  return NextResponse.json({ ok: true, reminders, blast, nudges });
 }
 
 // Allow POST too so it's easy to test from curl with a bearer header.

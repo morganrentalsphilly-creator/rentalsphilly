@@ -113,6 +113,23 @@ const DEFAULT_AGENT_SETTINGS = {
   },
   _slotsEmptyNotifiedAt: null,
 
+  // Agent showing-availability windows. Powers the time picker on /c/[token].
+  // Keys are day-of-week (0=Sun, 1=Mon, ... 6=Sat). Values are arrays of
+  // start-time labels (e.g. "5:00 PM"). Each slot is 1-hour.
+  // blocked_dates is an array of YYYY-MM-DD strings (vacations, days off).
+  agent_availability: {
+    weekly: {
+      0: [],
+      1: [],
+      2: ['5:00 PM', '6:00 PM'],
+      3: ['5:00 PM', '6:00 PM'],
+      4: ['5:00 PM', '6:00 PM'],
+      5: ['5:00 PM', '6:00 PM'],
+      6: ['10:00 AM', '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM'],
+    },
+    blocked_dates: [],
+  },
+
   // Per-category welcome message templates. Sent automatically when a new
   // lead is created, based on the classification bucket:
   //   GCMS  = Good credit (650+), moving in <75 days   — HOT, send curated link ASAP
@@ -3233,14 +3250,45 @@ function HoldingPage({ lead, onDone }) {
 // ADMIN CRM
 // ============================================================
 const PIPELINE_STAGES = [
-  { id: 'new', label: 'New' },
-  { id: 'contacted', label: 'Contacted' },
-  { id: 'tour-booked', label: 'Touring' },
-  { id: 'post-tour', label: 'Post-tour' },
-  { id: 'applied', label: 'Applied' },
-  { id: 'leased', label: 'Leased' },
-  { id: 'lost', label: 'Lost' },
+  { id: 'new',            label: 'New',             tone: 'neutral' },
+  { id: 'matched',        label: 'Link sent',       tone: 'info' },
+  { id: 'tour-requested', label: 'Tour requested',  tone: 'warning' },
+  { id: 'tour-booked',    label: 'Touring',         tone: 'info' },
+  { id: 'post-tour',      label: 'Post-tour',       tone: 'info' },
+  { id: 'applied',        label: 'Applied',         tone: 'accent' },
+  { id: 'leased',         label: 'Leased',          tone: 'positive' },
+  { id: 'paid',           label: 'Commission paid', tone: 'positive' },
+  { id: 'lost',           label: 'Lost',            tone: 'danger' },
 ];
+
+// When the user advances a lead to a stage, we auto-create useful follow-up
+// tasks so nothing slips through the cracks.
+function stageDefaultTasks(stage, lead, firstName) {
+  const now = Date.now();
+  const inDays = (n) => new Date(now + n * 86400000).toISOString().split('T')[0];
+  switch (stage) {
+    case 'applied':
+      return [
+        { id: `t_${now}_landlord3d`, lead_id: lead.id, title: `Follow up with landlord re: ${firstName}'s app — 3 days`,
+          due_date: inDays(3), status: 'pending', priority: 'high', auto: true, flags: ['landlord-followup'] },
+        { id: `t_${now}_landlord7d`, lead_id: lead.id, title: `Second follow-up with landlord re: ${firstName}'s app — 7 days`,
+          due_date: inDays(7), status: 'pending', priority: 'medium', auto: true, flags: ['landlord-followup'] },
+      ];
+    case 'leased':
+      return [
+        { id: `t_${now}_movein`, lead_id: lead.id, title: `Confirm move-in details with ${firstName}`,
+          due_date: inDays(2), status: 'pending', priority: 'high', auto: true, flags: ['move-in'] },
+        { id: `t_${now}_invoice`, lead_id: lead.id, title: `Invoice landlord for ${firstName}'s commission`,
+          due_date: inDays(3), status: 'pending', priority: 'high', auto: true, flags: ['commission'] },
+      ];
+    case 'paid':
+      return [];
+    case 'lost':
+      return [];
+    default:
+      return [];
+  }
+}
 
 const MESSAGE_TEMPLATES = {
   'check-in': { name: 'Check-in', subject: 'Quick check-in', body: 'Hi {firstName} — just checking in on your home search. Still looking in {areas}?' },
@@ -3528,6 +3576,8 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           leads={leads}
           onSelectLead={setSelectedLeadId}
           updateSubmissionStatus={updateSubmissionStatus}
+          updateLead={updateLead}
+          showToast={showToast}
         />
       )}
       {subview === 'settings' && (
@@ -4094,13 +4144,64 @@ function FlagsView({ allTasks, updateLead, onSelectLead, showToast }) {
 // ============================================================
 // TOURS
 // ============================================================
-function ToursView({ upcomingTours, onSelectLead }) {
+function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
   if (upcomingTours.length === 0) return <EmptyState icon={CalendarDays} title="No scheduled tours" desc="Tours will appear here." />;
+
+  // Mark a tour with an outcome. Also creates a follow-up task appropriate
+  // to the outcome so nothing falls through the cracks.
+  const setOutcome = async (tour, outcome) => {
+    const lead = tour.lead;
+    if (!lead) return;
+    const updatedTours = (lead.tours || []).map(t =>
+      t.id === tour.id
+        ? { ...t, status: outcome === 'showed' ? 'completed' : outcome === 'no-show' ? 'no-show' : 'cancelled',
+            outcome, completedAt: new Date().toISOString() }
+        : t
+    );
+    // Auto-create the right follow-up task based on outcome.
+    const firstAddr = (tour.listings || [])[0]?.address || 'the property';
+    let followUpTask = null;
+    if (outcome === 'showed') {
+      followUpTask = {
+        id: `t_${Date.now()}_post`,
+        title: `Post-tour follow-up with ${lead.fullName.split(' ')[0]} re: ${firstAddr}`,
+        dueDate: new Date(Date.now() + 1 * 86400000).toISOString().split('T')[0],
+        status: 'pending', auto: true, priority: 'high', flags: ['post-tour-followup'],
+      };
+    } else if (outcome === 'no-show') {
+      followUpTask = {
+        id: `t_${Date.now()}_noshow`,
+        title: `Re-engage ${lead.fullName.split(' ')[0]} — they no-showed ${firstAddr}`,
+        dueDate: new Date(Date.now() + 1 * 86400000).toISOString().split('T')[0],
+        status: 'pending', auto: true, priority: 'medium', flags: ['no-show-followup'],
+      };
+    }
+    const next = {
+      tours: updatedTours,
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: `tour-${outcome}`,
+        timestamp: new Date().toISOString(),
+        message: `Tour ${outcome}: ${firstAddr}`,
+      }],
+    };
+    if (followUpTask) next.tasks = [...(lead.tasks || []), followUpTask];
+    // Stage progression
+    if (outcome === 'showed' && (lead.stage === 'tour-booked' || lead.stage === 'tour-requested')) {
+      next.stage = 'post-tour';
+    }
+    await updateLead(lead.id, next);
+    showToast(outcome === 'showed' ? 'Marked showed · follow-up task added' : outcome === 'no-show' ? 'No-show recorded' : 'Tour cancelled');
+  };
+
   return (
     <div className="space-y-3">
       {upcomingTours.map(t => {
         const props = t.listings || [];
         const d = new Date(t.date + 'T00:00:00');
+        const tourEnd = parseSlotDateTime({ date: t.date, time: t.time });
+        if (tourEnd) tourEnd.setHours(tourEnd.getHours() + 1);
+        const isPast = tourEnd && new Date() > tourEnd;
         return (
           <Card key={t.id} className="p-4">
             <div className="flex items-start gap-4">
@@ -4112,7 +4213,31 @@ function ToursView({ upcomingTours, onSelectLead }) {
                 <button onClick={() => onSelectLead(t.lead.id)} className="font-semibold text-slate-900 hover:underline">{t.lead.fullName}</button>
                 <div className="text-sm text-slate-500 mt-0.5">{t.time} · {props.length} {props.length === 1 ? 'stop' : 'stops'}</div>
               </div>
-              {t.tourType === 'virtual' && <Pill icon={Video}>Virtual</Pill>}
+              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                {t.tourType === 'virtual' && <Pill icon={Video}>Virtual</Pill>}
+                {isPast && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setOutcome(t, 'showed'); }}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                    >
+                      ✓ Showed
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setOutcome(t, 'no-show'); }}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100"
+                    >
+                      No-show
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setOutcome(t, 'cancelled'); }}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100"
+                    >
+                      Cancelled
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           </Card>
         );
@@ -4124,10 +4249,117 @@ function ToursView({ upcomingTours, onSelectLead }) {
 // ============================================================
 // SETTINGS
 // ============================================================
+// ============================================================
+// AVAILABILITY EDITOR — weekly recurring slots + blocked dates
+// ============================================================
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const ALL_HOURS = [
+  '8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM',
+  '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM',
+  '6:00 PM', '7:00 PM', '8:00 PM',
+];
+
+function AvailabilityEditor({ value, onChange }) {
+  const weekly = value?.weekly || {};
+  const blocked = value?.blocked_dates || [];
+  const [blockDate, setBlockDate] = useState('');
+
+  const toggleHour = (dow, hour) => {
+    const current = new Set(weekly[dow] || weekly[String(dow)] || []);
+    if (current.has(hour)) current.delete(hour);
+    else current.add(hour);
+    // Sort by 24h time order
+    const sorted = ALL_HOURS.filter((h) => current.has(h));
+    onChange({ ...value, weekly: { ...weekly, [dow]: sorted } });
+  };
+
+  const addBlocked = () => {
+    if (!blockDate) return;
+    if (blocked.includes(blockDate)) return;
+    onChange({ ...value, blocked_dates: [...blocked, blockDate].sort() });
+    setBlockDate('');
+  };
+  const removeBlocked = (d) => {
+    onChange({ ...value, blocked_dates: blocked.filter((x) => x !== d) });
+  };
+
+  return (
+    <Card className="p-5 space-y-5">
+      <SectionHeader icon={CalendarDays}>Tour availability</SectionHeader>
+      <div className="text-sm text-slate-600 leading-relaxed">
+        Pick the hours each weekday you&apos;re available for tours. Leads see these as
+        clickable time slots on their scheduling page. Slots already booked by other
+        tours and slots within 24h are automatically hidden.
+      </div>
+
+      <div className="space-y-1.5">
+        {DAYS.map((dayLabel, dow) => {
+          const hours = new Set(weekly[dow] || weekly[String(dow)] || []);
+          return (
+            <div key={dow} className="flex items-center gap-3">
+              <div className="w-10 text-xs font-semibold text-slate-700 tabular-nums">{dayLabel}</div>
+              <div className="flex flex-wrap gap-1 flex-1">
+                {ALL_HOURS.map((h) => {
+                  const on = hours.has(h);
+                  return (
+                    <button
+                      key={h}
+                      type="button"
+                      onClick={() => toggleHour(dow, h)}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors ${
+                        on
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                      }`}
+                    >
+                      {h.replace(':00 ', '').replace(' AM', 'a').replace(' PM', 'p')}
+                    </button>
+                  );
+                })}
+                {hours.size === 0 && <span className="text-[11px] text-slate-400 italic ml-1">No tours</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="border-t border-slate-100 pt-4">
+        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Blocked dates (vacation, days off)</div>
+        <div className="flex items-center gap-2 mb-2">
+          <input
+            type="date"
+            value={blockDate}
+            onChange={(e) => setBlockDate(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-slate-400"
+          />
+          <Button size="sm" onClick={addBlocked} disabled={!blockDate}>Add</Button>
+        </div>
+        {blocked.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {blocked.map((d) => (
+              <button
+                key={d}
+                onClick={() => removeBlocked(d)}
+                className="px-2.5 py-1 rounded-full text-xs bg-slate-100 text-slate-700 inline-flex items-center gap-1.5 hover:bg-slate-200"
+              >
+                {new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                <X className="w-3 h-3" />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400 italic">None — leads can book any day within your weekly availability.</div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function SettingsView({ settings, saveSettings, showToast, timeOffset, saveTimeOffset }) {
   const [form, setForm] = useState(settings);
   const update = (k, v) => setForm({ ...form, [k]: v });
   const updateAutomation = (k, v) => setForm({ ...form, automation: { ...form.automation, [k]: v } });
+  const updateAvailability = (next) => setForm({ ...form, agent_availability: next });
   const save = async () => { await saveSettings(form); showToast('Settings saved'); };
   const jumpTime = async (days) => { await saveTimeOffset((timeOffset || 0) + days * 86400000); showToast(`+${days} days`); };
   const resetTime = async () => { await saveTimeOffset(0); showToast('Time reset'); };
@@ -4145,6 +4377,11 @@ function SettingsView({ settings, saveSettings, showToast, timeOffset, saveTimeO
         <AutomationRow name="Auto-nudge silent leads" desc="Nudge after 48hrs and 5 days post-tour." value={form.automation?.autoNudgeNoResponse !== false} onChange={(v) => updateAutomation('autoNudgeNoResponse', v)} disabled={form.automation?.enabled === false} />
         <AutomationRow name="Auto-archive stale leads" desc="Archive after 30 days of no activity." value={form.automation?.autoArchiveStale !== false} onChange={(v) => updateAutomation('autoArchiveStale', v)} disabled={form.automation?.enabled === false} />
       </Card>
+
+      <AvailabilityEditor
+        value={form.agent_availability || DEFAULT_AGENT_SETTINGS.agent_availability}
+        onChange={updateAvailability}
+      />
 
       <Card className="p-5">
         <SectionHeader icon={Shield}>RentSpree screening</SectionHeader>
@@ -4546,6 +4783,247 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 //   1. BrightMLS portal URL (lead sees this in iframe to browse photos)
 //   2. Addresses — one per line (lead checks the ones they want to tour)
 // On send: app SMSes + emails the lead a branded /c/[token] page.
+// Commission tracking panel — shows only after the lead has reached `applied`
+// or later (since that's when commission becomes a real conversation).
+// Stored in lead.raw.commission so no migration needed.
+function CommissionPanel({ lead, updateLead, showToast }) {
+  const initial = lead.raw?.commission || { amount: '', status: 'pending', notes: '' };
+  const [draft, setDraft] = useState(initial);
+  const [editing, setEditing] = useState(false);
+
+  // Show only for stages where commission is relevant.
+  const eligibleStages = ['applied', 'leased', 'paid'];
+  if (!eligibleStages.includes(lead.stage)) return null;
+
+  const save = async (nextDraft) => {
+    await updateLead(lead.id, {
+      raw: { ...(lead.raw || {}), commission: nextDraft },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: 'commission-update',
+        timestamp: new Date().toISOString(),
+        message: `Commission ${nextDraft.status}${nextDraft.amount ? ` · $${Number(nextDraft.amount).toLocaleString()}` : ''}`,
+      }],
+    });
+    setDraft(nextDraft);
+    setEditing(false);
+    showToast('Commission updated');
+  };
+
+  const markStatus = async (status) => {
+    const next = {
+      ...draft,
+      status,
+      ...(status === 'invoiced' && !draft.invoiced_at ? { invoiced_at: new Date().toISOString() } : {}),
+      ...(status === 'received' && !draft.received_at ? { received_at: new Date().toISOString() } : {}),
+    };
+    await save(next);
+    // If marked received, auto-advance stage to paid.
+    if (status === 'received' && lead.stage !== 'paid') {
+      await updateLead(lead.id, { stage: 'paid' });
+    }
+  };
+
+  const statusTone = {
+    pending:  { bg: 'bg-slate-50',    border: 'border-slate-200',    text: 'text-slate-700',    label: 'Pending invoice' },
+    invoiced: { bg: 'bg-amber-50',    border: 'border-amber-200',    text: 'text-amber-700',    label: 'Invoiced — awaiting payment' },
+    received: { bg: 'bg-emerald-50',  border: 'border-emerald-200',  text: 'text-emerald-700',  label: 'Received ✓' },
+  }[draft.status] || { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-700', label: draft.status };
+
+  return (
+    <Card className={`p-5 space-y-3 border-2 ${statusTone.bg} ${statusTone.border}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+            <DollarSign className="w-4 h-4" />
+            Commission
+          </div>
+          <div className={`text-xs mt-0.5 ${statusTone.text}`}>{statusTone.label}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-bold tabular-nums text-slate-900">
+            ${draft.amount ? Number(draft.amount).toLocaleString() : '—'}
+          </div>
+        </div>
+      </div>
+
+      {editing ? (
+        <div className="space-y-3 pt-2 border-t border-slate-200">
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Amount</label>
+            <input
+              type="number"
+              value={draft.amount}
+              onChange={(e) => setDraft({ ...draft, amount: e.target.value })}
+              placeholder="2400"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Notes (optional)</label>
+            <textarea
+              value={draft.notes}
+              onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
+              rows={2}
+              placeholder="e.g. 1 month rent split 60/40"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-none"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => { setDraft(initial); setEditing(false); }}>Cancel</Button>
+            <Button size="sm" onClick={() => save(draft)}>Save</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200">
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              onClick={() => markStatus('invoiced')}
+              disabled={draft.status === 'invoiced' || draft.status === 'received'}
+              className="px-3 py-1.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 disabled:opacity-40"
+            >
+              Mark invoiced
+            </button>
+            <button
+              onClick={() => markStatus('received')}
+              disabled={draft.status === 'received'}
+              className="px-3 py-1.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 disabled:opacity-40"
+            >
+              Mark received
+            </button>
+          </div>
+          <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
+            {draft.amount ? 'Edit' : 'Set amount'}
+          </Button>
+        </div>
+      )}
+
+      {(draft.invoiced_at || draft.received_at) && (
+        <div className="text-[11px] text-slate-500 space-y-0.5">
+          {draft.invoiced_at && <div>Invoiced {new Date(draft.invoiced_at).toLocaleDateString()}</div>}
+          {draft.received_at && <div>Received {new Date(draft.received_at).toLocaleDateString()}</div>}
+        </div>
+      )}
+      {draft.notes && <div className="text-[12px] italic text-slate-600">{draft.notes}</div>}
+    </Card>
+  );
+}
+
+// Summary card showing YTD + outstanding commissions. Lives at the top of
+// the Settings tab as well as on the Inbox dashboard (when there's data).
+function CommissionSummary({ leads }) {
+  const stats = useMemo(() => {
+    let received = 0, invoiced = 0, pending = 0;
+    let receivedYTD = 0;
+    const year = new Date().getFullYear();
+    for (const l of leads) {
+      const c = l.raw?.commission;
+      if (!c || !c.amount) continue;
+      const amt = Number(c.amount) || 0;
+      if (c.status === 'received') {
+        received += amt;
+        if (c.received_at && new Date(c.received_at).getFullYear() === year) {
+          receivedYTD += amt;
+        }
+      } else if (c.status === 'invoiced') {
+        invoiced += amt;
+      } else {
+        pending += amt;
+      }
+    }
+    return { received, invoiced, pending, receivedYTD };
+  }, [leads]);
+
+  if (stats.received + stats.invoiced + stats.pending === 0) return null;
+
+  return (
+    <Card className="p-5">
+      <SectionHeader icon={DollarSign}>Commissions</SectionHeader>
+      <div className="grid grid-cols-3 gap-3 mt-3">
+        <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3">
+          <div className="text-[10px] uppercase tracking-wider text-emerald-700 font-semibold mb-1">Received YTD</div>
+          <div className="text-xl font-bold tabular-nums text-emerald-900">${stats.receivedYTD.toLocaleString()}</div>
+        </div>
+        <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
+          <div className="text-[10px] uppercase tracking-wider text-amber-700 font-semibold mb-1">Invoiced</div>
+          <div className="text-xl font-bold tabular-nums text-amber-900">${stats.invoiced.toLocaleString()}</div>
+        </div>
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Pending</div>
+          <div className="text-xl font-bold tabular-nums text-slate-700">${stats.pending.toLocaleString()}</div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// One-click stage selector that lives in the lead detail header.
+// Changing stage:
+//   - updates lead.stage
+//   - logs an activity
+//   - auto-creates relevant follow-up tasks (see stageDefaultTasks)
+function StageDropdown({ lead, updateLead, showToast }) {
+  const [open, setOpen] = useState(false);
+  const currentStage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
+  const toneClass = {
+    neutral:  'bg-slate-100 text-slate-700 border-slate-200',
+    info:     'bg-blue-50 text-blue-700 border-blue-200',
+    warning:  'bg-amber-50 text-amber-700 border-amber-200',
+    positive: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    danger:   'bg-red-50 text-red-700 border-red-200',
+    accent:   'bg-violet-50 text-violet-700 border-violet-200',
+  }[currentStage.tone] || 'bg-slate-100 text-slate-700 border-slate-200';
+
+  const setStage = async (newStageId) => {
+    setOpen(false);
+    if (newStageId === lead.stage) return;
+    const firstName = (lead.fullName || '').split(' ')[0] || 'lead';
+    const newTasks = stageDefaultTasks(newStageId, lead, firstName);
+    await updateLead(lead.id, {
+      stage: newStageId,
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: 'stage-change',
+        timestamp: new Date().toISOString(),
+        message: `Stage → ${PIPELINE_STAGES.find(s => s.id === newStageId)?.label || newStageId}`,
+      }],
+      ...(newTasks.length > 0 ? { tasks: [...(lead.tasks || []), ...newTasks] } : {}),
+    });
+    showToast(`Stage → ${PIPELINE_STAGES.find(s => s.id === newStageId)?.label}${newTasks.length > 0 ? ` · ${newTasks.length} task${newTasks.length === 1 ? '' : 's'} added` : ''}`);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`px-3 py-1 rounded-full text-xs font-semibold border inline-flex items-center gap-1.5 hover:opacity-80 ${toneClass}`}
+      >
+        {currentStage.label}
+        <ChevronDown className="w-3 h-3" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-40 py-1 w-52 max-h-72 overflow-y-auto">
+            {PIPELINE_STAGES.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setStage(s.id)}
+                className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center justify-between ${
+                  s.id === lead.stage ? 'font-semibold text-slate-900' : 'text-slate-700'
+                }`}
+              >
+                {s.label}
+                {s.id === lead.stage && <Check className="w-3.5 h-3.5 text-emerald-600" />}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Shown after lead submits phase 1 — agent reviews their property picks
 // and clicks "Send scheduling link" to enable phase 2 (the time picker).
 function SchedulingLinkPanel({ lead, updateLead, showToast }) {
@@ -4836,7 +5314,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
             <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center shrink-0"><X className="w-4 h-4" /></button>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <Pill tone="neutral">{stage.label}</Pill>
+            <StageDropdown lead={lead} updateLead={updateLead} showToast={showToast} />
             <Pill tone="neutral">{lead.bucket}</Pill>
             {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out of SMS</Pill>}
             {lead.screening?.status === 'completed' && <Pill tone="accent" icon={Shield}>Screened</Pill>}
@@ -4882,6 +5360,8 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
               <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+              {/* Commission tracking (only after stage >= applied). */}
+              <CommissionPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
               <div>
                 <SectionHeader>Lead details</SectionHeader>
@@ -5561,7 +6041,7 @@ function TodayStrip({ metrics, upcomingTours, overdueTasks, todayTasks }) {
 // TOURS SECTION — sub-tabs for the consolidated Tours nav (calendar +
 // applications). Keeps existing per-view components untouched.
 // ============================================================
-function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStatus }) {
+function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStatus, updateLead, showToast }) {
   const [tab, setTab] = useState('upcoming');
   const appsCount = leads.flatMap(l => l.submissions || []).length;
   return (
@@ -5583,7 +6063,7 @@ function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStat
           </button>
         ))}
       </div>
-      {tab === 'upcoming' && <ToursView upcomingTours={upcomingTours} onSelectLead={onSelectLead} />}
+      {tab === 'upcoming' && <ToursView upcomingTours={upcomingTours} onSelectLead={onSelectLead} updateLead={updateLead} showToast={showToast} />}
       {tab === 'apps' && <SubmissionsView leads={leads} onSelectLead={onSelectLead} updateSubmissionStatus={updateSubmissionStatus} />}
     </div>
   );
@@ -5618,13 +6098,16 @@ function SettingsSection({
         ))}
       </div>
       {tab === 'agent' && (
-        <SettingsView
-          settings={settings}
-          saveSettings={saveSettings}
-          showToast={showToast}
-          timeOffset={timeOffset}
-          saveTimeOffset={saveTimeOffset}
-        />
+        <div className="space-y-6">
+          <CommissionSummary leads={leads} />
+          <SettingsView
+            settings={settings}
+            saveSettings={saveSettings}
+            showToast={showToast}
+            timeOffset={timeOffset}
+            saveTimeOffset={saveTimeOffset}
+          />
+        </div>
       )}
       {tab === 'properties' && (
         <PropertiesView

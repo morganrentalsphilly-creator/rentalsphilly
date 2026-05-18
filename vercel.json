@@ -4,6 +4,11 @@
     {
       "path": "/api/cron/dispatcher",
       "schedule": "*/1 * * * *"
+    },
+    {
+      "path": "/api/cron/daily-summary",
+      "schedule": "0 11 * * *"
     }
   ]
 }
+
