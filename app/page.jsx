@@ -66,13 +66,27 @@ const matchListings = (lead, pool, excludedBrokerages) => {
   const blocked = excludedBrokerages instanceof Set
     ? excludedBrokerages
     : new Set((excludedBrokerages || []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
+  // Range-aware bed/bath matching. "4+" or "3+" as the max means no upper
+  // bound, so we coerce those to Infinity. If only legacy `beds`/`baths`
+  // (single value) is present, treat them as the min and leave max open.
+  const parseUpper = (s) => {
+    if (s == null || s === '') return Infinity;
+    if (typeof s === 'string' && s.endsWith('+')) return Infinity;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : Infinity;
+  };
+  const bedsMin = Number(lead.bedsMin ?? lead.beds ?? 0) || 0;
+  const bedsMax = parseUpper(lead.bedsMax ?? lead.beds);
+  const bathsMin = Number(lead.bathsMin ?? lead.baths ?? 0) || 0;
+  const bathsMax = parseUpper(lead.bathsMax ?? lead.baths);
+
   return source.filter(l => {
     if (l.status && l.status !== 'active') return false;
     const office = String(l.listOffice || l.leasingOffice || '').trim().toLowerCase();
     if (office && blocked.has(office)) return false;
     const priceOk = l.price >= (Number(lead.budgetMin) || 0) && l.price <= (Number(lead.budgetMax) || 99999);
-    const bedsOk = !lead.beds || l.beds >= parseInt(lead.beds);
-    const bathsOk = !lead.baths || l.baths >= parseInt(lead.baths);
+    const bedsOk = l.beds >= bedsMin && l.beds <= bedsMax;
+    const bathsOk = l.baths >= bathsMin && l.baths <= bathsMax;
     const areaOk = !lead.areas || lead.areas.trim() === '' ||
       lead.areas.toLowerCase().split(/[,;]/).some(a => {
         const q = a.trim();
@@ -669,6 +683,14 @@ function hydrateLeads(data) {
     applicationStatus: lead.application_status,
     createdAt: lead.created_at || lead.createdAt,
     opted_out: !!lead.opted_out,
+    // Range + tour windows live in raw jsonb to avoid a schema migration.
+    bedsMin: lead.raw?.beds_min || null,
+    bedsMax: lead.raw?.beds_max || null,
+    bathsMin: lead.raw?.baths_min || null,
+    bathsMax: lead.raw?.baths_max || null,
+    tourAvailability: Array.isArray(lead.raw?.tour_availability) ? lead.raw.tour_availability : [],
+    curatedLinkUrl: lead.raw?.curated_link_url || null,
+    curatedLinkSentAt: lead.raw?.curated_link_sent_at || null,
 
     tours: (toursByLead[lead.id] || []).map((t) => ({
       id: t.id,
@@ -1105,6 +1127,7 @@ export default function App() {
       if ('applicationStatus' in leadFields) leadUpdatePayload.application_status = leadFields.applicationStatus;
       if ('screening' in leadFields) leadUpdatePayload.screening = leadFields.screening;
       if ('bucket' in leadFields) leadUpdatePayload.bucket = leadFields.bucket;
+      if ('raw' in leadFields) leadUpdatePayload.raw = leadFields.raw;
       if (Object.keys(leadUpdatePayload).length > 0) {
         await db.updateLead(id, leadUpdatePayload);
       }
@@ -1401,10 +1424,10 @@ export default function App() {
 
     const welcomeEmailSubject = 'Welcome to Rentals Philly';
     const welcomeEmailBody = isSoon
-      ? `Hi ${firstName} — welcome to Rentals Philly! I've pulled together a curated list of rentals matching your criteria.`
+      ? `Hi ${firstName} — thanks for reaching out! I'm hand-picking rentals that match your criteria and will send you a personalized link to view them within a few hours.`
       : `Hi ${firstName} — thanks for reaching out! Since your move-in date is further out, I'll follow up 75 days before.`;
     const welcomeSmsBody = isSoon
-      ? `Rentals Philly: Welcome ${firstName}! Your matches are ready.`
+      ? `Rentals Philly: Got it ${firstName}! I'm hand-picking matches now — expect a link with your listings within a few hours.`
       : `Rentals Philly: Thanks ${firstName}! I'll reach out 75 days before your move.`;
 
     // Email message inserted directly to DB below. SMS goes through sendSMS
@@ -1437,6 +1460,19 @@ export default function App() {
         status: 'pending',
         auto: true,
       });
+    } else {
+      // Moving-soon leads: agent needs to curate a BrightMLS portal link.
+      // Show as today's task so it stays top-of-mind on the dashboard.
+      tasks.push({
+        id: `t_${Date.now()}_curate`,
+        lead_id: id,
+        title: `Curate BrightMLS portal link for ${firstName}`,
+        due_date: new Date().toISOString().split('T')[0],
+        status: 'pending',
+        priority: 'high',
+        auto: true,
+        flags: ['curate-portal'],
+      });
     }
 
     try {
@@ -1458,6 +1494,15 @@ export default function App() {
         tour_type: lead.tourType,
         bucket,
         stage: 'new',
+        // Stash range + tour windows in raw jsonb so we don't need a
+        // schema migration. The CRM reads these via hydrateLeads.
+        raw: {
+          beds_min: lead.bedsMin || null,
+          beds_max: lead.bedsMax || null,
+          baths_min: lead.bathsMin || null,
+          baths_max: lead.bathsMax || null,
+          tour_availability: Array.isArray(lead.tourAvailability) ? lead.tourAvailability : [],
+        },
       });
       // Activity + tasks. Email + SMS rows are inserted by the server wrappers.
       await db.insertActivity(welcomeActivity);
@@ -1651,7 +1696,8 @@ export default function App() {
         </div>
       )}
       {view === 'landing' && <Landing onStart={() => setView('intake')} />}
-      {view === 'intake' && <IntakeForm onSubmit={async (data) => { const l = await addLead(data); setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'listings' : 'holding'); }} onBack={() => setView('landing')} />}
+      {view === 'intake' && <IntakeForm onSubmit={async (data) => { const l = await addLead(data); setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'curating' : 'holding'); }} onBack={() => setView('landing')} />}
+      {view === 'curating' && currentLead && <CuratingConfirmed lead={currentLead} agentName={settings.agentName} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
       {view === 'listings' && currentLead && <ListingsView lead={currentLead} properties={properties} excludedBrokerages={settings.excluded_brokerages || []} brightPortalUrls={Array.isArray(settings.bright_portal_urls) ? settings.bright_portal_urls : (settings.bright_portal_url ? [settings.bright_portal_url] : [])} onBookTour={(listings) => {
         setCurrentLead({ ...currentLead, _pendingListings: listings });
         if (currentLead.tourType === 'virtual') setView('virtual-request');
@@ -2096,6 +2142,55 @@ function BudgetRange({ min, max, onChange, lo = 500, hi = 5000, step = 100 }) {
   );
 }
 
+// Tour availability — multi-select chip picker. Stored as an array of strings
+// in lead.tour_availability. The agent sees these windows in the lead detail
+// when scheduling so they only offer slots that work for the lead.
+const TOUR_WINDOWS = [
+  { id: 'weekday-morning',   label: 'Weekday mornings',    sub: '8a – 12p' },
+  { id: 'weekday-afternoon', label: 'Weekday afternoons',  sub: '12p – 5p' },
+  { id: 'weekday-evening',   label: 'Weekday evenings',    sub: '5p – 8p' },
+  { id: 'sat-morning',       label: 'Saturday mornings',   sub: '8a – 12p' },
+  { id: 'sat-afternoon',     label: 'Saturday afternoons', sub: '12p – 5p' },
+  { id: 'sun-morning',       label: 'Sunday mornings',     sub: '8a – 12p' },
+  { id: 'sun-afternoon',     label: 'Sunday afternoons',   sub: '12p – 5p' },
+];
+
+function TourAvailabilityPicker({ value, onChange }) {
+  const selected = new Set(Array.isArray(value) ? value : []);
+  const toggle = (id) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    onChange(Array.from(next));
+  };
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+      {TOUR_WINDOWS.map((w) => {
+        const isOn = selected.has(w.id);
+        return (
+          <button
+            key={w.id}
+            type="button"
+            onClick={() => toggle(w.id)}
+            className={`text-left px-4 py-3.5 rounded-2xl border-2 transition-all flex items-center gap-3 ${
+              isOn
+                ? 'bg-slate-900 text-white border-slate-900 shadow-md'
+                : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+            }`}
+          >
+            <div className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${isOn ? 'bg-white' : 'border-2 border-slate-300'}`}>
+              {isOn && <Check className="w-3.5 h-3.5 text-slate-900" strokeWidth={3} />}
+            </div>
+            <div className="min-w-0">
+              <div className="font-semibold text-sm">{w.label}</div>
+              <div className={`text-xs ${isOn ? 'text-white/70' : 'text-slate-500'}`}>{w.sub}</div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function AreasPicker({ value, onChange }) {
   const [mapOpen, setMapOpen] = useState(false);
   const currentZips = (value || '')
@@ -2164,8 +2259,9 @@ function IntakeForm({ onSubmit, onBack }) {
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
     moveInDate: '', budgetMin: '', budgetMax: '',
-    beds: '', baths: '', areas: '',
+    beds: '', baths: '', bedsMin: '1', bedsMax: '2', bathsMin: '1', bathsMax: '1', areas: '',
     employed: '', creditScore: '', tourType: '',
+    tourAvailability: [],
   });
   const update = (k, v) => setData({ ...data, [k]: v });
 
@@ -2204,7 +2300,7 @@ function IntakeForm({ onSubmit, onBack }) {
       title: 'How much space do you need?',
       subtitle: 'Pick the minimum you\'d consider.',
       valid: () => data.beds !== '' && data.baths !== '',
-      fields: <BedBathSelector beds={data.beds} baths={data.baths} onBedsChange={(v) => update('beds', v)} onBathsChange={(v) => update('baths', v)} />
+      fields: <BedBathSelector bedsMin={data.bedsMin || data.beds || '1'} bedsMax={data.bedsMax || data.beds || '1'} bathsMin={data.bathsMin || data.baths || '1'} bathsMax={data.bathsMax || data.baths || '1'} onChange={(patch) => setData({ ...data, ...patch, beds: patch.bedsMin || data.bedsMin || data.beds, baths: patch.bathsMin || data.bathsMin || data.baths })} />
     },
     {
       title: 'Where do you want to live?',
@@ -2214,6 +2310,17 @@ function IntakeForm({ onSubmit, onBack }) {
         <AreasPicker
           value={data.areas}
           onChange={(v) => update('areas', v)}
+        />
+      )
+    },
+    {
+      title: 'When are you free to tour?',
+      subtitle: 'Pick all the windows that work — we\'ll book showings within these.',
+      valid: () => Array.isArray(data.tourAvailability) && data.tourAvailability.length > 0,
+      fields: (
+        <TourAvailabilityPicker
+          value={data.tourAvailability}
+          onChange={(v) => update('tourAvailability', v)}
         />
       )
     },
@@ -2456,7 +2563,11 @@ function DatePicker({ value, onChange }) {
 // ============================================================
 // BED / BATH SELECTOR — Zillow-style button groups
 // ============================================================
-function BedBathSelector({ beds, baths, onBedsChange, onBathsChange }) {
+// Numeric helpers for range selection. We store option values as numeric
+// strings; "4+" in beds maps to 4 in the numeric domain with a special
+// "no-upper-bound" treatment when it's the chosen MAX (handled by
+// matchListings — see Infinity coercion there).
+function BedBathSelector({ bedsMin, bedsMax, bathsMin, bathsMax, onChange }) {
   const bedOptions = [
     { value: '0', label: 'Studio' },
     { value: '1', label: '1' },
@@ -2472,6 +2583,78 @@ function BedBathSelector({ beds, baths, onBedsChange, onBathsChange }) {
     { value: '3', label: '3+' },
   ];
 
+  // Defaults: if nothing chosen yet, start the range at the first option.
+  const bMin = bedsMin || '1';
+  const bMax = bedsMax || bMin;
+  const baMin = bathsMin || '1';
+  const baMax = bathsMax || baMin;
+
+  // When user taps a pill, decide whether it should become the new min, the
+  // new max, or reset the range to that single value. Behavior:
+  //   - tap below current min  → expand range down (new min)
+  //   - tap above current max  → expand range up   (new max)
+  //   - tap exactly at min === max → no-op
+  //   - tap inside an existing range → collapse to just that value
+  //   - tap at current min (while range > 1)  → shrink min up to that pill
+  //     (covered by the "inside range" rule)
+  const updateRange = (options, val, currentMin, currentMax, minKey, maxKey) => {
+    const idx = options.findIndex((o) => o.value === val);
+    const minIdx = options.findIndex((o) => o.value === currentMin);
+    const maxIdx = options.findIndex((o) => o.value === currentMax);
+
+    let nextMin = currentMin;
+    let nextMax = currentMax;
+    if (idx < minIdx) {
+      nextMin = val;                       // expand down
+    } else if (idx > maxIdx) {
+      nextMax = val;                       // expand up
+    } else if (minIdx !== maxIdx) {
+      // tapped inside an existing range → collapse to just that pill
+      nextMin = val;
+      nextMax = val;
+    }
+    // tapping the single selected value when min === max → no-op
+    onChange({ [minKey]: nextMin, [maxKey]: nextMax });
+  };
+
+  const renderRow = (options, currentMin, currentMax, minKey, maxKey) => {
+    const minIdx = options.findIndex((o) => o.value === currentMin);
+    const maxIdx = options.findIndex((o) => o.value === currentMax);
+    return (
+      <div className="grid grid-cols-5 gap-2">
+        {options.map((o, i) => {
+          const inRange = i >= minIdx && i <= maxIdx;
+          const isEndpoint = i === minIdx || i === maxIdx;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => updateRange(options, o.value, currentMin, currentMax, minKey, maxKey)}
+              className={`py-4 rounded-2xl text-base font-semibold transition-all ${
+                isEndpoint
+                  ? 'bg-slate-900 text-white shadow-md scale-[1.02]'
+                  : inRange
+                    ? 'bg-slate-200 text-slate-900'
+                    : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+              }`}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const bedLabel =
+    bMin === bMax
+      ? (bMin === '0' ? 'Studio' : bMin === '4' ? '4+ bedrooms' : `Exactly ${bMin} bedroom${bMin === '1' ? '' : 's'}`)
+      : `${bMin === '0' ? 'Studio' : bMin} to ${bMax === '4' ? '4+' : bMax} bedrooms`;
+  const bathLabel =
+    baMin === baMax
+      ? (baMin === '3' ? '3+ bathrooms' : `Exactly ${baMin} bathroom${baMin === '1' ? '' : 's'}`)
+      : `${baMin} to ${baMax === '3' ? '3+' : baMax} bathrooms`;
+
   return (
     <div className="space-y-7">
       <div>
@@ -2481,25 +2664,10 @@ function BedBathSelector({ beds, baths, onBedsChange, onBathsChange }) {
           </div>
           <div>
             <div className="text-sm font-semibold text-slate-900">Bedrooms</div>
-            <div className="text-xs text-slate-500">Minimum count</div>
+            <div className="text-xs text-slate-500">{bedLabel}</div>
           </div>
         </div>
-        <div className="grid grid-cols-5 gap-2">
-          {bedOptions.map(o => (
-            <button
-              key={o.value}
-              type="button"
-              onClick={() => onBedsChange(o.value)}
-              className={`py-4 rounded-2xl text-base font-semibold transition-all ${
-                beds === o.value
-                  ? 'bg-slate-900 text-white shadow-md scale-[1.02]'
-                  : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
-              }`}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
+        {renderRow(bedOptions, bMin, bMax, 'bedsMin', 'bedsMax')}
       </div>
 
       <div>
@@ -2509,25 +2677,10 @@ function BedBathSelector({ beds, baths, onBedsChange, onBathsChange }) {
           </div>
           <div>
             <div className="text-sm font-semibold text-slate-900">Bathrooms</div>
-            <div className="text-xs text-slate-500">Minimum count</div>
+            <div className="text-xs text-slate-500">{bathLabel}</div>
           </div>
         </div>
-        <div className="grid grid-cols-5 gap-2">
-          {bathOptions.map(o => (
-            <button
-              key={o.value}
-              type="button"
-              onClick={() => onBathsChange(o.value)}
-              className={`py-4 rounded-2xl text-base font-semibold transition-all ${
-                baths === o.value
-                  ? 'bg-slate-900 text-white shadow-md scale-[1.02]'
-                  : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
-              }`}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
+        {renderRow(bathOptions, baMin, baMax, 'bathsMin', 'bathsMax')}
       </div>
     </div>
   );
@@ -2874,6 +3027,66 @@ function BookingConfirmed({ lead, onDone }) {
         </Card>
       )}
       <div className="flex justify-center"><Button onClick={onDone}>Done</Button></div>
+    </div>
+  );
+}
+
+// Confirmation screen shown immediately after a lead submits intake.
+// Communicates: (1) we got it, (2) your agent is hand-picking, (3) link is
+// coming via SMS + email shortly. Replaces the previous "here are 8 matches"
+// screen since real matched listings (with photos) require BrightMLS API
+// access we don't have yet.
+function CuratingConfirmed({ lead, agentName, onDone }) {
+  const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+  const agent = agentName && agentName !== '[Your name]' ? agentName : 'your agent';
+  const windowsByLabel = (lead.tourAvailability || [])
+    .map((id) => TOUR_WINDOWS.find((w) => w.id === id)?.label)
+    .filter(Boolean);
+  return (
+    <div className="max-w-xl mx-auto px-6 md:px-8 py-16">
+      <div className="text-center mb-8">
+        <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6">
+          <CheckCircle2 className="w-6 h-6" strokeWidth={2.5} />
+        </div>
+        <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight mb-4">
+          Got it, {firstName}.
+        </h1>
+        <p className="text-slate-600 leading-relaxed max-w-md mx-auto">
+          {agent} is hand-picking rentals that match your criteria. You&apos;ll get a
+          personalized link via text and email within a few hours.
+        </p>
+      </div>
+
+      <Card className="p-5 space-y-4 mb-6">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Your criteria</div>
+          <div className="text-sm text-slate-700 space-y-1">
+            <div><span className="text-slate-500">Move-in:</span> {fmtDate(lead.moveInDate)}</div>
+            <div><span className="text-slate-500">Budget:</span> ${Number(lead.budgetMin || 0).toLocaleString()} – ${Number(lead.budgetMax || 0).toLocaleString()}/mo</div>
+            <div><span className="text-slate-500">Beds:</span> {lead.bedsMin === lead.bedsMax ? (lead.bedsMin === '0' ? 'Studio' : `${lead.bedsMin}`) : `${lead.bedsMin === '0' ? 'Studio' : lead.bedsMin}–${lead.bedsMax === '4' ? '4+' : lead.bedsMax}`}{' · '}
+              <span className="text-slate-500">Baths:</span> {lead.bathsMin === lead.bathsMax ? lead.bathsMin : `${lead.bathsMin}–${lead.bathsMax === '3' ? '3+' : lead.bathsMax}`}</div>
+            {lead.areas && <div><span className="text-slate-500">Areas:</span> {lead.areas}</div>}
+          </div>
+        </div>
+        {windowsByLabel.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Tour windows</div>
+            <div className="flex flex-wrap gap-1.5">
+              {windowsByLabel.map((label) => (
+                <Pill key={label} tone="neutral">{label}</Pill>
+              ))}
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <div className="text-center text-xs text-slate-500 mb-8">
+        Watch your inbox at <span className="text-slate-700 font-medium">{lead.email}</span> and
+        text messages at <span className="text-slate-700 font-medium">{lead.phone}</span>.
+      </div>
+      <div className="flex justify-center">
+        <Button variant="ghost" onClick={onDone}>Done</Button>
+      </div>
     </div>
   );
 }
@@ -4161,6 +4374,149 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 // ============================================================
 // LEAD DETAIL
 // ============================================================
+// Curated-link panel — the agent's primary action for a new lead.
+// Paste a BrightMLS Matrix portal URL → click Send → app SMSes + emails the
+// lead with the link, marks the lead's curation task done, logs activity,
+// stores the URL on the lead so we don't re-send.
+function CuratedLinkPanel({ lead, updateLead, showToast }) {
+  const [url, setUrl] = useState(lead.curatedLinkUrl || '');
+  const [busy, setBusy] = useState(false);
+  const alreadySent = !!lead.curatedLinkSentAt;
+
+  const firstName = (lead.fullName || '').split(' ')[0];
+  const defaultMessage = `Hi ${firstName} — here are the rentals I hand-picked for you. Browse the photos and reply with which ones you'd like to tour. — ${'-'}`;
+
+  const onSend = async () => {
+    const cleanUrl = url.trim();
+    if (!cleanUrl || !/^https?:\/\//.test(cleanUrl)) {
+      showToast('Paste a valid BrightMLS portal URL first');
+      return;
+    }
+    setBusy(true);
+
+    const smsBody = `Rentals Philly: Hand-picked rentals for you — ${cleanUrl} Reply with the ones you want to tour.`;
+    const emailSubject = 'Your hand-picked Philly rentals';
+    const emailBody =
+      `Hi ${firstName},\n\n` +
+      `I picked these rentals based on what you told me. Click below to see photos and details on BrightMLS:\n\n` +
+      `${cleanUrl}\n\n` +
+      `Reply to this email (or text me back) with the addresses you'd like to tour and I'll get them on the calendar.\n\n` +
+      `— Morgan`;
+
+    try {
+      // Fire the SMS (server wrapper logs to messages + handles opt-out).
+      const smsResult = await sendSMS({
+        leadId: lead.id,
+        body: smsBody,
+        kind: 'manual',
+        idempotencyKey: `curated-link-${lead.id}-${Date.now()}`,
+        automated: false,
+      });
+      if (!smsResult.ok && smsResult.error !== 'opted_out') {
+        showToast(`SMS not sent — ${smsResult.error || 'send failed'}`);
+        setBusy(false);
+        return;
+      }
+      // Email in parallel.
+      await sendEmail({
+        leadId: lead.id,
+        subject: emailSubject,
+        body: emailBody,
+        kind: 'manual',
+        idempotencyKey: `curated-link-email-${lead.id}-${Date.now()}`,
+        automated: false,
+      });
+
+      // Mark curation task done + update lead with stored URL + activity log.
+      const updatedTasks = (lead.tasks || []).map((t) =>
+        Array.isArray(t.flags) && t.flags.includes('curate-portal') && t.status === 'pending'
+          ? { ...t, status: 'done', completedAt: new Date().toISOString() }
+          : t
+      );
+      await updateLead(lead.id, {
+        raw: { ...(lead.raw || {}), curated_link_url: cleanUrl, curated_link_sent_at: new Date().toISOString() },
+        curatedLinkUrl: cleanUrl,
+        curatedLinkSentAt: new Date().toISOString(),
+        stage: lead.stage === 'new' ? 'matched' : lead.stage,
+        tasks: updatedTasks,
+        activities: [...(lead.activities || []), {
+          id: `a_${Date.now()}`,
+          type: 'curated-link-sent',
+          timestamp: new Date().toISOString(),
+          message: `Curated BrightMLS portal link sent to ${firstName}`,
+        }],
+      });
+      showToast('Portal link sent — lead got SMS + email');
+    } catch (err) {
+      console.error('[curated link] send failed', err);
+      showToast('Send failed — check logs');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Compact "already sent" state once link has been delivered.
+  if (alreadySent && !url.trim()) {
+    return (
+      <Card className="p-4 bg-emerald-50 border-emerald-200">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-slate-900">Curated link sent</div>
+            <div className="text-xs text-slate-600 mt-0.5">
+              Sent {new Date(lead.curatedLinkSentAt).toLocaleString()} ·{' '}
+              <a href={lead.curatedLinkUrl} target="_blank" rel="noopener noreferrer" className="underline text-slate-700">
+                view the portal <ExternalLink className="w-3 h-3 inline" />
+              </a>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => { setUrl(lead.curatedLinkUrl || ''); }}
+          >
+            Resend / update
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-5 space-y-3 bg-amber-50 border-amber-200">
+      <div className="flex items-start gap-3">
+        <div className="w-8 h-8 rounded-lg bg-amber-200 text-amber-900 flex items-center justify-center shrink-0">
+          <Sparkles className="w-4 h-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-slate-900">
+            {alreadySent ? 'Update curated portal link' : 'Send curated portal link'}
+          </div>
+          <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+            In BrightMLS Matrix: run a search matching this lead&apos;s criteria → <strong>Share → Send to client</strong> → copy the URL → paste below.
+            One click sends the link via SMS + email.
+          </div>
+        </div>
+      </div>
+      <input
+        type="url"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
+        className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono"
+      />
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] text-slate-500">
+          Lead will get text to <span className="font-mono">{lead.phone}</span> + email to <span className="font-mono">{lead.email}</span>
+        </div>
+        <Button onClick={onSend} disabled={busy || !url.trim()}>
+          {busy ? 'Sending…' : (alreadySent ? 'Re-send' : 'Send link')}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
@@ -4226,14 +4582,25 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
         <div className="flex-1 overflow-y-auto p-5">
           {tab === 'overview' && (
             <div className="space-y-5">
+              {/* Curated link panel — agent's primary action on a fresh lead. */}
+              <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+
               <div>
                 <SectionHeader>Lead details</SectionHeader>
                 <div className="grid grid-cols-2 gap-4">
                   <InfoItem label="Budget" value={`${fmtCurrency(Number(lead.budgetMin))} – ${fmtCurrency(Number(lead.budgetMax))}`} />
-                  <InfoItem label="Beds / Baths" value={`${lead.beds === '0' ? 'Studio' : `${lead.beds}+ bd`} · ${lead.baths}+ ba`} />
+                  <InfoItem
+                    label="Beds / Baths"
+                    value={`${lead.bedsMin === lead.bedsMax ? (lead.bedsMin === '0' ? 'Studio' : lead.bedsMin || lead.beds || '?') : `${lead.bedsMin === '0' ? 'Studio' : lead.bedsMin}–${lead.bedsMax === '4' ? '4+' : lead.bedsMax}`} bd · ${lead.bathsMin === lead.bathsMax ? (lead.bathsMin || lead.baths || '?') : `${lead.bathsMin}–${lead.bathsMax === '3' ? '3+' : lead.bathsMax}`} ba`}
+                  />
                   <InfoItem label="Areas" value={lead.areas || 'No preference'} />
                   <InfoItem label="Move-in" value={fmtDate(lead.moveInDate)} />
-                  <InfoItem label="Tour preference" value={lead.tourType === 'virtual' ? 'Virtual' : 'In-person'} />
+                  <InfoItem
+                    label="Tour windows"
+                    value={(lead.tourAvailability || []).length > 0
+                      ? (lead.tourAvailability || []).map(id => TOUR_WINDOWS.find(w => w.id === id)?.label).filter(Boolean).join(', ')
+                      : 'Not specified'}
+                  />
                   <InfoItem label="Credit (self-reported)" value={lead.creditScore} />
                 </div>
               </div>
