@@ -113,21 +113,29 @@ const DEFAULT_AGENT_SETTINGS = {
   },
   _slotsEmptyNotifiedAt: null,
 
-  // Agent showing-availability windows. Powers the time picker on /c/[token].
-  // Keys are day-of-week (0=Sun, 1=Mon, ... 6=Sat). Values are arrays of
-  // start-time labels (e.g. "5:00 PM"). Each slot is 1-hour.
-  // blocked_dates is an array of YYYY-MM-DD strings (vacations, days off).
+  // Agent showing-availability — date-specific shifts that power the time
+  // picker on /c/[token]. Each shift is a real calendar entry; the system
+  // splits a shift into 1-hour bookable slots.
+  //   shifts: [{ id, date: 'YYYY-MM-DD', start: 'HH:MM' (24h), end: 'HH:MM' (24h), label? }]
+  //   blocked_dates: ['YYYY-MM-DD', ...]  (vacations / days off, kills any
+  //     shift that happens to fall on that date)
+  //
+  // `weekly_template` is OPTIONAL — it's just a convenience for the agent to
+  // auto-fill the next N weeks of shifts via a button. The actual source of
+  // truth is `shifts`. weekly_template format:
+  //   { 0: [{ start: '17:00', end: '19:00' }], 1: [...], ... }  (0=Sun)
   agent_availability: {
-    weekly: {
+    shifts: [],
+    blocked_dates: [],
+    weekly_template: {
       0: [],
       1: [],
-      2: ['5:00 PM', '6:00 PM'],
-      3: ['5:00 PM', '6:00 PM'],
-      4: ['5:00 PM', '6:00 PM'],
-      5: ['5:00 PM', '6:00 PM'],
-      6: ['10:00 AM', '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM'],
+      2: [{ start: '17:00', end: '19:00' }],
+      3: [{ start: '17:00', end: '19:00' }],
+      4: [{ start: '17:00', end: '19:00' }],
+      5: [{ start: '17:00', end: '19:00' }],
+      6: [{ start: '10:00', end: '15:00' }],
     },
-    blocked_dates: [],
   },
 
   // Per-category welcome message templates. Sent automatically when a new
@@ -3488,7 +3496,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         leads={leads}
       />
 
-      {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} />}
+      {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} updateLead={updateLead} settings={settings} showToast={showToast} />}
       {subview === 'leads' && (
         <LeadsListView
           leads={leads}
@@ -3505,6 +3513,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         <ToursSection
           upcomingTours={upcomingTours}
           leads={leads}
+          settings={settings}
           onSelectLead={setSelectedLeadId}
           updateSubmissionStatus={updateSubmissionStatus}
           updateLead={updateLead}
@@ -4179,7 +4188,9 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
 // SETTINGS
 // ============================================================
 // ============================================================
-// AVAILABILITY EDITOR — weekly recurring slots + blocked dates
+// SHIFT-BASED AVAILABILITY EDITOR
+// Calendar grid for the next N weeks; click a day to add shifts.
+// Optional weekly template auto-fills the next 4 weeks.
 // ============================================================
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const ALL_HOURS = [
@@ -4188,103 +4199,355 @@ const ALL_HOURS = [
   '6:00 PM', '7:00 PM', '8:00 PM',
 ];
 
-function AvailabilityEditor({ value, onChange }) {
-  const weekly = value?.weekly || {};
+// HH:MM (24h) → "5:00 PM"
+function fmt24to12(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+// "5:00 PM" → "17:00"
+function fmt12to24(label) {
+  if (!label) return '';
+  const [time, ampm] = label.split(' ');
+  let [h, m] = time.split(':').map(Number);
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${String(m || 0).padStart(2, '0')}`;
+}
+// Split a shift {date, start, end} into 1-hour slot objects {id, date, time}.
+function shiftToSlots(shift) {
+  const out = [];
+  const [sh, sm] = shift.start.split(':').map(Number);
+  const [eh, em] = shift.end.split(':').map(Number);
+  const startMin = sh * 60 + sm;
+  const endMin = eh * 60 + em;
+  for (let cur = startMin; cur + 60 <= endMin; cur += 60) {
+    const h = Math.floor(cur / 60);
+    const m = cur % 60;
+    const label = fmt24to12(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    out.push({
+      id: `${shift.date}_${label.replace(/[:\s]/g, '')}`,
+      date: shift.date,
+      time: label,
+    });
+  }
+  return out;
+}
+// All bookable slots from all shifts (used by ShiftEditor preview + curated API).
+function shiftsToSlots(shifts, blockedDates = []) {
+  const blocked = new Set(blockedDates);
+  return (shifts || [])
+    .filter((s) => !blocked.has(s.date))
+    .flatMap(shiftToSlots);
+}
+
+// Generate the next `weeks` worth of shifts from a weekly template, skipping
+// any date that already has shifts (preserves manual overrides).
+function applyWeeklyTemplate(template, existingShifts, weeks = 4) {
+  const startDate = new Date();
+  startDate.setHours(0, 0, 0, 0);
+  const existingDates = new Set((existingShifts || []).map((s) => s.date));
+  const out = [...(existingShifts || [])];
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = new Date(startDate);
+    d.setDate(startDate.getDate() + i);
+    const dateStr = d.toISOString().slice(0, 10);
+    if (existingDates.has(dateStr)) continue;
+    const dow = d.getDay();
+    const ranges = template?.[dow] || template?.[String(dow)] || [];
+    for (const r of ranges) {
+      out.push({
+        id: `sh_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        date: dateStr,
+        start: r.start,
+        end: r.end,
+      });
+    }
+  }
+  return out.sort((a, b) => (a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)));
+}
+
+// Build a 4-week calendar grid (Sun-first weeks) starting from today's week.
+function buildCalendarWeeks(numWeeks = 4) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // Find the Sunday of this week.
+  const firstSun = new Date(today);
+  firstSun.setDate(today.getDate() - today.getDay());
+  const weeks = [];
+  for (let w = 0; w < numWeeks; w++) {
+    const days = [];
+    for (let d = 0; d < 7; d++) {
+      const date = new Date(firstSun);
+      date.setDate(firstSun.getDate() + w * 7 + d);
+      days.push(date);
+    }
+    weeks.push(days);
+  }
+  return weeks;
+}
+
+function ShiftEditor({ value, onChange, tours = [] }) {
+  const shifts = value?.shifts || [];
   const blocked = value?.blocked_dates || [];
-  const [blockDate, setBlockDate] = useState('');
+  const template = value?.weekly_template || {};
+  const [editingDate, setEditingDate] = useState(null); // YYYY-MM-DD
+  const [showTemplate, setShowTemplate] = useState(false);
 
-  const toggleHour = (dow, hour) => {
-    const current = new Set(weekly[dow] || weekly[String(dow)] || []);
-    if (current.has(hour)) current.delete(hour);
-    else current.add(hour);
-    // Sort by 24h time order
-    const sorted = ALL_HOURS.filter((h) => current.has(h));
-    onChange({ ...value, weekly: { ...weekly, [dow]: sorted } });
-  };
+  const weeks = buildCalendarWeeks(4);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const isBlocked = (d) => blocked.includes(d);
 
-  const addBlocked = () => {
-    if (!blockDate) return;
-    if (blocked.includes(blockDate)) return;
-    onChange({ ...value, blocked_dates: [...blocked, blockDate].sort() });
-    setBlockDate('');
+  // Index shifts + tours by date for quick lookup.
+  const shiftsByDate = useMemo(() => {
+    const m = {};
+    for (const s of shifts) (m[s.date] = m[s.date] || []).push(s);
+    return m;
+  }, [shifts]);
+  const toursByDate = useMemo(() => {
+    const m = {};
+    for (const t of tours) {
+      if (!t.date) continue;
+      if (t.status === 'cancelled') continue;
+      (m[t.date] = m[t.date] || []).push(t);
+    }
+    return m;
+  }, [tours]);
+
+  const addShift = (date, start, end) => {
+    const newShift = { id: `sh_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, date, start, end };
+    const next = [...shifts, newShift].sort((a, b) =>
+      a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)
+    );
+    onChange({ ...value, shifts: next });
   };
-  const removeBlocked = (d) => {
-    onChange({ ...value, blocked_dates: blocked.filter((x) => x !== d) });
+  const removeShift = (id) => {
+    onChange({ ...value, shifts: shifts.filter((s) => s.id !== id) });
+  };
+  const toggleBlocked = (date) => {
+    const next = isBlocked(date) ? blocked.filter((d) => d !== date) : [...blocked, date].sort();
+    onChange({ ...value, blocked_dates: next });
+  };
+  const fillFromTemplate = () => {
+    const next = applyWeeklyTemplate(template, shifts, 4);
+    onChange({ ...value, shifts: next });
+  };
+  const clearFuture = () => {
+    const next = shifts.filter((s) => s.date < todayStr);
+    onChange({ ...value, shifts: next });
+  };
+  const updateTemplate = (dow, idx, key, val) => {
+    const list = (template[dow] || []).slice();
+    list[idx] = { ...list[idx], [key]: val };
+    onChange({ ...value, weekly_template: { ...template, [dow]: list } });
+  };
+  const addTemplateRange = (dow) => {
+    const list = (template[dow] || []).slice();
+    list.push({ start: '09:00', end: '12:00' });
+    onChange({ ...value, weekly_template: { ...template, [dow]: list } });
+  };
+  const removeTemplateRange = (dow, idx) => {
+    const list = (template[dow] || []).filter((_, i) => i !== idx);
+    onChange({ ...value, weekly_template: { ...template, [dow]: list } });
   };
 
   return (
     <Card className="p-5 space-y-5">
       <SectionHeader icon={CalendarDays}>Tour availability</SectionHeader>
       <div className="text-sm text-slate-600 leading-relaxed">
-        Pick the hours each weekday you&apos;re available for tours. Leads see these as
-        clickable time slots on their scheduling page. Slots already booked by other
-        tours and slots within 24h are automatically hidden.
+        Add specific dates and shifts when you can run tours. When you send a curated link,
+        the lead sees these exact windows split into 1-hour slots. Click any day to add a shift,
+        or use the weekly template to auto-fill the next 4 weeks in one click.
       </div>
 
-      <div className="space-y-1.5">
-        {DAYS.map((dayLabel, dow) => {
-          const hours = new Set(weekly[dow] || weekly[String(dow)] || []);
-          return (
-            <div key={dow} className="flex items-center gap-3">
-              <div className="w-10 text-xs font-semibold text-slate-700 tabular-nums">{dayLabel}</div>
-              <div className="flex flex-wrap gap-1 flex-1">
-                {ALL_HOURS.map((h) => {
-                  const on = hours.has(h);
-                  return (
-                    <button
-                      key={h}
-                      type="button"
-                      onClick={() => toggleHour(dow, h)}
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors ${
-                        on
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
-                      }`}
-                    >
-                      {h.replace(':00 ', '').replace(' AM', 'a').replace(' PM', 'p')}
-                    </button>
-                  );
-                })}
-                {hours.size === 0 && <span className="text-[11px] text-slate-400 italic ml-1">No tours</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="border-t border-slate-100 pt-4">
-        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Blocked dates (vacation, days off)</div>
-        <div className="flex items-center gap-2 mb-2">
-          <input
-            type="date"
-            value={blockDate}
-            onChange={(e) => setBlockDate(e.target.value)}
-            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-slate-400"
-          />
-          <Button size="sm" onClick={addBlocked} disabled={!blockDate}>Add</Button>
-        </div>
-        {blocked.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {blocked.map((d) => (
-              <button
-                key={d}
-                onClick={() => removeBlocked(d)}
-                className="px-2.5 py-1 rounded-full text-xs bg-slate-100 text-slate-700 inline-flex items-center gap-1.5 hover:bg-slate-200"
-              >
-                {new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                <X className="w-3 h-3" />
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="text-xs text-slate-400 italic">None — leads can book any day within your weekly availability.</div>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={fillFromTemplate} icon={Calendar}>Apply weekly template (4 weeks)</Button>
+        <Button size="sm" variant="secondary" onClick={() => setShowTemplate(!showTemplate)}>
+          {showTemplate ? 'Hide' : 'Edit'} weekly template
+        </Button>
+        {shifts.some((s) => s.date >= todayStr) && (
+          <Button size="sm" variant="secondary" onClick={clearFuture}>Clear all future shifts</Button>
         )}
       </div>
+
+      {showTemplate && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Weekly template</div>
+          {DAYS.map((dayLabel, dow) => {
+            const ranges = template[dow] || [];
+            return (
+              <div key={dow} className="flex items-start gap-3">
+                <div className="w-10 text-xs font-semibold text-slate-700 pt-1.5">{dayLabel}</div>
+                <div className="flex-1 space-y-1.5">
+                  {ranges.length === 0 && <div className="text-xs italic text-slate-400 py-1.5">No shifts</div>}
+                  {ranges.map((r, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <input type="time" value={r.start} onChange={(e) => updateTemplate(dow, idx, 'start', e.target.value)} className="text-xs border border-slate-200 rounded px-2 py-1" />
+                      <span className="text-xs text-slate-400">to</span>
+                      <input type="time" value={r.end} onChange={(e) => updateTemplate(dow, idx, 'end', e.target.value)} className="text-xs border border-slate-200 rounded px-2 py-1" />
+                      <button type="button" onClick={() => removeTemplateRange(dow, idx)} className="text-slate-400 hover:text-red-600">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => addTemplateRange(dow)} className="text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1">
+                    <Plus className="w-3 h-3" /> add shift
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* CALENDAR GRID */}
+      <div>
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {DAYS.map((d) => (
+            <div key={d} className="text-[10px] uppercase tracking-wider text-slate-400 text-center font-semibold py-1">{d}</div>
+          ))}
+        </div>
+        {weeks.map((week, wi) => (
+          <div key={wi} className="grid grid-cols-7 gap-1 mb-1">
+            {week.map((d) => {
+              const dateStr = d.toISOString().slice(0, 10);
+              const isPast = dateStr < todayStr;
+              const isToday = dateStr === todayStr;
+              const dayShifts = shiftsByDate[dateStr] || [];
+              const dayTours = toursByDate[dateStr] || [];
+              const blockedDay = isBlocked(dateStr);
+              return (
+                <button
+                  key={dateStr}
+                  type="button"
+                  disabled={isPast}
+                  onClick={() => setEditingDate(dateStr)}
+                  className={`min-h-[78px] rounded-lg p-1.5 text-left border transition-colors ${
+                    isPast ? 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed' :
+                    blockedDay ? 'bg-red-50 border-red-200 hover:border-red-300' :
+                    dayShifts.length > 0 ? 'bg-emerald-50 border-emerald-200 hover:border-emerald-300' :
+                    'bg-white border-slate-200 hover:border-slate-400'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-[11px] font-semibold ${isToday ? 'text-brand-gold' : ''}`}>
+                      {d.getDate()}
+                    </span>
+                    {dayTours.length > 0 && (
+                      <span className="text-[9px] bg-blue-600 text-white rounded-full px-1.5 leading-tight">{dayTours.length}</span>
+                    )}
+                  </div>
+                  {blockedDay ? (
+                    <div className="text-[9px] text-red-700 mt-1">Off</div>
+                  ) : (
+                    <div className="space-y-0.5 mt-1">
+                      {dayShifts.slice(0, 2).map((s) => (
+                        <div key={s.id} className="text-[9px] bg-emerald-200 text-emerald-900 rounded px-1 py-px truncate">
+                          {fmt24to12(s.start).replace(':00', '')}–{fmt24to12(s.end).replace(':00', '')}
+                        </div>
+                      ))}
+                      {dayShifts.length > 2 && (
+                        <div className="text-[9px] text-emerald-700">+{dayShifts.length - 2} more</div>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* DATE EDITOR MODAL */}
+      {editingDate && (
+        <DateShiftModal
+          date={editingDate}
+          shifts={shiftsByDate[editingDate] || []}
+          isBlocked={isBlocked(editingDate)}
+          onClose={() => setEditingDate(null)}
+          onAddShift={(start, end) => addShift(editingDate, start, end)}
+          onRemoveShift={removeShift}
+          onToggleBlocked={() => toggleBlocked(editingDate)}
+        />
+      )}
     </Card>
   );
 }
 
-function SettingsView({ settings, saveSettings, showToast }) {
+function DateShiftModal({ date, shifts, isBlocked, onClose, onAddShift, onRemoveShift, onToggleBlocked }) {
+  const [start, setStart] = useState('17:00');
+  const [end, setEnd] = useState('19:00');
+  const dateLabel = new Date(date + 'T12:00:00').toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric',
+  });
+  const add = () => {
+    if (!start || !end || start >= end) return;
+    onAddShift(start, end);
+    setStart(end);
+    setEnd('');
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-slate-900">{dateLabel}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
+        </div>
+        {isBlocked ? (
+          <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-800">
+            This day is marked off. Any shifts you add won&apos;t appear to leads until you unblock it.
+          </div>
+        ) : null}
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Shifts</div>
+          {shifts.length === 0 ? (
+            <div className="text-sm italic text-slate-400 py-2">No shifts yet.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {shifts.map((s) => (
+                <div key={s.id} className="flex items-center justify-between rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2">
+                  <div className="text-sm font-medium text-emerald-900">
+                    {fmt24to12(s.start)} – {fmt24to12(s.end)}
+                    <span className="text-xs text-emerald-700 ml-2">
+                      ({Math.max(0, Math.floor((parseInt(s.end.split(':')[0]) * 60 + parseInt(s.end.split(':')[1]) - parseInt(s.start.split(':')[0]) * 60 - parseInt(s.start.split(':')[1])) / 60))} hrs)
+                    </span>
+                  </div>
+                  <button onClick={() => onRemoveShift(s.id)} className="text-red-500 hover:text-red-700">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Add a shift</div>
+          <div className="flex items-center gap-2">
+            <input type="time" value={start} onChange={(e) => setStart(e.target.value)} className="form-input flex-1" />
+            <span className="text-xs text-slate-400">to</span>
+            <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} className="form-input flex-1" />
+            <Button size="sm" onClick={add} disabled={!start || !end || start >= end}>Add</Button>
+          </div>
+        </div>
+        <div className="border-t border-slate-100 pt-3 flex items-center justify-between">
+          <button onClick={onToggleBlocked} className={`text-xs font-medium px-3 py-1.5 rounded-full ${isBlocked ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+            {isBlocked ? 'Unblock this day' : 'Mark day off'}
+          </button>
+          <Button size="sm" variant="secondary" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Keep legacy name as alias so existing call sites compile during migration.
+function AvailabilityEditor({ value, onChange, tours }) {
+  return <ShiftEditor value={value} onChange={onChange} tours={tours} />;
+}
+
+function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplates }) {
   const [form, setForm] = useState(settings);
   const update = (k, v) => setForm({ ...form, [k]: v });
   const updateAutomation = (k, v) => setForm({ ...form, automation: { ...form.automation, [k]: v } });
@@ -4308,10 +4571,12 @@ function SettingsView({ settings, saveSettings, showToast }) {
         />
         <AutomationRow
           name="Welcome messages"
-          desc="When a new lead submits the intake form, automatically send them a category-specific SMS + email within 30 seconds. Different message templates fire based on the lead's bucket (good/limited credit × moving soon/later). Templates are editable below."
+          desc="When a new lead submits the intake form, automatically send them a category-specific SMS + email within 30 seconds. Different message templates fire based on the lead's bucket (good/limited credit × moving soon/later)."
           value={form.automation?.welcomeMessages !== false}
           onChange={(v) => updateAutomation('welcomeMessages', v)}
           disabled={form.automation?.enabled === false}
+          onEdit={onEditTemplates ? () => onEditTemplates('GCMS') : undefined}
+          editLabel="Edit message templates →"
         />
         <AutomationRow
           name="Tour reminders"
@@ -4353,6 +4618,7 @@ function SettingsView({ settings, saveSettings, showToast }) {
       <AvailabilityEditor
         value={form.agent_availability || DEFAULT_AGENT_SETTINGS.agent_availability}
         onChange={updateAvailability}
+        tours={tours}
       />
 
       <Card className="p-5">
@@ -4381,12 +4647,20 @@ function SettingsView({ settings, saveSettings, showToast }) {
   );
 }
 
-function AutomationRow({ name, desc, value, onChange, disabled }) {
+function AutomationRow({ name, desc, value, onChange, disabled, onEdit, editLabel }) {
   return (
     <div className={`flex items-start gap-3 p-4 ${disabled ? 'opacity-50' : ''}`}>
       <div className="flex-1 min-w-0">
         <div className="font-medium text-slate-900 text-sm mb-0.5">{name}</div>
         <div className="text-xs text-slate-500 leading-relaxed">{desc}</div>
+        {onEdit && (
+          <button
+            onClick={onEdit}
+            className="mt-2 text-[11px] font-medium text-slate-700 hover:text-slate-900 underline inline-flex items-center gap-1"
+          >
+            <Edit3 className="w-3 h-3" /> {editLabel || 'Edit templates'}
+          </button>
+        )}
       </div>
       <button onClick={() => !disabled && onChange(!value)} disabled={disabled} className={`relative w-9 h-5 rounded-full transition-colors shrink-0 mt-0.5 ${value ? 'bg-emerald-500' : 'bg-slate-200'}`}>
         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${value ? 'left-[18px]' : 'left-0.5'}`} />
@@ -5601,178 +5875,472 @@ function MessagesTab({ lead, onCompose }) {
 }
 
 // ============================================================
-// UNIFIED INBOX (all leads, all messages)
+// UNIFIED INBOX — split-pane: thread list + conversation + lead context
 // ============================================================
-function InboxView({ leads, onSelectLead }) {
+const QUICK_REPLY_TEMPLATES = [
+  { label: 'Send portal link', body: 'Hi {firstName} — here\'s the portal link with rentals matching your criteria: {portalUrl}\n\nReply with the addresses you\'d like to tour.' },
+  { label: 'Ask for tour times', body: 'Hi {firstName} — what days/times work best for a tour this week or next?' },
+  { label: 'Confirm tour', body: 'Hi {firstName} — confirming your tour on {tourDate} at {tourTime}. See you there!' },
+  { label: 'Follow up post-tour', body: 'Hi {firstName} — what were your thoughts on the properties? Want to put together an application?' },
+  { label: 'Nudge after silence', body: 'Hi {firstName} — checking in. Want me to send a fresh batch of rentals based on what you\'ve seen?' },
+];
+
+function fillTemplate(tpl, lead, settings) {
+  const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
+  const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
+  const nextTour = (lead?.tours || []).find((t) => t.status !== 'cancelled' && t.status !== 'completed');
+  const tourDate = nextTour?.date ? new Date(nextTour.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+  const tourTime = nextTour?.time || '';
+  return tpl
+    .replace(/\{firstName\}/g, firstName)
+    .replace(/\{portalUrl\}/g, portalUrl)
+    .replace(/\{tourDate\}/g, tourDate)
+    .replace(/\{tourTime\}/g, tourTime)
+    .replace(/\{agentName\}/g, settings?.agentName || 'Morgan');
+}
+
+function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   const [filter, setFilter] = useState('needs-reply');
+  const [search, setSearch] = useState('');
+  const [selectedThreadId, setSelectedThreadId] = useState(null);
+  const [composerChannel, setComposerChannel] = useState('sms');
+  const [composerBody, setComposerBody] = useState('');
+  const [composerSubject, setComposerSubject] = useState('');
+  const [sending, setSending] = useState(false);
+  const scrollerRef = useRef(null);
 
-  // Build unified message stream
-  const allMessages = useMemo(() => {
-    const out = [];
-    leads.forEach(lead => {
-      (lead.messages || []).forEach(msg => {
-        if (msg.internal) return; // skip internal notes
-        out.push({ ...msg, lead });
+  // Build a thread per lead = lead + sorted messages + lastMessage + unread flag.
+  const threads = useMemo(() => {
+    return leads
+      .map((lead) => {
+        const msgs = (lead.messages || []).filter((m) => !m.internal)
+          .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        const last = msgs[msgs.length - 1];
+        const lastReadAt = lead.raw?.inbox_last_read_at;
+        const isUnread = last && last.direction === 'inbound' &&
+          (!lastReadAt || new Date(last.timestamp) > new Date(lastReadAt));
+        return {
+          lead,
+          messages: msgs,
+          last,
+          isUnread,
+          needsReply: last?.direction === 'inbound',
+        };
+      })
+      .filter((t) => t.last) // only threads with messages
+      .sort((a, b) => new Date(b.last.timestamp) - new Date(a.last.timestamp));
+  }, [leads]);
+
+  // Counts for filter tabs.
+  const counts = useMemo(() => ({
+    unread: threads.filter((t) => t.isUnread).length,
+    needsReply: threads.filter((t) => t.needsReply).length,
+    all: threads.length,
+    sms: threads.filter((t) => t.last.channel === 'sms').length,
+    email: threads.filter((t) => t.last.channel === 'email').length,
+  }), [threads]);
+
+  // Apply filter + search.
+  const visibleThreads = useMemo(() => {
+    let out = threads;
+    if (filter === 'unread') out = out.filter((t) => t.isUnread);
+    else if (filter === 'needs-reply') out = out.filter((t) => t.needsReply);
+    else if (filter === 'sms') out = out.filter((t) => t.last.channel === 'sms');
+    else if (filter === 'email') out = out.filter((t) => t.last.channel === 'email');
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      out = out.filter((t) =>
+        (t.lead.fullName || '').toLowerCase().includes(q) ||
+        (t.lead.email || '').toLowerCase().includes(q) ||
+        (t.lead.phone || '').toLowerCase().includes(q) ||
+        t.messages.some((m) => (m.body || '').toLowerCase().includes(q))
+      );
+    }
+    return out;
+  }, [threads, filter, search]);
+
+  // Default selection = first visible thread (or whatever was selected before).
+  const activeThread = useMemo(() => {
+    if (selectedThreadId) {
+      const t = threads.find((x) => x.lead.id === selectedThreadId);
+      if (t) return t;
+    }
+    return visibleThreads[0] || null;
+  }, [threads, visibleThreads, selectedThreadId]);
+
+  // Mark active thread as read on selection.
+  useEffect(() => {
+    if (!activeThread || !activeThread.isUnread) return;
+    const id = activeThread.lead.id;
+    updateLead(id, {
+      raw: { ...(activeThread.lead.raw || {}), inbox_last_read_at: new Date().toISOString() },
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThread?.lead.id]);
+
+  // Auto-scroll to bottom of thread on switch / new message.
+  useEffect(() => {
+    if (scrollerRef.current) scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
+  }, [activeThread?.lead.id, activeThread?.messages.length]);
+
+  // Reset composer when switching threads.
+  useEffect(() => {
+    setComposerBody('');
+    setComposerSubject('');
+    setComposerChannel('sms');
+  }, [activeThread?.lead.id]);
+
+  const insertTemplate = (tpl) => {
+    if (!activeThread) return;
+    setComposerBody(fillTemplate(tpl.body, activeThread.lead, settings));
+  };
+
+  const handleSend = async () => {
+    if (!activeThread) return;
+    const lead = activeThread.lead;
+    if (!composerBody.trim()) return;
+    if (composerChannel === 'sms' && lead.opted_out) {
+      showToast('Lead has opted out of SMS');
+      return;
+    }
+    setSending(true);
+    try {
+      let newMsg;
+      if (composerChannel === 'sms') {
+        const result = await sendSMS({
+          leadId: lead.id,
+          body: composerBody,
+          kind: 'manual',
+          idempotencyKey: `inbox-${lead.id}-${Date.now()}`,
+          automated: false,
+        });
+        if (!result.ok) {
+          const reason = result.error === 'opted_out' ? 'lead has opted out' :
+                         result.error === 'invalid_phone' ? 'invalid phone' : result.error || 'send failed';
+          showToast(`SMS not sent — ${reason}`);
+          setSending(false);
+          return;
+        }
+        newMsg = {
+          id: result.message.id, channel: 'sms', direction: 'outbound',
+          status: result.message.status || 'sent', to: result.message.to, via: 'twilio',
+          subject: null, body: result.message.body,
+          timestamp: result.message.created_at || new Date().toISOString(),
+          automated: false,
+        };
+      } else {
+        const result = await sendEmail({
+          leadId: lead.id, subject: composerSubject || '(no subject)', body: composerBody,
+          kind: 'manual', idempotencyKey: `inbox-email-${lead.id}-${Date.now()}`, automated: false,
+        });
+        if (!result.ok) {
+          showToast(`Email not sent — ${result.error || 'send failed'}`);
+          setSending(false);
+          return;
+        }
+        newMsg = result.message ? {
+          id: result.message.id, channel: 'email', direction: 'outbound',
+          status: result.message.status || 'sent', to: result.message.to, via: 'resend',
+          subject: result.message.subject, body: result.message.body,
+          timestamp: result.message.created_at || new Date().toISOString(), automated: false,
+        } : {
+          id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
+          to: lead.email, via: 'resend',
+          subject: composerSubject, body: composerBody, timestamp: new Date().toISOString(),
+        };
+      }
+      await updateLead(lead.id, {
+        messages: [...(lead.messages || []), newMsg],
+        activities: [...(lead.activities || []), {
+          id: `a_${Date.now()}`, type: 'message-sent',
+          timestamp: new Date().toISOString(),
+          message: `${composerChannel === 'sms' ? 'SMS' : 'Email'} sent (from inbox)`,
+        }],
+        raw: { ...(lead.raw || {}), inbox_last_read_at: new Date().toISOString() },
       });
-    });
-    return out.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  }, [leads]);
+      setComposerBody('');
+      setComposerSubject('');
+      showToast(`${composerChannel === 'sms' ? 'SMS' : 'Email'} sent`);
+    } catch (err) {
+      console.error('[inbox send]', err);
+      showToast(`Send failed — ${err.message}`);
+    }
+    setSending(false);
+  };
 
-  // Find threads where last message was inbound (needs reply)
-  const needsReplyLeadIds = useMemo(() => {
-    const ids = new Set();
-    leads.forEach(lead => {
-      const msgs = (lead.messages || []).filter(m => !m.internal);
-      const last = msgs[msgs.length - 1];
-      if (last && last.direction === 'inbound') ids.add(lead.id);
-    });
-    return ids;
-  }, [leads]);
-
-  // Today action cards — what you actually need to do.
-  const newLeadsNoCurate = useMemo(() => leads.filter(l =>
-    l.stage === 'new' && !l.curatedLinkSentAt
-  ), [leads]);
-
-  const requestedTours = useMemo(() => leads.filter(l =>
-    l.stage === 'tour-requested' || (l.tours || []).some(t => t.status === 'requested')
-  ), [leads]);
-
+  // Today action cards.
+  const newLeadsNoCurate = useMemo(() =>
+    leads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [leads]);
+  const requestedTours = useMemo(() =>
+    leads.filter((l) => l.stage === 'tour-requested' || (l.tours || []).some((t) => t.status === 'requested')), [leads]);
   const toursToday = useMemo(() => {
     const today = new Date().toDateString();
-    return leads.flatMap(l => (l.tours || []).filter(t => {
+    return leads.flatMap((l) => (l.tours || []).filter((t) => {
       if (t.status === 'cancelled' || t.status === 'completed') return false;
       const d = t.date ? new Date(t.date + 'T00:00:00').toDateString() : null;
       return d === today;
-    }).map(t => ({ ...t, lead: l })));
+    }).map((t) => ({ ...t, lead: l })));
   }, [leads]);
 
-  const filtered = allMessages.filter(m => {
-    if (filter === 'needs-reply') return needsReplyLeadIds.has(m.lead.id) && m.direction === 'inbound';
-    if (filter === 'sms') return m.channel === 'sms';
-    if (filter === 'email') return m.channel === 'email';
-    return true;
-  });
+  const segments = composerChannel === 'sms' ? Math.max(1, Math.ceil(composerBody.length / 160)) : 0;
 
   return (
-    <div>
-      {/* TODAY — actionable cards at the top */}
+    <div className="space-y-4">
+      {/* TODAY action cards stay above the inbox (same as before, condensed). */}
       {(newLeadsNoCurate.length > 0 || requestedTours.length > 0 || toursToday.length > 0) && (
-        <div className="mb-6 space-y-3">
+        <div className="flex flex-wrap gap-2">
           {newLeadsNoCurate.length > 0 && (
-            <button
-              onClick={() => onSelectLead(newLeadsNoCurate[0].id)}
-              className="w-full text-left rounded-2xl p-4 flex items-center gap-4 border-2 transition-all"
-              style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}
-            >
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white" style={{ backgroundColor: 'var(--brand-gold)' }}>
-                <Sparkles className="w-5 h-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-semibold text-slate-900 text-sm">
-                  {newLeadsNoCurate.length} new {newLeadsNoCurate.length === 1 ? 'lead is' : 'leads are'} waiting for a curated link
-                </div>
-                <div className="text-xs text-slate-600 mt-0.5 truncate">
-                  Send {newLeadsNoCurate.slice(0, 2).map(l => l.fullName).join(', ')}{newLeadsNoCurate.length > 2 ? ` +${newLeadsNoCurate.length - 2}` : ''} their BrightMLS portal
-                </div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+            <button onClick={() => onSelectLead(newLeadsNoCurate[0].id)}
+              className="px-3 py-2 rounded-xl border-2 text-xs font-medium inline-flex items-center gap-2"
+              style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
+              <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--brand-gold)' }} />
+              {newLeadsNoCurate.length} new lead{newLeadsNoCurate.length === 1 ? '' : 's'} need curated link
             </button>
           )}
           {requestedTours.length > 0 && (
-            <button
-              onClick={() => onSelectLead(requestedTours[0].id)}
-              className="w-full text-left rounded-2xl p-4 flex items-center gap-4 border-2 border-blue-200 bg-blue-50 transition-all hover:border-blue-300"
-            >
-              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
-                <Calendar className="w-5 h-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-semibold text-slate-900 text-sm">
-                  {requestedTours.length} {requestedTours.length === 1 ? 'lead has' : 'leads have'} requested tours
-                </div>
-                <div className="text-xs text-slate-600 mt-0.5 truncate">
-                  Confirm specific times: {requestedTours.slice(0, 2).map(l => l.fullName).join(', ')}{requestedTours.length > 2 ? ` +${requestedTours.length - 2}` : ''}
-                </div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
-            </button>
-          )}
-          {needsReplyLeadIds.size > 0 && (
-            <button
-              onClick={() => setFilter('needs-reply')}
-              className="w-full text-left rounded-2xl p-4 flex items-center gap-4 border-2 border-red-200 bg-red-50 transition-all hover:border-red-300"
-            >
-              <div className="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center shrink-0">
-                <MessageSquare className="w-5 h-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-semibold text-slate-900 text-sm">
-                  {needsReplyLeadIds.size} {needsReplyLeadIds.size === 1 ? 'conversation needs' : 'conversations need'} a reply
-                </div>
-                <div className="text-xs text-slate-600 mt-0.5">Leads are waiting — reply via text or email</div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+            <button onClick={() => onSelectLead(requestedTours[0].id)}
+              className="px-3 py-2 rounded-xl border-2 border-blue-200 bg-blue-50 text-xs font-medium text-blue-900 inline-flex items-center gap-2">
+              <Calendar className="w-3.5 h-3.5" />
+              {requestedTours.length} tour request{requestedTours.length === 1 ? '' : 's'} pending
             </button>
           )}
           {toursToday.length > 0 && (
-            <div className="rounded-2xl p-4 border-2 border-emerald-200 bg-emerald-50 flex items-center gap-4">
-              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                <CalendarDays className="w-5 h-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-semibold text-slate-900 text-sm">{toursToday.length} {toursToday.length === 1 ? 'tour' : 'tours'} today</div>
-                <div className="text-xs text-slate-600 mt-0.5 truncate">
-                  {toursToday.slice(0, 3).map(t => `${t.time || ''} ${t.lead.fullName.split(' ')[0]}`).join(' · ')}
-                </div>
-              </div>
+            <div className="px-3 py-2 rounded-xl border-2 border-emerald-200 bg-emerald-50 text-xs font-medium text-emerald-900 inline-flex items-center gap-2">
+              <CalendarDays className="w-3.5 h-3.5" />
+              {toursToday.length} tour{toursToday.length === 1 ? '' : 's'} today
             </div>
           )}
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 mb-4">
-        {[
-          { k: 'needs-reply', label: 'Needs reply', count: needsReplyLeadIds.size },
-          { k: 'all', label: 'All messages', count: allMessages.length },
-          { k: 'sms', label: 'SMS', count: allMessages.filter(m => m.channel === 'sms').length },
-          { k: 'email', label: 'Email', count: allMessages.filter(m => m.channel === 'email').length },
-        ].map(f => (
-          <button key={f.k} onClick={() => setFilter(f.k)} className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors flex items-center gap-1.5 ${filter === f.k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-            {f.label}
-            {f.count > 0 && <span className={`text-[10px] ${filter === f.k ? 'text-white/60' : 'text-slate-400'}`}>{f.count}</span>}
-          </button>
-        ))}
-      </div>
-
-      {filtered.length === 0 ? (
-        <EmptyState icon={Inbox} title={filter === 'needs-reply' ? 'Inbox zero ✨' : 'No messages'} desc={filter === 'needs-reply' ? 'All conversations are up to date.' : 'Messages will appear here as they come in.'} />
+      {threads.length === 0 ? (
+        <EmptyState icon={Inbox} title="No conversations yet" desc="Messages will appear here as they come in." />
       ) : (
-        <div className="space-y-2">
-          {filtered.slice(0, 50).map(m => (
-            <button key={m.id} onClick={() => onSelectLead(m.lead.id)} className="w-full text-left">
-              <Card className="p-4 hover:border-slate-300 transition-colors">
-                <div className="flex items-start gap-3">
-                  <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${m.channel === 'sms' ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600'}`}>
-                    {m.channel === 'sms' ? <MessageSquare className="w-4 h-4" /> : <Mail className="w-4 h-4" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                      <div className="font-semibold text-slate-900 text-sm">{m.lead.fullName}</div>
-                      <Pill tone={m.channel === 'sms' ? 'positive' : 'info'}>{m.channel.toUpperCase()}</Pill>
-                      <Pill tone={m.direction === 'inbound' ? 'warning' : 'neutral'}>
-                        {m.direction === 'inbound' ? 'from them' : 'from you'}
-                      </Pill>
-                      {m.automated && <Pill>Auto</Pill>}
-                      <div className="text-xs text-slate-400 ml-auto">{timeAgo(m.timestamp)}</div>
+        <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] lg:grid-cols-[280px_1fr_280px] gap-3 h-[calc(100vh-300px)] min-h-[500px]">
+          {/* LEFT: thread list */}
+          <Card className="p-0 overflow-hidden flex flex-col">
+            <div className="p-3 border-b border-slate-100 space-y-2">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search threads…"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400"
+                />
+              </div>
+              <div className="flex gap-1 overflow-x-auto">
+                {[
+                  { k: 'unread', label: 'Unread', count: counts.unread },
+                  { k: 'needs-reply', label: 'Needs reply', count: counts.needsReply },
+                  { k: 'all', label: 'All', count: counts.all },
+                  { k: 'sms', label: 'SMS', count: counts.sms },
+                  { k: 'email', label: 'Email', count: counts.email },
+                ].map((f) => (
+                  <button key={f.k} onClick={() => setFilter(f.k)}
+                    className={`px-2 py-1 rounded-full text-[10px] font-medium whitespace-nowrap transition-colors flex items-center gap-1 ${
+                      filter === f.k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}>
+                    {f.label}{f.count > 0 && <span className={filter === f.k ? 'text-white/60' : 'text-slate-400'}>{f.count}</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1 divide-y divide-slate-100">
+              {visibleThreads.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400 italic">No matching threads</div>
+              ) : visibleThreads.map((t) => {
+                const isActive = activeThread?.lead.id === t.lead.id;
+                const preview = (t.last.body || '').replace(/\n+/g, ' ').slice(0, 60);
+                return (
+                  <button key={t.lead.id}
+                    onClick={() => setSelectedThreadId(t.lead.id)}
+                    className={`w-full text-left p-3 transition-colors block ${
+                      isActive ? 'bg-slate-100' : 'hover:bg-slate-50'
+                    }`}>
+                    <div className="flex items-center gap-2 mb-0.5">
+                      {t.isUnread && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
+                      <div className={`font-medium text-sm truncate ${t.isUnread ? 'text-slate-900' : 'text-slate-700'}`}>
+                        {t.lead.fullName}
+                      </div>
+                      <div className="text-[10px] text-slate-400 ml-auto shrink-0">{timeAgo(t.last.timestamp)}</div>
                     </div>
-                    {m.subject && <div className="text-sm font-medium text-slate-700 truncate mb-0.5">{m.subject}</div>}
-                    <div className="text-sm text-slate-600 line-clamp-2">{m.body}</div>
+                    <div className="text-[11px] text-slate-500 truncate flex items-center gap-1">
+                      {t.last.channel === 'sms' ? <MessageSquare className="w-3 h-3 shrink-0" /> : <Mail className="w-3 h-3 shrink-0" />}
+                      {t.last.direction === 'outbound' && <span className="text-slate-400">You: </span>}
+                      <span className="truncate">{preview}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* CENTER: active conversation */}
+          {activeThread ? (
+            <Card className="p-0 overflow-hidden flex flex-col">
+              <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-3">
+                <button onClick={() => onSelectLead(activeThread.lead.id)} className="font-semibold text-sm text-slate-900 hover:underline">
+                  {activeThread.lead.fullName}
+                </button>
+                <Pill tone="info">{activeThread.lead.stage}</Pill>
+                {activeThread.lead.opted_out && <Pill tone="danger">Opted out</Pill>}
+                <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+                  {activeThread.lead.phone && <span className="hidden md:inline">{activeThread.lead.phone}</span>}
+                  <button onClick={() => onSelectLead(activeThread.lead.id)} className="text-xs text-slate-500 hover:text-slate-900 underline">
+                    Open lead
+                  </button>
+                </div>
+              </div>
+              <div ref={scrollerRef} className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-50">
+                {activeThread.messages.map((m) => {
+                  const out = m.direction === 'outbound';
+                  return (
+                    <div key={m.id} className={`flex ${out ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[78%] rounded-2xl px-3.5 py-2 text-sm ${
+                        out ? 'bg-slate-900 text-white' : 'bg-white text-slate-900 border border-slate-200'
+                      }`}>
+                        {m.subject && <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${out ? 'text-white/60' : 'text-slate-400'}`}>{m.subject}</div>}
+                        <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                        <div className={`text-[10px] mt-1 flex items-center gap-1.5 ${out ? 'text-white/60' : 'text-slate-400'}`}>
+                          {m.channel === 'sms' ? <MessageSquare className="w-2.5 h-2.5" /> : <Mail className="w-2.5 h-2.5" />}
+                          {timeAgo(m.timestamp)}
+                          {m.automated && <span>· auto</span>}
+                          {m.status && out && <span>· {m.status}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* COMPOSER */}
+              <div className="border-t border-slate-200 bg-white p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-full bg-slate-100 p-0.5">
+                    <button onClick={() => setComposerChannel('sms')}
+                      className={`px-3 py-1 rounded-full text-xs font-medium ${composerChannel === 'sms' ? 'bg-white shadow text-slate-900' : 'text-slate-600'}`}>
+                      <MessageSquare className="w-3 h-3 inline mr-1" /> SMS
+                    </button>
+                    <button onClick={() => setComposerChannel('email')}
+                      className={`px-3 py-1 rounded-full text-xs font-medium ${composerChannel === 'email' ? 'bg-white shadow text-slate-900' : 'text-slate-600'}`}>
+                      <Mail className="w-3 h-3 inline mr-1" /> Email
+                    </button>
+                  </div>
+                  <div className="flex-1 flex flex-wrap gap-1 justify-end">
+                    {QUICK_REPLY_TEMPLATES.slice(0, 3).map((tpl) => (
+                      <button key={tpl.label} onClick={() => insertTemplate(tpl)}
+                        className="px-2 py-1 rounded-full text-[10px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700">
+                        {tpl.label}
+                      </button>
+                    ))}
+                    <details className="relative">
+                      <summary className="px-2 py-1 rounded-full text-[10px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer list-none">More…</summary>
+                      <div className="absolute right-0 top-7 z-10 bg-white border border-slate-200 rounded-lg shadow-lg p-1 min-w-[180px]">
+                        {QUICK_REPLY_TEMPLATES.slice(3).map((tpl) => (
+                          <button key={tpl.label} onClick={() => insertTemplate(tpl)}
+                            className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-slate-100">
+                            {tpl.label}
+                          </button>
+                        ))}
+                      </div>
+                    </details>
                   </div>
                 </div>
-              </Card>
-            </button>
-          ))}
+                {composerChannel === 'email' && (
+                  <input value={composerSubject} onChange={(e) => setComposerSubject(e.target.value)}
+                    placeholder="Subject"
+                    className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
+                )}
+                <textarea value={composerBody} onChange={(e) => setComposerBody(e.target.value)}
+                  placeholder={composerChannel === 'sms' ? 'Type a text…' : 'Type an email…'}
+                  rows={composerChannel === 'sms' ? 3 : 5}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSend(); }}
+                  className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-none" />
+                <div className="flex items-center gap-3">
+                  {composerChannel === 'sms' && (
+                    <div className="text-[10px] text-slate-400">
+                      {composerBody.length} chars · {segments} segment{segments !== 1 ? 's' : ''}
+                    </div>
+                  )}
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="text-[10px] text-slate-400 hidden md:inline">⌘+Enter to send</span>
+                    <button onClick={handleSend}
+                      disabled={!composerBody.trim() || sending || (composerChannel === 'sms' && activeThread.lead.opted_out)}
+                      className="px-4 py-1.5 bg-slate-900 text-white rounded-full text-xs font-medium hover:bg-slate-800 transition-colors flex items-center gap-1.5 disabled:opacity-40">
+                      <Send className="w-3 h-3" /> {sending ? 'Sending…' : 'Send'}
+                    </button>
+                  </div>
+                </div>
+                {composerChannel === 'sms' && activeThread.lead.opted_out && (
+                  <div className="text-[10px] text-red-600">Lead has opted out — SMS disabled.</div>
+                )}
+              </div>
+            </Card>
+          ) : (
+            <Card className="p-8 flex items-center justify-center text-slate-400 text-sm">
+              Select a conversation
+            </Card>
+          )}
+
+          {/* RIGHT: lead context (lg+ only) */}
+          {activeThread && (
+            <Card className="p-4 overflow-y-auto hidden lg:block">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-3">Lead at a glance</div>
+              <div className="space-y-3 text-sm">
+                <div>
+                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Stage</div>
+                  <div className="font-medium text-slate-900">{activeThread.lead.stage || 'new'}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Budget</div>
+                  <div className="font-medium text-slate-900">
+                    {activeThread.lead.budgetMin ? fmtCurrency(Number(activeThread.lead.budgetMin)) : '?'}
+                    {' – '}
+                    {activeThread.lead.budgetMax ? fmtCurrency(Number(activeThread.lead.budgetMax)) : '?'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Beds / Baths</div>
+                  <div className="font-medium text-slate-900">
+                    {activeThread.lead.beds === '0' ? 'Studio' : `${activeThread.lead.beds}+ bd`} · {activeThread.lead.baths}+ ba
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Areas</div>
+                  <div className="font-medium text-slate-900 text-xs">{activeThread.lead.areas || 'No preference'}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Move-in</div>
+                  <div className="font-medium text-slate-900">{fmtDate(activeThread.lead.moveInDate)}</div>
+                </div>
+                {activeThread.lead.raw?.curated_address_picks?.length > 0 && (
+                  <div>
+                    <div className="text-[11px] text-slate-500 uppercase tracking-wide">Picked properties</div>
+                    <ul className="text-xs space-y-0.5 mt-1">
+                      {activeThread.lead.raw.curated_address_picks.slice(0, 5).map((a, i) => (
+                        <li key={i} className="text-slate-700">• {a}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {(activeThread.lead.tours || []).filter((t) => t.status !== 'cancelled').length > 0 && (
+                  <div>
+                    <div className="text-[11px] text-slate-500 uppercase tracking-wide">Tours</div>
+                    {(activeThread.lead.tours || []).slice(0, 3).map((t) => (
+                      <div key={t.id} className="text-xs text-slate-700">
+                        {t.date} {t.time} · {t.status}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button onClick={() => onSelectLead(activeThread.lead.id)}
+                  className="w-full px-3 py-2 rounded-full text-xs font-medium bg-slate-900 text-white hover:bg-slate-800 transition-colors mt-3">
+                  Open full lead detail →
+                </button>
+              </div>
+            </Card>
+          )}
         </div>
       )}
     </div>
@@ -5997,17 +6565,127 @@ function TodayStrip({ metrics, upcomingTours, overdueTasks, todayTasks }) {
 }
 
 // ============================================================
+// CALENDAR VIEW — 4-week grid showing your availability shifts (green)
+// and booked tours (blue chips). Click a tour to open the lead.
+// ============================================================
+function CalendarView({ settings, leads, onSelectLead }) {
+  const shifts = settings?.agent_availability?.shifts || [];
+  const blockedDates = new Set(settings?.agent_availability?.blocked_dates || []);
+  const allTours = useMemo(() => {
+    const out = [];
+    leads.forEach((l) => (l.tours || []).forEach((t) => {
+      if (!t.date) return;
+      if (t.status === 'cancelled') return;
+      out.push({ ...t, lead: l });
+    }));
+    return out;
+  }, [leads]);
+
+  const shiftsByDate = useMemo(() => {
+    const m = {};
+    for (const s of shifts) (m[s.date] = m[s.date] || []).push(s);
+    return m;
+  }, [shifts]);
+  const toursByDate = useMemo(() => {
+    const m = {};
+    for (const t of allTours) (m[t.date] = m[t.date] || []).push(t);
+    return m;
+  }, [allTours]);
+
+  const weeks = buildCalendarWeeks(4);
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+        <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-200 border border-emerald-300" /> Available shift</div>
+        <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-600" /> Booked tour</div>
+        <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-100 border border-red-300" /> Day off</div>
+        <div className="ml-auto text-slate-400">Manage shifts in Settings → Tour availability</div>
+      </div>
+
+      <Card className="p-4">
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {DAYS.map((d) => (
+            <div key={d} className="text-[10px] uppercase tracking-wider text-slate-400 text-center font-semibold py-1">{d}</div>
+          ))}
+        </div>
+        {weeks.map((week, wi) => (
+          <div key={wi} className="grid grid-cols-7 gap-1 mb-1">
+            {week.map((d) => {
+              const dateStr = d.toISOString().slice(0, 10);
+              const isPast = dateStr < todayStr;
+              const isToday = dateStr === todayStr;
+              const dayShifts = shiftsByDate[dateStr] || [];
+              const dayTours = (toursByDate[dateStr] || []).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+              const blocked = blockedDates.has(dateStr);
+              return (
+                <div
+                  key={dateStr}
+                  className={`min-h-[110px] rounded-lg p-1.5 text-left border ${
+                    isPast ? 'bg-slate-50 border-slate-100 opacity-60' :
+                    blocked ? 'bg-red-50 border-red-200' :
+                    dayShifts.length > 0 ? 'bg-white border-emerald-200' :
+                    'bg-white border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-[11px] font-semibold ${isToday ? 'text-brand-gold' : 'text-slate-700'}`}>
+                      {d.toLocaleDateString('en-US', { month: 'short' })} {d.getDate()}
+                    </span>
+                  </div>
+                  {blocked && <div className="text-[10px] text-red-700 mb-1">Off</div>}
+                  {!blocked && dayShifts.length > 0 && (
+                    <div className="space-y-0.5 mb-1">
+                      {dayShifts.map((s) => (
+                        <div key={s.id} className="text-[9px] bg-emerald-100 text-emerald-800 rounded px-1 truncate">
+                          {fmt24to12(s.start).replace(':00', '')}–{fmt24to12(s.end).replace(':00', '')}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {dayTours.length > 0 && (
+                    <div className="space-y-0.5">
+                      {dayTours.map((t) => (
+                        <button
+                          key={t.id}
+                          onClick={() => onSelectLead(t.lead.id)}
+                          className={`w-full text-left text-[10px] rounded px-1.5 py-0.5 font-medium truncate flex items-center gap-1 transition-colors ${
+                            t.status === 'completed' ? 'bg-slate-200 text-slate-700' :
+                            t.status === 'no-show' ? 'bg-amber-200 text-amber-900' :
+                            'bg-blue-600 text-white hover:bg-blue-700'
+                          }`}
+                          title={`${t.time || ''} · ${t.lead.fullName}`}
+                        >
+                          <span className="font-bold">{(t.time || '').replace(':00 ', '').replace(' ', '')}</span>
+                          <span className="truncate">{t.lead.fullName.split(' ')[0]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================
 // TOURS SECTION — sub-tabs for the consolidated Tours nav (calendar +
 // applications). Keeps existing per-view components untouched.
 // ============================================================
-function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStatus, updateLead, showToast }) {
-  const [tab, setTab] = useState('upcoming');
+function ToursSection({ upcomingTours, leads, settings, onSelectLead, updateSubmissionStatus, updateLead, showToast }) {
+  const [tab, setTab] = useState('calendar');
   const appsCount = leads.flatMap(l => l.submissions || []).length;
   return (
     <div className="space-y-5">
       <div className="flex gap-1 border-b border-slate-200">
         {[
-          { k: 'upcoming', label: 'Upcoming', count: upcomingTours.length },
+          { k: 'calendar', label: 'Calendar' },
+          { k: 'upcoming', label: 'List', count: upcomingTours.length },
           { k: 'apps', label: 'Applications', count: appsCount },
         ].map(t => (
           <button
@@ -6022,6 +6700,7 @@ function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStat
           </button>
         ))}
       </div>
+      {tab === 'calendar' && <CalendarView settings={settings} leads={leads} onSelectLead={onSelectLead} />}
       {tab === 'upcoming' && <ToursView upcomingTours={upcomingTours} onSelectLead={onSelectLead} updateLead={updateLead} showToast={showToast} />}
       {tab === 'apps' && <SubmissionsView leads={leads} onSelectLead={onSelectLead} updateSubmissionStatus={updateSubmissionStatus} />}
     </div>
@@ -6037,11 +6716,14 @@ function SettingsSection({
   properties, saveProperty, removeProperty, bulkImportProperties, leads,
 }) {
   const [tab, setTab] = useState('agent');
+  const [templateFocus, setTemplateFocus] = useState(null); // jump-to bucket from Edit button
+  const goToTemplates = (bucket) => { setTemplateFocus(bucket); setTab('templates'); };
   return (
     <div className="space-y-5">
       <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
         {[
           { k: 'agent',      label: 'Agent & automation' },
+          { k: 'templates',  label: 'Templates' },
           { k: 'blast',      label: 'Bulk SMS' },
         ].map(t => (
           <button
@@ -6062,10 +6744,146 @@ function SettingsSection({
             settings={settings}
             saveSettings={saveSettings}
             showToast={showToast}
+            tours={leads.flatMap(l => (l.tours || []).map(t => ({ ...t, lead: l })))}
+            onEditTemplates={goToTemplates}
           />
         </div>
       )}
+      {tab === 'templates' && (
+        <TemplatesEditor
+          settings={settings}
+          saveSettings={saveSettings}
+          showToast={showToast}
+          focusBucket={templateFocus}
+          onClearFocus={() => setTemplateFocus(null)}
+        />
+      )}
       {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
+    </div>
+  );
+}
+
+// ============================================================
+// TEMPLATES EDITOR — edit per-bucket welcome messages + reminder copy
+// ============================================================
+const TEMPLATE_BUCKETS = [
+  { key: 'GCMS',   label: 'Good credit, moving <75 days',  tone: 'HOT — high priority, send curated link ASAP' },
+  { key: 'GCM75+', label: 'Good credit, moving 75+ days',  tone: 'WARM — schedule a 75-day nudge' },
+  { key: 'BCMS',   label: 'Limited credit, moving <75 days', tone: 'WORK WITH — flag credit options' },
+  { key: 'BC75+',  label: 'Limited credit, moving 75+ days', tone: 'LONGTAIL — light touch' },
+];
+const TEMPLATE_PLACEHOLDERS = '{firstName}, {moveInDate}, {agentName}';
+
+function TemplatesEditor({ settings, saveSettings, showToast, focusBucket, onClearFocus }) {
+  const [form, setForm] = useState(settings);
+  const [activeBucket, setActiveBucket] = useState(focusBucket || 'GCMS');
+  const focusRef = useRef(null);
+
+  useEffect(() => {
+    if (focusBucket) {
+      setActiveBucket(focusBucket);
+      // scroll into view
+      setTimeout(() => focusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+      onClearFocus?.();
+    }
+  }, [focusBucket, onClearFocus]);
+
+  const templates = form.welcomeMessages || DEFAULT_AGENT_SETTINGS.welcomeMessages;
+  const current = templates[activeBucket] || DEFAULT_AGENT_SETTINGS.welcomeMessages[activeBucket];
+
+  const updateField = (key, value) => {
+    const next = {
+      ...form,
+      welcomeMessages: {
+        ...templates,
+        [activeBucket]: { ...current, [key]: value },
+      },
+    };
+    setForm(next);
+  };
+  const resetCurrent = () => {
+    const next = {
+      ...form,
+      welcomeMessages: {
+        ...templates,
+        [activeBucket]: { ...DEFAULT_AGENT_SETTINGS.welcomeMessages[activeBucket] },
+      },
+    };
+    setForm(next);
+  };
+  const save = async () => { await saveSettings(form); showToast('Templates saved'); };
+
+  const segments = Math.max(1, Math.ceil((current.sms || '').length / 160));
+
+  return (
+    <div className="space-y-5 max-w-3xl" ref={focusRef}>
+      <Card className="p-5 space-y-3">
+        <SectionHeader icon={MessageSquare}>Welcome message templates</SectionHeader>
+        <div className="text-sm text-slate-600 leading-relaxed">
+          These messages send automatically when a new lead submits the intake form. Each
+          bucket gets a different message based on credit score + move-in timing.
+          Available placeholders: <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">{TEMPLATE_PLACEHOLDERS}</span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {TEMPLATE_BUCKETS.map((b) => (
+            <button key={b.key} onClick={() => setActiveBucket(b.key)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                activeBucket === b.key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}>
+              {b.key}
+            </button>
+          ))}
+        </div>
+        {(() => {
+          const meta = TEMPLATE_BUCKETS.find((b) => b.key === activeBucket);
+          return meta ? (
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+              <div className="text-sm font-semibold text-slate-900">{meta.label}</div>
+              <div className="text-xs text-slate-500 mt-0.5">{meta.tone}</div>
+            </div>
+          ) : null;
+        })()}
+      </Card>
+
+      <Card className="p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <SectionHeader icon={MessageSquare}>SMS</SectionHeader>
+          <span className="text-[10px] text-slate-400">{(current.sms || '').length} chars · {segments} segment{segments !== 1 ? 's' : ''}</span>
+        </div>
+        <textarea
+          value={current.sms || ''}
+          onChange={(e) => updateField('sms', e.target.value)}
+          rows={4}
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-none font-mono"
+        />
+
+        <div className="border-t border-slate-100 pt-4 space-y-3">
+          <SectionHeader icon={Mail}>Email</SectionHeader>
+          <FormField label="Subject">
+            <input
+              value={current.emailSubject || ''}
+              onChange={(e) => updateField('emailSubject', e.target.value)}
+              className="form-input"
+            />
+          </FormField>
+          <FormField label="Body">
+            <textarea
+              value={current.email || ''}
+              onChange={(e) => updateField('email', e.target.value)}
+              rows={10}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-y font-mono"
+            />
+          </FormField>
+        </div>
+
+        <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+          <button onClick={resetCurrent} className="text-xs text-slate-500 hover:text-slate-900 underline">
+            Reset {activeBucket} to default
+          </button>
+          <Button size="md" onClick={save}>Save all templates</Button>
+        </div>
+      </Card>
+      <style>{`.form-input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid rgb(226 232 240); border-radius: 0.5rem; font-size: 0.875rem; outline: none; transition: border-color 0.15s; } .form-input:focus { border-color: rgb(100 116 139); }`}</style>
     </div>
   );
 }

@@ -14,54 +14,51 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 
-const DEFAULT_SLOT_TEMPLATE = {
-  0: [],
-  1: [],
-  2: ['5:00 PM', '6:00 PM'],
-  3: ['5:00 PM', '6:00 PM'],
-  4: ['5:00 PM', '6:00 PM'],
-  5: ['5:00 PM', '6:00 PM'],
-  6: ['10:00 AM', '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM'],
-};
-const DAYS_AHEAD = 14;
+// Helpers
+function fmt24to12(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
 
-// Generate slots from availability data (or default if none). Excludes:
+// Generate slots from shift-based availability. Each shift is a real date
+// + start + end; we split it into 1-hour slots. Excludes:
 //   - slots within 24h (lead time buffer)
 //   - dates in blocked_dates
 //   - slots already booked by other tours
 function generateSlots(availability, bookedSlots) {
-  const template = (availability?.weekly && Object.keys(availability.weekly).length > 0)
-    ? availability.weekly
-    : DEFAULT_SLOT_TEMPLATE;
+  const shifts = Array.isArray(availability?.shifts) ? availability.shifts : [];
   const blockedDates = new Set(availability?.blocked_dates || []);
   const bookedSet = new Set(bookedSlots || []);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const minStart = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
   const slots = [];
-  const now = new Date();
-  const minStart = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  for (let i = 0; i < DAYS_AHEAD; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() + i);
-    d.setHours(0, 0, 0, 0);
-    const dateStr = d.toISOString().slice(0, 10);
-    if (blockedDates.has(dateStr)) continue;
-    const dow = d.getDay();
-    const times = template[dow] || template[String(dow)] || [];
-    for (const t of times) {
-      const [hStr, mStrAmpm] = t.split(':');
-      const h12 = parseInt(hStr, 10);
-      const ampm = mStrAmpm.slice(-2);
-      const m = parseInt(mStrAmpm.slice(0, 2), 10);
-      const h24 = ampm === 'PM' && h12 !== 12 ? h12 + 12 : ampm === 'AM' && h12 === 12 ? 0 : h12;
-      const slotDate = new Date(d);
-      slotDate.setHours(h24, m, 0, 0);
+  for (const shift of shifts) {
+    if (!shift?.date || !shift?.start || !shift?.end) continue;
+    if (shift.date < todayStr) continue;
+    if (blockedDates.has(shift.date)) continue;
+    const [sh, sm] = shift.start.split(':').map(Number);
+    const [eh, em] = shift.end.split(':').map(Number);
+    const startMin = sh * 60 + sm;
+    const endMin = eh * 60 + em;
+    for (let cur = startMin; cur + 60 <= endMin; cur += 60) {
+      const h = Math.floor(cur / 60);
+      const m = cur % 60;
+      const label = fmt24to12(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+      const slotDate = new Date(shift.date + 'T00:00:00');
+      slotDate.setHours(h, m, 0, 0);
       if (slotDate < minStart) continue;
-      const slotId = `${dateStr}_${t.replace(/[:\s]/g, '')}`;
+      const slotId = `${shift.date}_${label.replace(/[:\s]/g, '')}`;
       if (bookedSet.has(slotId)) continue;
-      slots.push({ id: slotId, date: dateStr, time: t });
+      slots.push({ id: slotId, date: shift.date, time: label });
     }
   }
-  return slots;
+  return slots.sort((a, b) =>
+    a.date === b.date ? a.time.localeCompare(b.time) : a.date.localeCompare(b.date)
+  );
 }
 
 function fmtSlotDate(dateStr) {
