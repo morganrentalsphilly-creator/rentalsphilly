@@ -1552,11 +1552,7 @@ export default function App() {
         // Stash range + tour windows in raw jsonb so we don't need a
         // schema migration. The CRM reads these via hydrateLeads.
         raw: {
-          beds_min: lead.bedsMin || null,
-          beds_max: lead.bedsMax || null,
-          baths_min: lead.bathsMin || null,
-          baths_max: lead.bathsMax || null,
-          tour_availability: Array.isArray(lead.tourAvailability) ? lead.tourAvailability : [],
+          // beds/baths stored directly on the lead row above
         },
       });
       // Activity + tasks. Email + SMS rows are inserted by the server wrappers.
@@ -2383,9 +2379,8 @@ function IntakeForm({ onSubmit, onBack }) {
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
     moveInDate: '', budgetMin: '', budgetMax: '',
-    beds: '', baths: '', bedsMin: '1', bedsMax: '2', bathsMin: '1', bathsMax: '1', areas: '',
+    beds: '1', baths: '1', areas: '',
     employed: '', creditScore: '', tourType: '',
-    tourAvailability: [],
   });
   const update = (k, v) => setData({ ...data, [k]: v });
 
@@ -2424,7 +2419,7 @@ function IntakeForm({ onSubmit, onBack }) {
       title: 'How much space do you need?',
       subtitle: 'Pick the minimum you\'d consider.',
       valid: () => data.beds !== '' && data.baths !== '',
-      fields: <BedBathSelector bedsMin={data.bedsMin || data.beds || '1'} bedsMax={data.bedsMax || data.beds || '1'} bathsMin={data.bathsMin || data.baths || '1'} bathsMax={data.bathsMax || data.baths || '1'} onChange={(patch) => setData({ ...data, ...patch, beds: patch.bedsMin || data.bedsMin || data.beds, baths: patch.bathsMin || data.bathsMin || data.baths })} />
+      fields: <BedBathSelector beds={data.beds || '1'} baths={data.baths || '1'} onChange={(patch) => setData({ ...data, ...patch })} />
     },
     {
       title: 'Where do you want to live?',
@@ -2508,7 +2503,7 @@ function IntakeForm({ onSubmit, onBack }) {
         disabled={!s.valid()}
         className="w-full bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
       >
-        {step === steps.length - 1 ? 'See my matches' : 'Continue'}
+        {step === steps.length - 1 ? 'Send to my agent' : 'Continue'}
         <ArrowRight className="w-4 h-4" />
       </button>
     </div>
@@ -2676,11 +2671,10 @@ function DatePicker({ value, onChange }) {
 // ============================================================
 // BED / BATH SELECTOR — Zillow-style button groups
 // ============================================================
-// Numeric helpers for range selection. We store option values as numeric
-// strings; "4+" in beds maps to 4 in the numeric domain with a special
-// "no-upper-bound" treatment when it's the chosen MAX (handled by
-// matchListings — see Infinity coercion there).
-function BedBathSelector({ bedsMin, bedsMax, bathsMin, bathsMax, onChange }) {
+// Simple single-select bed/bath picker. One tap commits a value.
+// Lead picks the minimum they'd consider (matches the way most rental
+// search sites work — "show me 1+ beds" rather than a range).
+function BedBathSelector({ beds, baths, onChange }) {
   const bedOptions = [
     { value: '0', label: 'Studio' },
     { value: '1', label: '1' },
@@ -2696,104 +2690,45 @@ function BedBathSelector({ bedsMin, bedsMax, bathsMin, bathsMax, onChange }) {
     { value: '3', label: '3+' },
   ];
 
-  // Defaults: if nothing chosen yet, start the range at the first option.
-  const bMin = bedsMin || '1';
-  const bMax = bedsMax || bMin;
-  const baMin = bathsMin || '1';
-  const baMax = bathsMax || baMin;
-
-  // When user taps a pill, decide whether it should become the new min, the
-  // new max, or reset the range to that single value. Behavior:
-  //   - tap below current min  → expand range down (new min)
-  //   - tap above current max  → expand range up   (new max)
-  //   - tap exactly at min === max → no-op
-  //   - tap inside an existing range → collapse to just that value
-  //   - tap at current min (while range > 1)  → shrink min up to that pill
-  //     (covered by the "inside range" rule)
-  const updateRange = (options, val, currentMin, currentMax, minKey, maxKey) => {
-    const idx = options.findIndex((o) => o.value === val);
-    const minIdx = options.findIndex((o) => o.value === currentMin);
-    const maxIdx = options.findIndex((o) => o.value === currentMax);
-
-    let nextMin = currentMin;
-    let nextMax = currentMax;
-    if (idx < minIdx) {
-      nextMin = val;                       // expand down
-    } else if (idx > maxIdx) {
-      nextMax = val;                       // expand up
-    } else if (minIdx !== maxIdx) {
-      // tapped inside an existing range → collapse to just that pill
-      nextMin = val;
-      nextMax = val;
-    }
-    // tapping the single selected value when min === max → no-op
-    onChange({ [minKey]: nextMin, [maxKey]: nextMax });
-  };
-
-  const renderRow = (options, currentMin, currentMax, minKey, maxKey) => {
-    const minIdx = options.findIndex((o) => o.value === currentMin);
-    const maxIdx = options.findIndex((o) => o.value === currentMax);
-    return (
-      <div className="grid grid-cols-5 gap-2">
-        {options.map((o, i) => {
-          const inRange = i >= minIdx && i <= maxIdx;
-          const isEndpoint = i === minIdx || i === maxIdx;
-          return (
-            <button
-              key={o.value}
-              type="button"
-              onClick={() => updateRange(options, o.value, currentMin, currentMax, minKey, maxKey)}
-              className={`py-4 rounded-2xl text-base font-semibold transition-all ${
-                isEndpoint
-                  ? 'bg-slate-900 text-white shadow-md scale-[1.02]'
-                  : inRange
-                    ? 'bg-slate-200 text-slate-900'
-                    : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
-              }`}
-            >
-              {o.label}
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-
-  const bedLabel =
-    bMin === bMax
-      ? (bMin === '0' ? 'Studio' : bMin === '4' ? '4+ bedrooms' : `Exactly ${bMin} bedroom${bMin === '1' ? '' : 's'}`)
-      : `${bMin === '0' ? 'Studio' : bMin} to ${bMax === '4' ? '4+' : bMax} bedrooms`;
-  const bathLabel =
-    baMin === baMax
-      ? (baMin === '3' ? '3+ bathrooms' : `Exactly ${baMin} bathroom${baMin === '1' ? '' : 's'}`)
-      : `${baMin} to ${baMax === '3' ? '3+' : baMax} bathrooms`;
+  const renderRow = (options, currentValue, onPick, Icon) => (
+    <div className="grid grid-cols-5 gap-2">
+      {options.map((o) => {
+        const selected = currentValue === o.value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onPick(o.value)}
+            className={`flex flex-col items-center justify-center gap-1.5 py-5 rounded-2xl transition-all ${
+              selected
+                ? 'bg-slate-900 text-white shadow-lg scale-[1.03]'
+                : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+            }`}
+          >
+            <Icon className={`w-5 h-5 ${selected ? 'text-white' : 'text-slate-400'}`} />
+            <span className="text-base font-semibold">{o.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 
   return (
-    <div className="space-y-7">
+    <div className="space-y-6">
       <div>
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
-            <Bed className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-slate-900">Bedrooms</div>
-            <div className="text-xs text-slate-500">{bedLabel}</div>
-          </div>
+        <div className="flex items-end justify-between mb-3">
+          <div className="text-sm font-semibold text-slate-900">Bedrooms</div>
+          <div className="text-[11px] text-slate-500">Minimum you&apos;d consider</div>
         </div>
-        {renderRow(bedOptions, bMin, bMax, 'bedsMin', 'bedsMax')}
+        {renderRow(bedOptions, beds, (v) => onChange({ beds: v }), Bed)}
       </div>
 
       <div>
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
-            <Bath className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-slate-900">Bathrooms</div>
-            <div className="text-xs text-slate-500">{bathLabel}</div>
-          </div>
+        <div className="flex items-end justify-between mb-3">
+          <div className="text-sm font-semibold text-slate-900">Bathrooms</div>
+          <div className="text-[11px] text-slate-500">Minimum you&apos;d consider</div>
         </div>
-        {renderRow(bathOptions, baMin, baMax, 'bathsMin', 'bathsMax')}
+        {renderRow(bathOptions, baths, (v) => onChange({ baths: v }), Bath)}
       </div>
     </div>
   );
@@ -3154,13 +3089,9 @@ function CuratingConfirmed({ lead, agentName /* unused, onDone */ }) {
   const agentLabel = agentName && agentName !== '[Your name]' ? agentName : 'Your agent';
   const subline = `${agentLabel} is hand-picking rentals that match your criteria. Expect a personalized link by text and email within a few hours — you'll be able to pick which ones to tour and a time that works.`;
 
-  // Pretty bed/bath summary that handles ranges + studios + 4+ caps.
-  const bedSummary = lead.bedsMin === lead.bedsMax
-    ? (lead.bedsMin === '0' ? 'Studio' : `${lead.bedsMin} bd`)
-    : `${lead.bedsMin === '0' ? 'Studio' : lead.bedsMin}–${lead.bedsMax === '4' ? '4+' : lead.bedsMax} bd`;
-  const bathSummary = lead.bathsMin === lead.bathsMax
-    ? `${lead.bathsMin} ba`
-    : `${lead.bathsMin}–${lead.bathsMax === '3' ? '3+' : lead.bathsMax} ba`;
+  // Pretty bed/bath summary — single value (minimum).
+  const bedSummary = lead.beds === '0' ? 'Studio' : lead.beds === '4' ? '4+ bd' : `${lead.beds}+ bd`;
+  const bathSummary = lead.baths === '3' ? '3+ ba' : `${lead.baths}+ ba`;
 
   return (
     <div className="max-w-xl mx-auto px-6 md:px-8 py-16">
@@ -3585,8 +3516,6 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           settings={settings}
           saveSettings={saveSettings}
           showToast={showToast}
-          timeOffset={timeOffset}
-          saveTimeOffset={saveTimeOffset}
           properties={properties}
           saveProperty={saveProperty}
           removeProperty={removeProperty}
@@ -4355,27 +4284,70 @@ function AvailabilityEditor({ value, onChange }) {
   );
 }
 
-function SettingsView({ settings, saveSettings, showToast, timeOffset, saveTimeOffset }) {
+function SettingsView({ settings, saveSettings, showToast }) {
   const [form, setForm] = useState(settings);
   const update = (k, v) => setForm({ ...form, [k]: v });
   const updateAutomation = (k, v) => setForm({ ...form, automation: { ...form.automation, [k]: v } });
   const updateAvailability = (next) => setForm({ ...form, agent_availability: next });
   const save = async () => { await saveSettings(form); showToast('Settings saved'); };
-  const jumpTime = async (days) => { await saveTimeOffset((timeOffset || 0) + days * 86400000); showToast(`+${days} days`); };
-  const resetTime = async () => { await saveTimeOffset(0); showToast('Time reset'); };
-  const currentSimulatedDate = new Date(Date.now() + (timeOffset || 0));
 
   return (
     <div className="space-y-6 max-w-2xl">
       <Card className="divide-y divide-slate-100 overflow-hidden">
         <div className="p-5">
           <SectionHeader icon={Bot}>Automation</SectionHeader>
-          <div className="text-sm text-slate-500">Toggle automated behaviors. All messages sent on your behalf.</div>
+          <div className="text-sm text-slate-500 leading-relaxed">
+            Every toggle below controls a specific automated behavior. Turn the master switch off to pause everything at once. Individual switches let you keep some automation running while disabling others.
+          </div>
         </div>
-        <AutomationRow name="Master switch" desc="Turn all automation on or off." value={form.automation?.enabled !== false} onChange={(v) => updateAutomation('enabled', v)} />
-        <AutomationRow name="Auto-complete tours" desc="Mark tours complete after scheduled end time." value={form.automation?.autoCompleteTours !== false} onChange={(v) => updateAutomation('autoCompleteTours', v)} disabled={form.automation?.enabled === false} />
-        <AutomationRow name="Auto-nudge silent leads" desc="Nudge after 48hrs and 5 days post-tour." value={form.automation?.autoNudgeNoResponse !== false} onChange={(v) => updateAutomation('autoNudgeNoResponse', v)} disabled={form.automation?.enabled === false} />
-        <AutomationRow name="Auto-archive stale leads" desc="Archive after 30 days of no activity." value={form.automation?.autoArchiveStale !== false} onChange={(v) => updateAutomation('autoArchiveStale', v)} disabled={form.automation?.enabled === false} />
+        <AutomationRow
+          name="Master switch"
+          desc="Pause ALL automated behaviors at once. With this off, no welcome messages, no tour reminders, no post-tour nudges, no follow-ups, no daily summary email — everything below is suspended. Turn on to resume."
+          value={form.automation?.enabled !== false}
+          onChange={(v) => updateAutomation('enabled', v)}
+        />
+        <AutomationRow
+          name="Welcome messages"
+          desc="When a new lead submits the intake form, automatically send them a category-specific SMS + email within 30 seconds. Different message templates fire based on the lead's bucket (good/limited credit × moving soon/later). Templates are editable below."
+          value={form.automation?.welcomeMessages !== false}
+          onChange={(v) => updateAutomation('welcomeMessages', v)}
+          disabled={form.automation?.enabled === false}
+        />
+        <AutomationRow
+          name="Tour reminders"
+          desc="Automatically text the lead a reminder 24 hours and 1 hour before each scheduled tour. Runs server-side every minute, so reminders fire on time even if you're not in the app."
+          value={form.automation?.tourReminders !== false}
+          onChange={(v) => updateAutomation('tourReminders', v)}
+          disabled={form.automation?.enabled === false}
+        />
+        <AutomationRow
+          name="Auto-complete tours"
+          desc="Mark a tour as 'completed' automatically once its scheduled end time has passed. You can still override by clicking Showed / No-show / Cancelled in the Tours tab to track the actual outcome."
+          value={form.automation?.autoCompleteTours !== false}
+          onChange={(v) => updateAutomation('autoCompleteTours', v)}
+          disabled={form.automation?.enabled === false}
+        />
+        <AutomationRow
+          name="Re-engage silent leads"
+          desc="If a lead goes quiet at a key step (got the curated link but hasn't picked properties at 48h; got the scheduling link but hasn't picked times at 48h; post-tour silence at 48h and 5 days) — automatically text a friendly nudge. Each lead gets each nudge once."
+          value={form.automation?.autoNudgeNoResponse !== false}
+          onChange={(v) => updateAutomation('autoNudgeNoResponse', v)}
+          disabled={form.automation?.enabled === false}
+        />
+        <AutomationRow
+          name="Daily morning summary"
+          desc="At 7 AM ET each day, email you a brief listing: new leads needing curation, leads who requested tours, conversations awaiting your reply, today's + tomorrow's tours, and overdue tasks. Sends to morganrentalsphilly@gmail.com."
+          value={form.automation?.dailySummary !== false}
+          onChange={(v) => updateAutomation('dailySummary', v)}
+          disabled={form.automation?.enabled === false}
+        />
+        <AutomationRow
+          name="Auto-archive stale leads"
+          desc="After 30 days of no activity (no messages from you OR them), automatically move the lead to 'archived' so they fall out of the active inbox. They stay in the database — you can always un-archive."
+          value={form.automation?.autoArchiveStale !== false}
+          onChange={(v) => updateAutomation('autoArchiveStale', v)}
+          disabled={form.automation?.enabled === false}
+        />
       </Card>
 
       <AvailabilityEditor
@@ -4391,19 +4363,6 @@ function SettingsView({ settings, saveSettings, showToast, timeOffset, saveTimeO
         <FormField label="RentSpree dashboard URL">
           <input value={form.rentSpree?.dashboardUrl || ''} onChange={e => update('rentSpree', { ...form.rentSpree, dashboardUrl: e.target.value })} className="form-input" placeholder="https://app.rentspree.com/dashboard" />
         </FormField>
-      </Card>
-
-      <Card className="p-5">
-        <SectionHeader icon={FastForward}>Simulate time (dev)</SectionHeader>
-        <div className="text-sm text-slate-700 mb-3">
-          Simulated: <span className="font-semibold">{currentSimulatedDate.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => jumpTime(1)}>+1 day</Button>
-          <Button size="sm" onClick={() => jumpTime(3)}>+3 days</Button>
-          <Button size="sm" onClick={() => jumpTime(7)}>+1 week</Button>
-          {timeOffset > 0 && <Button size="sm" variant="secondary" onClick={resetTime}>Reset</Button>}
-        </div>
       </Card>
 
       <Card className="p-5">
@@ -5369,7 +5328,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
                   <InfoItem label="Budget" value={`${fmtCurrency(Number(lead.budgetMin))} – ${fmtCurrency(Number(lead.budgetMax))}`} />
                   <InfoItem
                     label="Beds / Baths"
-                    value={`${lead.bedsMin === lead.bedsMax ? (lead.bedsMin === '0' ? 'Studio' : lead.bedsMin || lead.beds || '?') : `${lead.bedsMin === '0' ? 'Studio' : lead.bedsMin}–${lead.bedsMax === '4' ? '4+' : lead.bedsMax}`} bd · ${lead.bathsMin === lead.bathsMax ? (lead.bathsMin || lead.baths || '?') : `${lead.bathsMin}–${lead.bathsMax === '3' ? '3+' : lead.bathsMax}`} ba`}
+                    value={`${lead.beds === '0' ? 'Studio' : `${lead.beds}+ bd`} · ${lead.baths}+ ba`}
                   />
                   <InfoItem label="Areas" value={lead.areas || 'No preference'} />
                   <InfoItem label="Move-in" value={fmtDate(lead.moveInDate)} />
@@ -6074,7 +6033,7 @@ function ToursSection({ upcomingTours, leads, onSelectLead, updateSubmissionStat
 // Bulk SMS, and Filters views. Keeps each view as-is so we don't break them.
 // ============================================================
 function SettingsSection({
-  settings, saveSettings, showToast, timeOffset, saveTimeOffset,
+  settings, saveSettings, showToast,
   properties, saveProperty, removeProperty, bulkImportProperties, leads,
 }) {
   const [tab, setTab] = useState('agent');
@@ -6083,7 +6042,6 @@ function SettingsSection({
       <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
         {[
           { k: 'agent',      label: 'Agent & automation' },
-          { k: 'properties', label: 'Properties' },
           { k: 'blast',      label: 'Bulk SMS' },
         ].map(t => (
           <button
@@ -6104,21 +6062,8 @@ function SettingsSection({
             settings={settings}
             saveSettings={saveSettings}
             showToast={showToast}
-            timeOffset={timeOffset}
-            saveTimeOffset={saveTimeOffset}
           />
         </div>
-      )}
-      {tab === 'properties' && (
-        <PropertiesView
-          properties={properties}
-          saveProperty={saveProperty}
-          removeProperty={removeProperty}
-          bulkImportProperties={bulkImportProperties}
-          settings={settings}
-          saveSettings={saveSettings}
-          showToast={showToast}
-        />
       )}
       {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
     </div>
