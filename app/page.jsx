@@ -112,6 +112,37 @@ const DEFAULT_AGENT_SETTINGS = {
     notifyWhenSlotsEmpty: true,
   },
   _slotsEmptyNotifiedAt: null,
+
+  // Per-category welcome message templates. Sent automatically when a new
+  // lead is created, based on the classification bucket:
+  //   GCMS  = Good credit (650+), moving in <75 days   — HOT, send curated link ASAP
+  //   GCM75+= Good credit (650+), moving in 75+ days   — WARM, schedule a 75-day nudge
+  //   BCMS  = Limited credit (<650), moving in <75 days — WORK WITH, flag credit options
+  //   BC75+ = Limited credit (<650), moving in 75+ days — LONGTAIL, light touch
+  //
+  // Available placeholders: {firstName}, {moveInDate}, {agentName}
+  welcomeMessages: {
+    GCMS: {
+      sms: `Rentals Philly: Got it {firstName} — I'm hand-picking rentals that fit you right now. Expect a personalized link with photos within a few hours.`,
+      emailSubject: 'Welcome to Rentals Philly — hand-picked matches incoming',
+      email: `Hi {firstName},\n\nThanks for reaching out! Since you're moving in the next couple months, I'm prioritizing your search — I'll hand-pick rentals that match your criteria and send you a personalized link within a few hours.\n\nWhen the link arrives, click through to view photos and tell me which ones you'd like to tour. I'll handle the rest.\n\nTalk soon,\n— {agentName}`,
+    },
+    'GCM75+': {
+      sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked options. In the meantime, save my number.`,
+      emailSubject: 'Welcome to Rentals Philly — we\'ll be in touch soon',
+      email: `Hi {firstName},\n\nThanks for letting us know what you're looking for. Since your move-in is further out, the rental market won't have what you need quite yet — but we'll be ready when it does.\n\nI'll reach out about 75 days before {moveInDate} with hand-picked options. In the meantime, save my number — if you have questions or your timeline changes, text me anytime.\n\nTalk soon,\n— {agentName}`,
+    },
+    BCMS: {
+      sms: `Rentals Philly: Got it {firstName} — I'll get back to you within 24 hours. I work with all credit profiles and have options that fit your situation.`,
+      emailSubject: 'Welcome to Rentals Philly — let\'s find the right fit',
+      email: `Hi {firstName},\n\nThanks for reaching out! I work with prospects across all credit profiles, and there are good rental options available regardless — landlords with flexible criteria, units that accept cosigners or higher deposits, and so on.\n\nGive me 24 hours and I'll come back with a hand-picked list of rentals that fit your situation. We'll talk about cosigner options or alternate deposit structures if that helps unlock more units.\n\nTalk soon,\n— {agentName}`,
+    },
+    'BC75+': {
+      sms: `Rentals Philly: Thanks {firstName}! I'll reach out 75 days before {moveInDate}. If you can, work on credit in the meantime — it opens up more options. Save my number.`,
+      emailSubject: 'Welcome to Rentals Philly — planning ahead',
+      email: `Hi {firstName},\n\nThanks for reaching out. Since your move is further out, I'll plan to come back to you about 75 days before {moveInDate} with hand-picked rentals.\n\nOne thing to think about in the meantime: any progress you can make on your credit between now and your move will significantly widen the range of available rentals. Even getting current on a credit card or paying down a small balance can make a real difference.\n\nIf your timeline shifts or you have questions, text me anytime.\n\nTalk soon,\n— {agentName}`,
+    },
+  },
 };
 
 const TOUR_WINDOW = { minHoursAhead: 48, maxDaysAhead: 10 };
@@ -1422,13 +1453,20 @@ export default function App() {
     const isSoon = bucket === 'GCMS' || bucket === 'BCMS';
     const createdAt = new Date().toISOString();
 
-    const welcomeEmailSubject = 'Welcome to Rentals Philly';
-    const welcomeEmailBody = isSoon
-      ? `Hi ${firstName} — thanks for reaching out! I'm hand-picking rentals that match your criteria and will send you a personalized link to view them within a few hours.`
-      : `Hi ${firstName} — thanks for reaching out! Since your move-in date is further out, I'll follow up 75 days before.`;
-    const welcomeSmsBody = isSoon
-      ? `Rentals Philly: Got it ${firstName}! I'm hand-picking matches now — expect a link with your listings within a few hours.`
-      : `Rentals Philly: Thanks ${firstName}! I'll reach out 75 days before your move.`;
+    // Pick the right template based on the lead's bucket (GCMS / GCM75+ /
+    // BCMS / BC75+). Each bucket has its own SMS + email pair editable in
+    // Settings → Welcome messages.
+    const templates = settings.welcomeMessages || DEFAULT_AGENT_SETTINGS.welcomeMessages;
+    const t = templates[bucket] || templates.GCMS || DEFAULT_AGENT_SETTINGS.welcomeMessages.GCMS;
+    const moveInLabel = lead.moveInDate ? fmtDate(lead.moveInDate) : 'your move date';
+    const agentDisplay = (settings.agentName && settings.agentName !== '[Your name]') ? settings.agentName : 'Morgan';
+    const fill = (s) => String(s || '')
+      .replace(/\{firstName\}/g, firstName)
+      .replace(/\{moveInDate\}/g, moveInLabel)
+      .replace(/\{agentName\}/g, agentDisplay);
+    const welcomeEmailSubject = fill(t.emailSubject);
+    const welcomeEmailBody = fill(t.email);
+    const welcomeSmsBody = fill(t.sms);
 
     // Email message inserted directly to DB below. SMS goes through sendSMS
     // (server wrapper) which inserts its own messages row — no duplicate.
@@ -4508,25 +4546,145 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 //   1. BrightMLS portal URL (lead sees this in iframe to browse photos)
 //   2. Addresses — one per line (lead checks the ones they want to tour)
 // On send: app SMSes + emails the lead a branded /c/[token] page.
+// Shown after lead submits phase 1 — agent reviews their property picks
+// and clicks "Send scheduling link" to enable phase 2 (the time picker).
+function SchedulingLinkPanel({ lead, updateLead, showToast }) {
+  const [busy, setBusy] = useState(false);
+  const picks = Array.isArray(lead.raw?.curated_address_picks) ? lead.raw.curated_address_picks : [];
+  const note = lead.raw?.curated_note;
+  const schedulingSent = !!lead.raw?.scheduling_open_at;
+  const timesSubmitted = !!lead.raw?.times_submitted_at;
+  const firstName = (lead.fullName || '').split(' ')[0];
+  const curatedUrl = lead.curatedLinkUrl || (lead.raw?.curated_token
+    ? `${typeof window !== 'undefined' ? window.location.origin : 'https://rentalsphilly.vercel.app'}/c/${lead.raw.curated_token}`
+    : null);
+
+  if (picks.length === 0) return null;   // hidden until lead picks properties
+
+  const onSend = async () => {
+    if (!curatedUrl) {
+      showToast('No curated link token found');
+      return;
+    }
+    setBusy(true);
+    const smsBody = `Rentals Philly: I checked availability — pick your tour times here: ${curatedUrl}`;
+    const emailSubject = 'Pick your tour times';
+    const emailBody =
+      `Hi ${firstName},\n\n` +
+      `Good news — the properties you picked are available. Click below to pick a tour time for each:\n\n` +
+      `${curatedUrl}\n\n` +
+      `— Morgan`;
+    try {
+      const smsResult = await sendSMS({
+        leadId: lead.id,
+        body: smsBody,
+        kind: 'manual',
+        idempotencyKey: `scheduling-link-${lead.id}-${Date.now()}`,
+        automated: false,
+      });
+      if (!smsResult.ok && smsResult.error !== 'opted_out') {
+        showToast(`SMS not sent — ${smsResult.error || 'send failed'}`);
+        setBusy(false);
+        return;
+      }
+      await sendEmail({
+        leadId: lead.id,
+        subject: emailSubject,
+        body: emailBody,
+        kind: 'manual',
+        idempotencyKey: `scheduling-link-email-${lead.id}-${Date.now()}`,
+        automated: false,
+      });
+      await updateLead(lead.id, {
+        raw: {
+          ...(lead.raw || {}),
+          scheduling_open_at: new Date().toISOString(),
+        },
+        activities: [...(lead.activities || []), {
+          id: `a_${Date.now()}`,
+          type: 'scheduling-link-sent',
+          timestamp: new Date().toISOString(),
+          message: `Scheduling link sent to ${firstName} (${picks.length} properties)`,
+        }],
+      });
+      showToast('Scheduling link sent');
+    } catch (err) {
+      console.error('[scheduling link] send failed', err);
+      showToast('Send failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="p-5 space-y-4 border-2" style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
+      <div className="flex items-start gap-3">
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-white" style={{ backgroundColor: 'var(--brand-gold)' }}>
+          <CheckCircle2 className="w-4 h-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-slate-900">
+            {timesSubmitted ? 'Lead picked tour times' : schedulingSent ? 'Scheduling link sent · waiting on lead' : 'Lead picked properties — review & send scheduling link'}
+          </div>
+          <div className="text-xs text-slate-600 mt-0.5">
+            Submitted {lead.raw?.curated_submitted_at ? new Date(lead.raw.curated_submitted_at).toLocaleString() : 'recently'}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl p-3 border border-slate-200">
+        <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-2">
+          Picks ({picks.length})
+        </div>
+        <ul className="space-y-1 text-sm text-slate-700">
+          {picks.map((a) => <li key={a}>• {a}</li>)}
+        </ul>
+        {note && (
+          <div className="mt-3 pt-3 border-t border-slate-100">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Note</div>
+            <div className="text-sm text-slate-700 italic">{note}</div>
+          </div>
+        )}
+      </div>
+
+      {timesSubmitted ? (
+        <div className="bg-white rounded-xl p-3 border border-slate-200">
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-2">Picked times</div>
+          <ul className="space-y-1 text-sm text-slate-700">
+            {(lead.raw?.picked_times || []).map((p, i) => (
+              <li key={i}>• {p.address} — {p.slotDate} at {p.slotTime}</li>
+            ))}
+          </ul>
+          <div className="text-[11px] text-slate-500 mt-2">
+            Times confirmed {lead.raw?.times_submitted_at ? new Date(lead.raw.times_submitted_at).toLocaleString() : ''} — book each tour in your CRM Tours tab.
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[11px] text-slate-600">
+            {schedulingSent
+              ? `Sent ${new Date(lead.raw.scheduling_open_at).toLocaleString()} — waiting on lead to pick times.`
+              : 'Confirm properties are still available, then send the scheduling link.'}
+          </div>
+          <Button onClick={onSend} disabled={busy}>
+            {busy ? 'Sending…' : schedulingSent ? 'Re-send link' : 'Send scheduling link'}
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function CuratedLinkPanel({ lead, updateLead, showToast }) {
   const [url, setUrl] = useState(lead.raw?.curated_portal_url || '');
-  const [addressesText, setAddressesText] = useState(
-    Array.isArray(lead.raw?.curated_addresses) ? lead.raw.curated_addresses.join('\n') : ''
-  );
   const [busy, setBusy] = useState(false);
   const alreadySent = !!lead.curatedLinkSentAt;
   const firstName = (lead.fullName || '').split(' ')[0];
-
-  const addresses = addressesText.split('\n').map(s => s.trim()).filter(Boolean);
 
   const onSend = async () => {
     const cleanUrl = url.trim();
     if (!cleanUrl || !/^https?:\/\//.test(cleanUrl)) {
       showToast('Paste a valid BrightMLS portal URL first');
-      return;
-    }
-    if (addresses.length === 0) {
-      showToast('Add at least one address');
       return;
     }
     setBusy(true);
@@ -4539,13 +4697,12 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       'https://rentalsphilly.vercel.app';
     const curatedUrl = `${appBase}/c/${token}`;
 
-    const smsBody = `Rentals Philly: ${addresses.length} hand-picked rentals for you — view photos & pick which you want to tour: ${curatedUrl}`;
-    const emailSubject = `Your hand-picked Philly rentals (${addresses.length})`;
+    const smsBody = `Rentals Philly: Your hand-picked rentals are ready. View photos & request tours: ${curatedUrl}`;
+    const emailSubject = 'Your hand-picked Philly rentals';
     const emailBody =
       `Hi ${firstName},\n\n` +
-      `I picked ${addresses.length} rentals that match your criteria. Click below to view photos and pick which ones you'd like to tour, plus times that work for you:\n\n` +
+      `I hand-picked rentals for you. Click below to browse photos on BrightMLS, then tell me which you'd like to tour and what times work:\n\n` +
       `${curatedUrl}\n\n` +
-      `If anything looks off or you want me to refine the list, just reply to this email.\n\n` +
       `— Morgan`;
 
     try {
@@ -4580,7 +4737,6 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
           ...(lead.raw || {}),
           curated_token: token,
           curated_portal_url: cleanUrl,
-          curated_addresses: addresses,
           curated_link_url: curatedUrl,
           curated_link_sent_at: new Date().toISOString(),
         },
@@ -4592,10 +4748,10 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
           id: `a_${Date.now()}`,
           type: 'curated-link-sent',
           timestamp: new Date().toISOString(),
-          message: `Curated link sent to ${firstName} (${addresses.length} addresses)`,
+          message: `Curated link sent to ${firstName}`,
         }],
       });
-      showToast(`Sent · ${addresses.length} ${addresses.length === 1 ? 'address' : 'addresses'}`);
+      showToast('Curated link sent — lead got SMS + email');
     } catch (err) {
       console.error('[curated link] send failed', err);
       showToast('Send failed — check logs');
@@ -4615,8 +4771,8 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
             {alreadySent ? 'Update curated link' : 'Send curated link'}
           </div>
           <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-            Lead gets a branded page with the BrightMLS portal embedded for photos +
-            checkboxes to pick which units they want to tour + a time picker.
+            Just paste the BrightMLS portal URL. Lead gets a branded page that opens
+            the portal for photos and lets them pick addresses + times to tour.
           </div>
         </div>
       </div>
@@ -4632,24 +4788,8 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
           placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
           className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono"
         />
-      </div>
-
-      <div>
-        <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
-          Addresses — one per line ({addresses.length} parsed)
-        </label>
-        <textarea
-          value={addressesText}
-          onChange={(e) => setAddressesText(e.target.value)}
-          rows={6}
-          placeholder={`1420 Pine St #3B
-234 N 3rd St
-876 S 4th St
-1500 Locust St #12A`}
-          className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono resize-y"
-        />
         <div className="text-[11px] text-slate-500 mt-1.5">
-          Just paste addresses — photos live in the BrightMLS portal. Lead checks the ones they want to tour.
+          BrightMLS Matrix → run your search → <strong>Share → Send to client</strong> → copy URL → paste here.
         </div>
       </div>
 
@@ -4657,8 +4797,8 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         <div className="text-[11px] text-slate-500">
           Sends to: <span className="font-mono">{lead.phone}</span> · <span className="font-mono">{lead.email}</span>
         </div>
-        <Button onClick={onSend} disabled={busy || !url.trim() || addresses.length === 0}>
-          {busy ? 'Sending…' : (alreadySent ? `Re-send · ${addresses.length}` : `Send · ${addresses.length} ${addresses.length === 1 ? 'address' : 'addresses'}`)}
+        <Button onClick={onSend} disabled={busy || !url.trim()}>
+          {busy ? 'Sending…' : (alreadySent ? 'Re-send' : 'Send link')}
         </Button>
       </div>
 
@@ -4738,8 +4878,10 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
         <div className="flex-1 overflow-y-auto p-5">
           {tab === 'overview' && (
             <div className="space-y-5">
-              {/* Curated link panel — agent's primary action on a fresh lead. */}
+              {/* Phase 1: send curated BrightMLS portal link. */}
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+              {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
+              <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
               <div>
                 <SectionHeader>Lead details</SectionHeader>

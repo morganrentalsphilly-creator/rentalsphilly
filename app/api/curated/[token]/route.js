@@ -1,12 +1,14 @@
 // Public API for the curated lead page (/c/[token]).
 //
-// GET   /api/curated/[token]      → returns lead summary + curated properties
-// POST  /api/curated/[token]      → accepts the lead's tour selections and
-//                                   creates tour records in the CRM
+// TWO PHASES of the workflow share the same token + URL:
 //
-// No auth — token is a random 16-char hex stored on lead.raw.curated_token.
-// Tokens are unguessable. The page exposes ONLY data the lead is meant to see
-// (their own name, the curated properties, agent contact). Not other leads.
+//   Phase 1: lead picks properties (addresses + note)
+//   Phase 2: agent reviews → clicks "Send scheduling link" → SMS goes out →
+//            lead returns to same /c/[token] which now shows time slots
+//
+// GET   /api/curated/[token]    → returns lead summary + phase state
+// POST  /api/curated/[token]    → routes to phase 1 (properties) or phase 2
+//                                 (times) based on `phase` field in body
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
@@ -15,7 +17,6 @@ import { sendEmail } from '@/lib/email.server';
 
 async function findLeadByToken(token) {
   const db = supabaseAdmin();
-  // raw is jsonb; use the JSON containment operator via PostgREST filter.
   const { data, error } = await db
     .from('leads')
     .select('id, full_name, email, phone, raw, opted_out')
@@ -28,6 +29,13 @@ async function findLeadByToken(token) {
   return data;
 }
 
+function phaseFor(lead) {
+  if (lead.raw?.times_submitted_at) return 3;     // done
+  if (lead.raw?.scheduling_open_at) return 2;     // agent enabled time picker
+  if (lead.raw?.curated_submitted_at) return 'awaiting-scheduling';
+  return 1;                                       // initial — pick properties
+}
+
 export async function GET(_request, ctx) {
   const { token } = (await ctx.params) || ctx.params || {};
   if (!token) return NextResponse.json({ error: 'missing_token' }, { status: 400 });
@@ -35,7 +43,6 @@ export async function GET(_request, ctx) {
   const lead = await findLeadByToken(token);
   if (!lead) return NextResponse.json({ error: 'not_found' }, { status: 404 });
 
-  // Get the agent's contact from settings so the page can say "Hi from Morgan".
   let agentName = null;
   let agentPhone = null;
   try {
@@ -43,9 +50,6 @@ export async function GET(_request, ctx) {
     const { data: settings } = await db.from('settings').select('*').eq('id', 1).single();
     if (settings) {
       agentName = settings.agent_name || settings.agentName || null;
-      // Prefer the Twilio number (so the lead's SMS replies hit our inbound
-      // webhook and thread back through the inbox). Fall back to agent's
-      // personal cell if Twilio number isn't configured.
       agentPhone = settings.twilio_number || settings.twilioNumber || settings.agent_phone || settings.agentPhone || null;
     }
   } catch {}
@@ -55,18 +59,16 @@ export async function GET(_request, ctx) {
       leadId: lead.id,
       firstName: (lead.full_name || '').split(' ')[0] || 'there',
       portalUrl: lead.raw?.curated_portal_url || null,
-      // Preferred: simple list of address strings ("1420 Pine St #3B").
-      addresses: Array.isArray(lead.raw?.curated_addresses) ? lead.raw.curated_addresses : [],
-      // Legacy: structured per-property objects (from older flow).
-      properties: Array.isArray(lead.raw?.curated_properties) ? lead.raw.curated_properties : [],
+      phase: phaseFor(lead),
+      // Phase 1 output (lead's chosen addresses + note)
+      selectedAddresses: Array.isArray(lead.raw?.curated_address_picks) ? lead.raw.curated_address_picks : [],
+      curatedNote: lead.raw?.curated_note || null,
+      // Phase 2 output (lead's chosen times)
+      pickedTimes: Array.isArray(lead.raw?.picked_times) ? lead.raw.picked_times : [],
       agentName,
       agentPhone,
-      alreadySubmitted: !!lead.raw?.curated_submitted_at,
     },
-    {
-      // Don't cache aggressively — lead might revisit after we update properties.
-      headers: { 'Cache-Control': 'private, no-store' },
-    }
+    { headers: { 'Cache-Control': 'private, no-store' } }
   );
 }
 
@@ -78,101 +80,117 @@ export async function POST(request, ctx) {
 
   try {
     const body = await request.json();
-    // selections: [{ propertyId, address, mls, slotDate, slotTime }, ...]
-    const selections = Array.isArray(body.selections) ? body.selections : [];
-    const noteForAgent = (body.note || '').toString().slice(0, 2000);
-
-    if (selections.length === 0) {
-      return NextResponse.json({ error: 'no_selections' }, { status: 400 });
-    }
-
+    const phase = body.phase || (Array.isArray(body.times) ? 2 : 1);
     const db = supabaseAdmin();
 
-    // Create one tour record per selection.
-    const inserted = [];
-    for (const s of selections) {
-      const tour = {
-        id: `tour_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    if (phase === 1) {
+      // === PHASE 1: lead is telling us which properties they want ===
+      const addresses = (Array.isArray(body.addresses) ? body.addresses : [])
+        .map((s) => String(s).trim())
+        .filter(Boolean);
+      const note = (body.note || '').toString().slice(0, 2000);
+
+      if (addresses.length === 0) {
+        return NextResponse.json({ error: 'no_addresses' }, { status: 400 });
+      }
+
+      await db.from('leads').update({
+        stage: 'tour-requested',
+        raw: {
+          ...(lead.raw || {}),
+          curated_address_picks: addresses,
+          curated_note: note || null,
+          curated_submitted_at: new Date().toISOString(),
+        },
+      }).eq('id', lead.id);
+
+      await db.from('activities').insert({
+        id: `a_${Date.now()}`,
         lead_id: lead.id,
-        tour_type: 'in-person',
-        date: s.slotDate || null,
-        time: s.slotTime || null,
-        status: 'requested',
-        listings: [{
-          id: s.propertyId,
-          address: s.address,
-          mls: s.mls || null,
-          neighborhood: s.neighborhood || null,
-        }],
-        schedule: null,
-        completed_at: null,
-        auto_completed: false,
-      };
-      const { data: row, error } = await db.from('tours').insert(tour).select().single();
-      if (error) {
-        console.error('[curated POST] tour insert failed', error);
-        continue;
-      }
-      inserted.push(row);
+        type: 'curated-properties-picked',
+        message: `Lead picked ${addresses.length} ${addresses.length === 1 ? 'property' : 'properties'}: ${addresses.slice(0, 3).join(', ')}${addresses.length > 3 ? ` +${addresses.length - 3} more` : ''}${note ? ' · Note: ' + note.slice(0, 80) : ''}`,
+      });
+
+      // Confirm to the lead so they know we got it.
+      await sendSms({
+        leadId: lead.id,
+        kind: 'manual',
+        body: `Rentals Philly: Got your picks (${addresses.length}). I'll review availability and send you a scheduling link with open times shortly.`,
+      });
+
+      return NextResponse.json({ ok: true, phase: 'awaiting-scheduling' });
     }
 
-    // Activity log on the lead so the agent sees what happened.
-    await db.from('activities').insert({
-      id: `a_${Date.now()}`,
-      lead_id: lead.id,
-      type: 'curated-selections',
-      message: `Lead selected ${inserted.length} ${inserted.length === 1 ? 'property' : 'properties'} from the curated link${noteForAgent ? ' · note: ' + noteForAgent.slice(0, 80) : ''}`,
-    });
+    if (phase === 2) {
+      // === PHASE 2: lead is picking times for each property ===
+      // Body shape: { picks: [{ address, slotDate, slotTime }, ...], note? }
+      const picks = Array.isArray(body.picks) ? body.picks : [];
+      const note = (body.note || '').toString().slice(0, 2000);
 
-    // Move stage to "tour-requested" if it wasn't already further along.
-    await db.from('leads').update({
-      stage: 'tour-requested',
-      raw: {
-        ...(lead.raw || {}),
-        curated_selections: selections,
-        curated_note: noteForAgent || null,
-        curated_submitted_at: new Date().toISOString(),
-      },
-    }).eq('id', lead.id);
-
-    // Notify the agent via SMS (using the SMS wrapper so it's logged).
-    // We send to the agent's number from settings. If unset, skip.
-    try {
-      const { data: settings } = await db.from('settings').select('*').eq('id', 1).single();
-      const agentPhone = settings?.agent_phone || settings?.agentPhone;
-      if (agentPhone) {
-        const lines = selections.map((s, i) =>
-          `${i + 1}. ${s.address}${s.slotDate ? ` — ${s.slotDate} ${s.slotTime || ''}` : ''}`
-        );
-        const summary = `${lead.full_name} picked ${inserted.length}:\n${lines.join('\n')}${noteForAgent ? '\nNote: ' + noteForAgent.slice(0, 200) : ''}`;
-        // The agent doesn't have a lead row, so we can't use sendSms (which
-        // requires leadId). Fall back to direct Twilio messages.create here,
-        // OR create a placeholder. For now, log + email the agent instead.
-        console.log('[curated POST] would notify agent', { agentPhone, summary });
+      if (picks.length === 0) {
+        return NextResponse.json({ error: 'no_picks' }, { status: 400 });
       }
-    } catch (err) {
-      console.warn('[curated POST] agent notification skipped', err);
+
+      const inserted = [];
+      for (const p of picks) {
+        if (!p.address || !p.slotDate || !p.slotTime) continue;
+        const tour = {
+          id: `tour_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          lead_id: lead.id,
+          tour_type: 'in-person',
+          date: p.slotDate,
+          time: p.slotTime,
+          status: 'requested',
+          listings: [{ address: p.address }],
+          schedule: null,
+          completed_at: null,
+          auto_completed: false,
+        };
+        const { data: row, error } = await db.from('tours').insert(tour).select().single();
+        if (error) {
+          console.error('[curated POST phase 2] tour insert failed', error);
+          continue;
+        }
+        inserted.push(row);
+      }
+
+      await db.from('leads').update({
+        stage: 'tour-booked',
+        raw: {
+          ...(lead.raw || {}),
+          picked_times: picks,
+          times_submitted_at: new Date().toISOString(),
+        },
+      }).eq('id', lead.id);
+
+      await db.from('activities').insert({
+        id: `a_${Date.now()}`,
+        lead_id: lead.id,
+        type: 'tour-times-picked',
+        message: `Lead picked ${inserted.length} tour ${inserted.length === 1 ? 'time' : 'times'}${note ? ' · Note: ' + note.slice(0, 80) : ''}`,
+      });
+
+      // Confirm to lead.
+      const summary = picks.map((p) => `• ${p.address} — ${p.slotDate} ${p.slotTime}`).join('\n');
+      await sendSms({
+        leadId: lead.id,
+        kind: 'tour_confirmation',
+        body: `Rentals Philly: Got your tour times. I'll confirm shortly with calendar invites.`,
+      });
+      await sendEmail({
+        leadId: lead.id,
+        kind: 'tour_confirmation',
+        subject: `Your tour requests`,
+        body:
+          `Hi ${(lead.full_name || '').split(' ')[0]},\n\n` +
+          `Got your tour requests:\n\n${summary}\n\n` +
+          `I'll confirm specific times and send calendar invites shortly.\n\n— Morgan`,
+      });
+
+      return NextResponse.json({ ok: true, created: inserted.length });
     }
 
-    // Confirm to the lead via SMS + email (these DO have a leadId).
-    const summaryText = selections.map((s) => `• ${s.address}${s.slotDate ? ` (${s.slotDate} ${s.slotTime || ''})` : ''}`).join('\n');
-    await sendSms({
-      leadId: lead.id,
-      kind: 'tour_confirmation',
-      body: `Rentals Philly: Got your picks — ${inserted.length} ${inserted.length === 1 ? 'tour' : 'tours'} requested. I'll confirm specific times shortly.`,
-    });
-    await sendEmail({
-      leadId: lead.id,
-      kind: 'tour_confirmation',
-      subject: `Your tour requests — ${inserted.length} ${inserted.length === 1 ? 'property' : 'properties'}`,
-      body:
-        `Hi ${(lead.full_name || '').split(' ')[0]},\n\n` +
-        `Got your tour requests:\n\n${summaryText}\n\n` +
-        (noteForAgent ? `Your note: ${noteForAgent}\n\n` : '') +
-        `I'll confirm specific times and send you calendar invites within a few hours.\n\n— Morgan`,
-    });
-
-    return NextResponse.json({ ok: true, created: inserted.length });
+    return NextResponse.json({ error: 'invalid_phase' }, { status: 400 });
   } catch (err) {
     console.error('[curated POST] error', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
