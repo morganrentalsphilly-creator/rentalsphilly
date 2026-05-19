@@ -441,18 +441,198 @@ export default function CuratedPage() {
   }
 
   // ============================================================
-  // PHASE 3 — all done
+  // PHASE 3 — all done. Show the booked tours with .ics download +
+  // save-contact card so the lead has everything in their phone.
   // ============================================================
+  const pickedTimes = Array.isArray(data.pickedTimes) ? data.pickedTimes : [];
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
       <Header firstName={firstName} />
-      <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-16 text-center">
-        <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
-        <h2 className="text-2xl font-semibold text-slate-900 mb-3">All set, {firstName}.</h2>
-        <p className="text-slate-600 leading-relaxed mb-2">
-          {agentLabel} will confirm your tour times and send you calendar invites shortly. Watch your text + email.
-        </p>
+      <main className="flex-1 max-w-2xl w-full mx-auto px-5 md:px-8 py-8 md:py-12 space-y-6">
+        {/* Hero confirmation */}
+        <div className="text-center">
+          <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-5">
+            <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </div>
+          <h2 className="text-3xl md:text-4xl font-semibold text-slate-900 mb-2">You&apos;re booked, {firstName}.</h2>
+          <p className="text-slate-600 max-w-md mx-auto">
+            {agentLabel} will confirm and send calendar invites shortly. Add the tours to your phone now so you don&apos;t forget.
+          </p>
+        </div>
+
+        {/* Tours card */}
+        {pickedTimes.length > 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Your {pickedTimes.length} {pickedTimes.length === 1 ? 'tour' : 'tours'}
+              </div>
+              {pickedTimes.length > 1 && (
+                <button
+                  onClick={() => downloadAllTours(pickedTimes, agentLabel)}
+                  className="text-xs font-medium px-3 py-1 rounded-full inline-flex items-center gap-1.5 transition-colors hover:bg-slate-50"
+                  style={{ color: 'var(--brand-gold)', borderColor: 'var(--brand-gold)', borderWidth: 1, borderStyle: 'solid' }}
+                >
+                  ↓ Add all to calendar
+                </button>
+              )}
+            </div>
+            {pickedTimes.map((p, i) => (
+              <div key={i} className={`px-5 py-4 ${i !== 0 ? 'border-t border-slate-100' : ''}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-slate-900 truncate">{p.address}</div>
+                    <div className="text-sm text-slate-500 mt-0.5">{fmtSlotDate(p.slotDate)} · {p.slotTime}</div>
+                  </div>
+                  <button
+                    onClick={() => downloadIcsForPick(p, agentLabel)}
+                    className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1"
+                  >
+                    ↓ .ics
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Save agent contact card */}
+        {(data.agentName || data.agentPhone) && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 flex items-center gap-4">
+            <div
+              className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-base shrink-0"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+            >
+              {(data.agentName || 'M').charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-slate-900">{data.agentName || 'Your agent'}</div>
+              <div className="text-sm text-slate-500">Rentals Philly · Skale Real Estate</div>
+              {data.agentPhone && <div className="text-xs text-slate-400 mt-0.5">{data.agentPhone}</div>}
+            </div>
+            <button
+              onClick={() => downloadVcard(data.agentName, data.agentPhone)}
+              className="shrink-0 text-xs font-medium px-3 py-2 rounded-full bg-slate-900 text-white hover:bg-slate-800"
+            >
+              Save contact
+            </button>
+          </div>
+        )}
+
+        {/* What happens next */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+          <div className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">What happens next</div>
+          <ol className="space-y-3 text-sm text-slate-700">
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0" style={{ backgroundColor: 'var(--brand-gold)' }}>1</span>
+              {agentLabel} confirms times with each landlord (usually within a few hours).
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0" style={{ backgroundColor: 'var(--brand-gold)' }}>2</span>
+              You&apos;ll get a text confirming each tour with the exact address + meeting point.
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0" style={{ backgroundColor: 'var(--brand-gold)' }}>3</span>
+              We&apos;ll text reminders 24 hours and 1 hour before each tour.
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0" style={{ backgroundColor: 'var(--brand-gold)' }}>4</span>
+              Show up. Tour. Pick your favorite. We&apos;ll handle the rest.
+            </li>
+          </ol>
+        </div>
+
+        <div className="text-center text-xs text-slate-400 pb-6">
+          Need to change something? Text {data.agentPhone || agentLabel}.
+        </div>
       </main>
     </div>
   );
+}
+
+// ---- helpers used only on this confirmation page ----
+function pad(n) { return String(n).padStart(2, '0'); }
+function icsDate(d) {
+  return d.getUTCFullYear() + pad(d.getUTCMonth() + 1) + pad(d.getUTCDate()) +
+    'T' + pad(d.getUTCHours()) + pad(d.getUTCMinutes()) + '00Z';
+}
+function parsePickStart(p) {
+  // p = { address, slotDate (YYYY-MM-DD), slotTime ("5:00 PM") }
+  if (!p?.slotDate || !p?.slotTime) return null;
+  const [time, ampm] = p.slotTime.split(' ');
+  let [h, m] = time.split(':').map(Number);
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  const d = new Date(p.slotDate + 'T00:00:00');
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+function downloadIcsForPick(p, agentLabel) {
+  const start = parsePickStart(p);
+  if (!start) return;
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const ics = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Rentals Philly//EN',
+    'BEGIN:VEVENT',
+    `UID:${p.slotDate}-${p.slotTime}-${(p.address || '').slice(0,20)}@rentalsphilly.vercel.app`,
+    `DTSTAMP:${icsDate(new Date())}`,
+    `DTSTART:${icsDate(start)}`,
+    `DTEND:${icsDate(end)}`,
+    `SUMMARY:Tour: ${p.address}`,
+    `LOCATION:${p.address}`,
+    `DESCRIPTION:Tour scheduled by ${agentLabel} at Rentals Philly. Reply to the confirmation text for changes.`,
+    'END:VEVENT', 'END:VCALENDAR',
+  ].join('\r\n');
+  const blob = new Blob([ics], { type: 'text/calendar' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tour-${p.slotDate}.ics`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function downloadAllTours(picks, agentLabel) {
+  const events = picks.map((p) => {
+    const start = parsePickStart(p);
+    if (!start) return '';
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    return [
+      'BEGIN:VEVENT',
+      `UID:${p.slotDate}-${p.slotTime}-${(p.address || '').slice(0,20)}@rentalsphilly.vercel.app`,
+      `DTSTAMP:${icsDate(new Date())}`,
+      `DTSTART:${icsDate(start)}`,
+      `DTEND:${icsDate(end)}`,
+      `SUMMARY:Tour: ${p.address}`,
+      `LOCATION:${p.address}`,
+      `DESCRIPTION:Tour scheduled by ${agentLabel} at Rentals Philly.`,
+      'END:VEVENT',
+    ].join('\r\n');
+  }).filter(Boolean).join('\r\n');
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Rentals Philly//EN', events, 'END:VCALENDAR'].join('\r\n');
+  const blob = new Blob([ics], { type: 'text/calendar' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `rentalsphilly-tours.ics`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function downloadVcard(name, phone) {
+  const vcard = [
+    'BEGIN:VCARD', 'VERSION:3.0',
+    `FN:${name || 'Rentals Philly'}`,
+    `ORG:Rentals Philly · Skale Real Estate`,
+    phone ? `TEL;TYPE=CELL,VOICE:${phone}` : '',
+    'END:VCARD',
+  ].filter(Boolean).join('\r\n');
+  const blob = new Blob([vcard], { type: 'text/vcard' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(name || 'rentalsphilly').replace(/\s+/g, '-').toLowerCase()}.vcf`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

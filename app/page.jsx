@@ -424,6 +424,41 @@ const parseSlotDateTime = (slot) => {
   return d;
 };
 
+// CSV-escape a cell value: wrap in quotes, escape embedded quotes.
+const csvCell = (v) => {
+  if (v === null || v === undefined) return '';
+  const s = String(v).replace(/"/g, '""');
+  return `"${s}"`;
+};
+// Download a CSV of leads — used for backup/portability.
+const downloadLeadsCsv = (leads) => {
+  const headers = [
+    'name', 'email', 'phone', 'stage', 'bucket', 'source',
+    'budget_min', 'budget_max', 'beds', 'baths', 'areas',
+    'move_in', 'credit', 'employed', 'tour_type',
+    'tags', 'notes', 'created_at', 'commission',
+  ];
+  const rows = (leads || []).map((l) => [
+    l.fullName, l.email, l.phone, l.stage, l.bucket, l.source,
+    l.budgetMin, l.budgetMax, l.beds, l.baths, l.areas,
+    l.moveInDate, l.creditScore, l.employed, l.tourType,
+    (l.tags || []).join('; '),
+    (l.notes || '').replace(/\n+/g, ' ').slice(0, 500),
+    l.createdAt,
+    l.commission?.amount || '',
+  ].map(csvCell).join(','));
+  const csv = [headers.join(','), ...rows].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `rentalsphilly-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
 // Generate + download an .ics file for a single tour so it can be added to
 // Google Calendar / Apple Calendar with one tap.
 const downloadIcsForTour = (tour) => {
@@ -1886,9 +1921,21 @@ export default function App() {
         ) : !isAdminEmail(session.user?.email) ? (
           <AdminUnauthorized email={session.user?.email} />
         ) : !adminDataLoaded ? (
-          <div className="min-h-[60vh] flex flex-col items-center justify-center gap-2 text-slate-400 text-sm">
-            <div className="w-5 h-5 border-2 border-slate-200 border-t-slate-900 rounded-full animate-spin" />
-            Loading your CRM…
+          <div className="max-w-7xl mx-auto px-6 md:px-8 py-8 animate-pulse">
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <div className="h-8 w-32 bg-slate-200 rounded mb-2" />
+                <div className="h-4 w-64 bg-slate-100 rounded" />
+              </div>
+              <div className="h-9 w-72 bg-slate-100 rounded-full" />
+            </div>
+            <div className="flex gap-2 mb-6 border-b border-slate-200 pb-3">
+              {[1,2,3,4,5,6].map(i => <div key={i} className="h-6 w-20 bg-slate-100 rounded" />)}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+              {[1,2,3,4].map(i => <div key={i} className="h-24 bg-slate-100 rounded-2xl" />)}
+            </div>
+            <div className="h-64 bg-slate-100 rounded-2xl" />
           </div>
         ) : (
           <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
@@ -1996,32 +2043,113 @@ function Nav({ view, setView }) {
 function Landing({ onStart }) {
   return (
     <div>
+      {/* TOP NAV — minimal, sticky */}
+      <div className="sticky top-0 z-30 bg-white/85 backdrop-blur border-b border-slate-100">
+        <div className="max-w-6xl mx-auto px-5 md:px-8 py-3 flex items-center justify-between">
+          <Logo size="sm" />
+          <button
+            onClick={onStart}
+            className="text-xs md:text-sm font-semibold px-4 py-2 rounded-full text-white inline-flex items-center gap-1.5 transition-all hover:opacity-90"
+            style={{ backgroundColor: 'var(--brand-gold)' }}
+          >
+            Start <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+
       {/* HERO */}
       <div className="relative overflow-hidden">
-        {/* Soft gradient backdrop in brand tones */}
-        <div className="absolute inset-0 bg-gradient-to-br from-white via-white to-[#f5ecdc]/40 pointer-events-none" aria-hidden />
-        <div className="relative max-w-6xl mx-auto px-5 md:px-8 pt-16 md:pt-24 pb-16 md:pb-24">
-          <div className="flex justify-center mb-10 md:mb-12">
-            <Logo size="xl" />
+        <div className="absolute inset-0 bg-gradient-to-br from-white via-white to-[#f5ecdc]/50 pointer-events-none" aria-hidden />
+        <div className="relative max-w-6xl mx-auto px-5 md:px-8 pt-12 md:pt-20 pb-12 md:pb-16">
+          <div className="grid lg:grid-cols-[1.1fr_1fr] gap-8 lg:gap-12 items-center">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white border border-slate-200 text-[11px] font-semibold text-slate-700 mb-5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Real agent · Real listings · Real fast
+              </div>
+              <h1 className="text-4xl md:text-6xl font-semibold text-brand-ink tracking-[-0.03em] leading-[1.04] mb-5">
+                Find your next Philly rental in <span style={{ color: 'var(--brand-gold)' }}>two days, not two weeks</span>.
+              </h1>
+              <p className="text-lg md:text-xl text-slate-600 leading-relaxed mb-7 max-w-xl">
+                Tell us what you want. A real Skale Real Estate agent hand-picks rentals that fit, books your tours, and follows up. No scrolling, no broken Zillow links, no ghosting.
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={onStart}
+                  className="inline-flex items-center gap-2 px-7 py-4 text-base font-semibold text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
+                  style={{ backgroundColor: 'var(--brand-gold)' }}
+                >
+                  Start my search <ArrowRight className="w-4 h-4" />
+                </button>
+                <div className="text-xs text-slate-500 leading-tight">
+                  <div>Free · 2-minute form</div>
+                  <div>Reply by text — no app to install</div>
+                </div>
+              </div>
+              {/* Trust strip */}
+              <div className="mt-8 pt-6 border-t border-slate-200 flex flex-wrap items-center gap-x-6 gap-y-3 text-xs text-slate-500">
+                <div className="inline-flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5" /> Licensed in PA
+                </div>
+                <div className="inline-flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5" /> Skale Real Estate
+                </div>
+                <div className="inline-flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5" /> Text-first communication
+                </div>
+              </div>
+            </div>
+
+            {/* Mock conversation card — shows the experience */}
+            <div className="relative hidden lg:block">
+              <div className="absolute -top-4 -right-4 w-32 h-32 rounded-full" style={{ backgroundColor: 'var(--brand-gold-soft)' }} aria-hidden />
+              <div className="relative bg-white border border-slate-200 rounded-2xl shadow-xl p-5">
+                <div className="flex items-center gap-2 mb-3 pb-3 border-b border-slate-100">
+                  <div className="w-8 h-8 rounded-full bg-slate-900 text-white flex items-center justify-center text-xs font-bold">M</div>
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold text-slate-900">Morgan · Rentals Philly</div>
+                    <div className="text-[10px] text-emerald-600">Active now</div>
+                  </div>
+                  <Phone className="w-4 h-4 text-slate-300" />
+                </div>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-start">
+                    <div className="max-w-[80%] rounded-2xl px-3 py-2 bg-slate-100 text-slate-900">
+                      Hi Sarah — I found 4 rentals in Fishtown that fit your budget. Want me to send the list?
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <div className="max-w-[80%] rounded-2xl px-3 py-2 text-white" style={{ backgroundColor: 'var(--brand-gold)' }}>
+                      Yes please!
+                    </div>
+                  </div>
+                  <div className="flex justify-start">
+                    <div className="max-w-[85%] rounded-2xl px-3 py-2 bg-slate-100 text-slate-900">
+                      Sent. Tap the link — pick the ones you like and I&apos;ll schedule tours for tomorrow evening 🔑
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 text-[10px] text-slate-400 text-center">A typical chat. SMS only. No app.</div>
+              </div>
+            </div>
           </div>
-          <div className="max-w-3xl mx-auto text-center">
-            <h1 className="text-4xl md:text-6xl font-semibold text-brand-ink tracking-[-0.03em] leading-[1.05] mb-5">
-              Hand-picked Philly rentals,<br className="hidden md:block" />
-              <span style={{ color: 'var(--brand-gold)' }}> scheduled in 2 minutes.</span>
-            </h1>
-            <p className="text-lg md:text-xl text-slate-600 leading-relaxed mb-9 max-w-2xl mx-auto">
-              Tell us what you&apos;re looking for. We&apos;ll match you with rentals that actually fit and lock in your tour times — no scrolling endless listings.
-            </p>
-            <button
-              onClick={onStart}
-              className="inline-flex items-center gap-2 px-7 py-4 text-base font-semibold text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
-              style={{ backgroundColor: 'var(--brand-gold)' }}
-            >
-              Find my rental
-              <ArrowRight className="w-4 h-4" />
-            </button>
-            <div className="text-xs text-slate-500 mt-4">Free · 2-minute form · Hand-picked by your agent</div>
-          </div>
+        </div>
+      </div>
+
+      {/* STATS STRIP */}
+      <div className="border-y border-slate-200 bg-white">
+        <div className="max-w-6xl mx-auto px-5 md:px-8 py-8 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
+          {[
+            { n: '< 2hr', l: 'Avg time to first reply' },
+            { n: '48hr', l: 'From form to tour' },
+            { n: 'BrightMLS', l: 'Live MLS data' },
+            { n: 'Free', l: 'No cost to renters' },
+          ].map((s, i) => (
+            <div key={i}>
+              <div className="text-2xl md:text-3xl font-bold text-brand-ink tabular-nums">{s.n}</div>
+              <div className="text-xs text-slate-500 mt-0.5">{s.l}</div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -2033,9 +2161,9 @@ function Landing({ onStart }) {
         </div>
         <div className="grid md:grid-cols-3 gap-5">
           {[
-            { icon: FileText,  title: 'Tell us what you want', desc: 'Budget, beds, neighborhoods, move-in date. Two minutes max.' },
-            { icon: Sparkles,  title: 'Get a personalized link', desc: 'Your agent hand-picks rentals that actually fit and texts you a private portal.' },
-            { icon: Calendar,  title: 'Pick a tour time', desc: 'Reply with the ones you want to see. Confirmation + reminders by SMS — done.' },
+            { icon: FileText,  title: 'Tell us what you want', desc: 'Budget, beds, neighborhoods, move-in date. Two-minute form, no signup required.' },
+            { icon: Sparkles,  title: 'Get a personalized link', desc: 'Your agent hand-picks rentals from live MLS data and texts you a private portal — only the ones that match.' },
+            { icon: Calendar,  title: 'Pick a tour time', desc: 'Tap the listings you want to see. We confirm by SMS, send calendar invites, and remind you before each tour.' },
           ].map((f, i) => (
             <div key={i} className="relative bg-white rounded-2xl border border-slate-200 p-7 hover:border-slate-300 transition-colors">
               <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5" style={{ backgroundColor: 'var(--brand-gold-soft)', color: 'var(--brand-gold)' }}>
@@ -2049,18 +2177,75 @@ function Landing({ onStart }) {
         </div>
       </div>
 
+      {/* WHY AN AGENT */}
+      <div className="border-t border-slate-200 bg-slate-50">
+        <div className="max-w-6xl mx-auto px-5 md:px-8 py-16 md:py-20">
+          <div className="text-center mb-12">
+            <div className="text-xs font-semibold uppercase tracking-[0.15em] mb-3" style={{ color: 'var(--brand-gold)' }}>Why work with an agent?</div>
+            <h2 className="text-3xl md:text-4xl font-semibold text-brand-ink tracking-tight leading-tight">Stop hunting. Start touring.</h2>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3 md:gap-4 max-w-4xl mx-auto">
+            {[
+              { yes: 'Live MLS listings updated daily — including units that never hit Zillow', no: 'Zillow / Apartments.com: stale, missing units, dead links' },
+              { yes: 'Pre-vetted listings — no scams, no bait-and-switch pricing', no: 'You contact 15 listings, hear back from 3, none are still available' },
+              { yes: 'One agent who knows your situation', no: 'Different leasing agent at every showing' },
+              { yes: 'We coordinate tours, deposits, applications — all from your phone', no: 'Endless email tag with landlords' },
+            ].map((row, i) => (
+              <div key={i} className="grid grid-cols-2 gap-2">
+                <div className="bg-white rounded-xl p-4 border border-emerald-200">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-1">With Rentals Philly</div>
+                  <div className="text-sm text-slate-900">{row.yes}</div>
+                </div>
+                <div className="rounded-xl p-4 border border-slate-200 opacity-70">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Doing it yourself</div>
+                  <div className="text-sm text-slate-600">{row.no}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* FAQ */}
+      <div className="max-w-3xl mx-auto px-5 md:px-8 py-16 md:py-20">
+        <div className="text-center mb-10">
+          <div className="text-xs font-semibold uppercase tracking-[0.15em] mb-3" style={{ color: 'var(--brand-gold)' }}>Common questions</div>
+          <h2 className="text-3xl md:text-4xl font-semibold text-brand-ink tracking-tight leading-tight">Quick answers</h2>
+        </div>
+        <div className="space-y-2">
+          {[
+            { q: 'How much does this cost?', a: 'Free for renters. The landlord pays the agent commission when you sign a lease. You never pay us a fee.' },
+            { q: 'How fast will I hear back?', a: 'Usually within an hour or two during the day. Always within 24 hours. If your move-in is soon (under 75 days), you\'re top priority.' },
+            { q: 'Do I have to use SMS?', a: 'Texts are the fastest way to stay in sync but you can reply by email if you prefer. No app to download either way.' },
+            { q: 'Can you help if my credit isn\'t great?', a: 'Yes. We work across all credit profiles and know which buildings are flexible on requirements, cosigners, and deposits.' },
+            { q: 'What neighborhoods do you cover?', a: 'All of Philadelphia — Center City, Fishtown, Fairmount, University City, South Philly, North Philly, Northeast, NW. If you can rent it, we can show it.' },
+            { q: 'Can I unsubscribe from texts?', a: 'Anytime — reply STOP to any text. We respect opt-outs immediately.' },
+          ].map((f, i) => (
+            <details key={i} className="group bg-white border border-slate-200 rounded-xl p-4 hover:border-slate-300 transition-colors">
+              <summary className="flex items-center justify-between cursor-pointer list-none">
+                <span className="font-semibold text-slate-900 text-sm">{f.q}</span>
+                <ChevronDown className="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform" />
+              </summary>
+              <div className="text-sm text-slate-600 leading-relaxed mt-3 pt-3 border-t border-slate-100">{f.a}</div>
+            </details>
+          ))}
+        </div>
+      </div>
+
       {/* CLOSING CTA */}
-      <div className="border-t border-slate-200 bg-brand-ink text-white">
-        <div className="max-w-4xl mx-auto px-5 md:px-8 py-16 md:py-20 text-center">
-          <h2 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight mb-4">Ready when you are.</h2>
-          <p className="text-lg text-slate-300 mb-8 max-w-xl mx-auto">A real agent. Curated listings. Your tour times locked in by text.</p>
+      <div className="border-t border-slate-200 bg-brand-ink text-white relative overflow-hidden">
+        <div className="absolute inset-0 opacity-10" style={{
+          backgroundImage: `radial-gradient(circle at 30% 50%, var(--brand-gold) 0%, transparent 50%), radial-gradient(circle at 70% 50%, var(--brand-gold) 0%, transparent 50%)`,
+        }} aria-hidden />
+        <div className="relative max-w-4xl mx-auto px-5 md:px-8 py-16 md:py-24 text-center">
+          <h2 className="text-3xl md:text-5xl font-semibold tracking-tight leading-tight mb-4">Ready when you are.</h2>
+          <p className="text-lg text-slate-300 mb-8 max-w-xl mx-auto">A real agent. Curated listings. Tour times locked in by text. Two minutes to start.</p>
           <button
             onClick={onStart}
-            className="inline-flex items-center gap-2 px-7 py-4 text-base font-semibold text-brand-ink rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
+            className="inline-flex items-center gap-2 px-8 py-4 text-base font-semibold text-brand-ink rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-[1.02]"
             style={{ backgroundColor: 'var(--brand-gold)' }}
           >
-            Find my rental
-            <ArrowRight className="w-4 h-4" />
+            Find my rental <ArrowRight className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -2068,12 +2253,13 @@ function Landing({ onStart }) {
       <div className="border-t border-slate-200 py-8">
         <div className="max-w-6xl mx-auto px-6 md:px-8 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <div className="w-5 h-5 rounded-md bg-slate-900 flex items-center justify-center">
-              <Home className="w-2.5 h-2.5 text-white" />
-            </div>
-            <span className="font-semibold text-slate-900 text-sm">Rentals Philly</span>
+            <Logo size="sm" />
           </div>
-          <div className="text-xs text-slate-400">© {new Date().getFullYear()} Rentals Philly</div>
+          <div className="flex items-center gap-4 text-xs text-slate-400">
+            <a href="/privacy" className="hover:text-slate-700">Privacy</a>
+            <a href="/terms" className="hover:text-slate-700">Terms</a>
+            <span>© {new Date().getFullYear()} Rentals Philly · Skale Real Estate</span>
+          </div>
         </div>
       </div>
     </div>
@@ -3715,31 +3901,35 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
       )}
 
       {/* TASKS */}
-      {(overdueTasks.length > 0 || todayTasks.length > 0) && (
-        <Card className="p-5 space-y-3">
+      <Card className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
           <SectionHeader icon={CheckCircle2}>Tasks</SectionHeader>
-          {overdueTasks.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-[10px] uppercase tracking-wider font-semibold text-red-600">Overdue · {overdueTasks.length}</div>
-              {overdueTasks.slice(0, 8).map((task) => {
-                const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
-                if (!lead) return null;
-                return <TaskRow key={task.id} task={task} lead={lead} danger />;
-              })}
-            </div>
-          )}
-          {todayTasks.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Due today · {todayTasks.length}</div>
-              {todayTasks.slice(0, 8).map((task) => {
-                const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
-                if (!lead) return null;
-                return <TaskRow key={task.id} task={task} lead={lead} />;
-              })}
-            </div>
-          )}
-        </Card>
-      )}
+          <AddTaskQuickForm leads={leads} updateLead={updateLead} showToast={showToast} />
+        </div>
+        {overdueTasks.length === 0 && todayTasks.length === 0 && (
+          <div className="text-sm italic text-slate-400 text-center py-3">No tasks due. Add one with the + button.</div>
+        )}
+        {overdueTasks.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-red-600">Overdue · {overdueTasks.length}</div>
+            {overdueTasks.slice(0, 8).map((task) => {
+              const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+              if (!lead) return null;
+              return <TaskRow key={task.id} task={task} lead={lead} danger />;
+            })}
+          </div>
+        )}
+        {todayTasks.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Due today · {todayTasks.length}</div>
+            {todayTasks.slice(0, 8).map((task) => {
+              const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+              if (!lead) return null;
+              return <TaskRow key={task.id} task={task} lead={lead} />;
+            })}
+          </div>
+        )}
+      </Card>
 
       {/* TOURS TODAY */}
       {(toursToday.length > 0 || toursTomorrow.length > 0) && (
@@ -3838,6 +4028,107 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
   );
 }
 
+// Quick-add a task to any lead. Tiny inline dropdown — pick a lead, type a
+// title, optionally set a due date. Defaults: today, no lead → orphan.
+function AddTaskQuickForm({ leads, updateLead, showToast }) {
+  const [open, setOpen] = useState(false);
+  const [leadId, setLeadId] = useState('');
+  const [title, setTitle] = useState('');
+  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
+  const [priority, setPriority] = useState('medium');
+
+  // Order leads alphabetically for the picker.
+  const orderedLeads = useMemo(() =>
+    [...leads].sort((a, b) => (a.fullName || '').localeCompare(b.fullName || '')),
+    [leads]
+  );
+
+  const save = async () => {
+    if (!title.trim()) { showToast('Title required'); return; }
+    if (!leadId) { showToast('Pick a lead'); return; }
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    const newTask = {
+      id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      title: title.trim(),
+      dueDate,
+      status: 'pending',
+      priority,
+      auto: false,
+    };
+    await updateLead(leadId, {
+      tasks: [...(lead.tasks || []), newTask],
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: 'task-added',
+        timestamp: new Date().toISOString(),
+        message: `Task added: ${title.trim()}`,
+      }],
+    });
+    setTitle('');
+    setLeadId('');
+    setOpen(false);
+    showToast('Task added');
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="px-3 py-1 rounded-full text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1.5"
+      >
+        <Plus className="w-3 h-3" /> Add task
+      </button>
+      {open && (
+        <div className="absolute right-0 top-9 z-30 bg-white border border-slate-200 rounded-xl shadow-xl p-3 w-80 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold text-slate-900">New task</div>
+            <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-700"><X className="w-3.5 h-3.5" /></button>
+          </div>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="What needs to happen?"
+            className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400"
+            autoFocus
+            onKeyDown={(e) => { if (e.key === 'Enter') save(); }}
+          />
+          <select
+            value={leadId}
+            onChange={(e) => setLeadId(e.target.value)}
+            className="w-full text-sm px-2 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400"
+          >
+            <option value="">Pick a lead…</option>
+            {orderedLeads.map((l) => (
+              <option key={l.id} value={l.id}>{l.fullName}</option>
+            ))}
+          </select>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              className="flex-1 text-xs px-2 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400"
+            />
+            <select
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+              className="text-xs px-2 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400"
+            >
+              <option value="low">Low</option>
+              <option value="medium">Med</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+          <button onClick={save} className="w-full py-1.5 bg-slate-900 text-white rounded-full text-xs font-medium hover:bg-slate-800">
+            Add task
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
@@ -3889,11 +4180,14 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
   }, [leads]);
 
   return (
-    <div className="max-w-7xl mx-auto px-6 md:px-8 py-8">
-      <div className="flex items-center justify-between mb-8 gap-4 flex-wrap">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-900">CRM</h1>
-          <p className="text-sm text-slate-500 mt-1">Every lead, every touchpoint, automated.</p>
+    <div className="max-w-7xl mx-auto px-4 md:px-8 py-6 md:py-8">
+      <div className="flex items-center justify-between mb-6 md:mb-8 gap-4 flex-wrap">
+        <div className="flex items-center gap-3">
+          <Logo size="md" />
+          <div className="hidden md:block">
+            <div className="text-xs font-semibold uppercase tracking-[0.15em]" style={{ color: 'var(--brand-gold)' }}>CRM</div>
+            <div className="text-xs text-slate-500 mt-0.5">{leads.length} lead{leads.length === 1 ? '' : 's'} · {upcomingTours.length} upcoming tour{upcomingTours.length === 1 ? '' : 's'}</div>
+          </div>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <GlobalSearch
@@ -4503,7 +4797,16 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
           <button key={k} onClick={() => setBucketFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${bucketFilter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{k === 'all' ? 'All' : k}</button>
         ))}
         {leads.length > 0 && (
-          <button onClick={() => { if (confirm('Clear all leads?')) saveLeads([]); }} className="ml-auto text-xs text-slate-400 hover:text-red-600">Clear all</button>
+          <>
+            <button
+              onClick={() => downloadLeadsCsv(filtered)}
+              className="ml-auto text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1"
+              title="Download CSV of currently-filtered leads"
+            >
+              <Download className="w-3 h-3" /> Export CSV
+            </button>
+            <button onClick={() => { if (confirm('Clear all leads?')) saveLeads([]); }} className="text-xs text-slate-400 hover:text-red-600">Clear all</button>
+          </>
         )}
       </div>
       <div className="flex flex-wrap gap-2 mb-4 items-center">
@@ -4658,7 +4961,13 @@ function FlagsView({ allTasks, updateLead, onSelectLead, showToast }) {
 // TOURS
 // ============================================================
 function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
-  if (upcomingTours.length === 0) return <EmptyState icon={CalendarDays} title="No scheduled tours" desc="Tours will appear here." />;
+  if (upcomingTours.length === 0) return (
+    <EmptyState
+      icon={CalendarDays}
+      title="No scheduled tours"
+      desc="Tours appear here once leads pick times via their curated link. Send a curated link from any lead's detail page."
+    />
+  );
 
   // Mark a tour with an outcome. Also creates a follow-up task appropriate
   // to the outcome so nothing falls through the cracks.
@@ -5177,6 +5486,60 @@ function AvailabilityEditor({ value, onChange, tours }) {
   return <ShiftEditor value={value} onChange={onChange} tours={tours} />;
 }
 
+// Test SMS — sends "this is a test from Rentals Philly" to a phone of your
+// choice. Crucial for verifying Twilio + A2P 10DLC end-to-end without faking
+// a lead. Direct fetch to /api/send-sms which goes through the server wrapper.
+function SmsTestCard({ form, showToast }) {
+  const [to, setTo] = useState(form?.agentPhone || '');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const sendTest = async () => {
+    setBusy(true); setResult(null);
+    try {
+      const res = await fetch('/api/test-sms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setResult({ ok: true, msg: data.simulated ? 'Simulated (ENABLE_REAL_SENDING is not "true")' : `Sent · status ${data.status} · ${data.sid}` });
+        showToast('Test sent');
+      } else {
+        setResult({ ok: false, msg: data.error || 'failed' });
+      }
+    } catch (err) {
+      setResult({ ok: false, msg: err.message });
+    }
+    setBusy(false);
+  };
+  return (
+    <Card className="p-5 space-y-3">
+      <SectionHeader icon={MessageSquare}>Test SMS</SectionHeader>
+      <div className="text-sm text-slate-600 leading-relaxed">
+        Verify Twilio is sending end-to-end. Use after A2P 10DLC approval to make sure your campaign is live. Sends 1 segment.
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="tel"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="+12155551234"
+          className="form-input flex-1 min-w-[200px]"
+        />
+        <Button size="sm" onClick={sendTest} disabled={!to || busy} icon={Send}>
+          {busy ? 'Sending…' : 'Send test'}
+        </Button>
+      </div>
+      {result && (
+        <div className={`text-xs rounded-lg p-2.5 ${result.ok ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {result.ok ? '✓ ' : '✗ '}{result.msg}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplates }) {
   const [form, setForm] = useState(settings);
   const update = (k, v) => setForm({ ...form, [k]: v });
@@ -5250,6 +5613,8 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
         onChange={updateAvailability}
         tours={tours}
       />
+
+      <SmsTestCard form={form} showToast={showToast} />
 
       <Card className="p-5">
         <SectionHeader icon={Shield}>RentSpree screening</SectionHeader>
@@ -6299,6 +6664,84 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
   );
 }
 
+// Lead actions menu — archive, mark lost, delete. Dropdown overflow menu.
+function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
+  const [open, setOpen] = useState(false);
+  const isArchived = lead.stage === 'archived';
+
+  const setStage = async (newStage, label) => {
+    await updateLead(lead.id, {
+      stage: newStage,
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`, type: 'stage-changed',
+        timestamp: new Date().toISOString(),
+        message: `Stage → ${label}`,
+      }],
+    });
+    showToast(`Marked ${label.toLowerCase()}`);
+    setOpen(false);
+  };
+
+  const deleteLead = async () => {
+    if (!confirm(`Permanently delete ${lead.fullName}? This removes all messages, tours, tasks, and activities. This cannot be undone.\n\nType the lead's first name to confirm.`)) return;
+    const confirmName = prompt(`Type "${lead.fullName.split(' ')[0]}" to confirm:`);
+    if (confirmName !== lead.fullName.split(' ')[0]) {
+      showToast('Cancelled — name did not match');
+      return;
+    }
+    try {
+      const db = await import('@/lib/db');
+      // Soft delete by setting stage = 'deleted' + opting out of all comms.
+      // We avoid hard-deletes to preserve audit trail.
+      await db.updateLead(lead.id, { stage: 'deleted', opted_out: true });
+      showToast(`Deleted ${lead.fullName}`);
+      onClose();
+    } catch (err) {
+      console.error('[delete lead]', err);
+      showToast(`Delete failed: ${err.message}`);
+    }
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"
+        title="More actions"
+      >
+        <ChevronDown className="w-4 h-4" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-9 z-40 bg-white border border-slate-200 rounded-xl shadow-xl min-w-[200px] py-1">
+            {!isArchived && (
+              <button onClick={() => setStage('archived', 'Archived')} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+                <Inbox className="w-3.5 h-3.5 text-slate-400" /> Archive lead
+              </button>
+            )}
+            {isArchived && (
+              <button onClick={() => setStage('new', 'Re-activated')} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+                <ArrowLeft className="w-3.5 h-3.5 text-slate-400" /> Un-archive
+              </button>
+            )}
+            {lead.stage !== 'lost' && (
+              <button onClick={() => setStage('lost', 'Lost')} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+                <X className="w-3.5 h-3.5 text-slate-400" /> Mark as lost
+              </button>
+            )}
+            <div className="border-t border-slate-100 my-1" />
+            <button onClick={deleteLead} className="w-full text-left px-3 py-2 text-sm hover:bg-red-50 text-red-600 flex items-center gap-2">
+              <Trash2 className="w-3.5 h-3.5" /> Delete lead…
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
@@ -6318,7 +6761,10 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
                 <div className="text-xs text-slate-500 truncate">{lead.email} · {lead.phone}</div>
               </div>
             </div>
-            <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center shrink-0"><X className="w-4 h-4" /></button>
+            <div className="flex items-center gap-1 shrink-0">
+              <LeadActionsMenu lead={lead} updateLead={updateLead} showToast={showToast} onClose={onClose} />
+              <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+            </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <StageDropdown lead={lead} updateLead={updateLead} showToast={showToast} />
@@ -6811,8 +7257,16 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
         )}
       </div>
 
+      {leads.length === 0 && (
+        <EmptyState
+          icon={Activity}
+          title="No leads in your pipeline yet"
+          desc="Once leads submit the intake form, they'll show up here grouped by stage. Drag cards between columns to advance them."
+        />
+      )}
+
       {/* Kanban columns */}
-      <div className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1">
+      {leads.length > 0 && <div className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1">
         {visibleStages.map((stage) => {
           const all = byStage[stage.id] || [];
           const filtered = all.filter(matchesSearch);
@@ -6887,7 +7341,7 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
             </div>
           );
         })}
-      </div>
+      </div>}
     </div>
   );
 }

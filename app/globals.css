@@ -28,17 +28,18 @@
 .text-brand-ink { color: var(--brand-ink); }
 .hover\:bg-brand-gold-hover:hover { background-color: var(--brand-gold-hover); }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Force light theme — admin views weren't designed for dark mode and the
+   media query was making them illegible on devices with dark mode on. */
+html, body {
+  background: #ffffff !important;
+  color: #1c1f2a !important;
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Shared form input style — used by intake form, property form, and other admin modals.
@@ -56,4 +57,46 @@ body {
 .form-input:focus {
   border-color: rgb(15 23 42);
   box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+}
+
+/* Custom scrollbar for the inbox/pipeline columns — subtle, branded. */
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-x-auto::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-x-auto::-webkit-scrollbar-thumb {
+  background: rgb(226 232 240);
+  border-radius: 4px;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb:hover,
+.overflow-x-auto::-webkit-scrollbar-thumb:hover {
+  background: rgb(203 213 225);
+}
+
+/* Smooth transitions on all buttons/cards by default. */
+button, .transition {
+  transition-property: background-color, border-color, color, box-shadow, transform, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+/* Focus ring — only on keyboard navigation, gold for brand. */
+*:focus-visible {
+  outline: 2px solid var(--brand-gold);
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* Avoid awkward jumps when scrollbar appears. */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* Mobile: prevent iOS Safari from zooming on input focus. */
+@media (max-width: 768px) {
+  input, textarea, select {
+    font-size: 16px;
+  }
 }
