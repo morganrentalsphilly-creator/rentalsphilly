@@ -424,6 +424,55 @@ const parseSlotDateTime = (slot) => {
   return d;
 };
 
+// Generate + download an .ics file for a single tour so it can be added to
+// Google Calendar / Apple Calendar with one tap.
+const downloadIcsForTour = (tour) => {
+  const start = parseSlotDateTime({ date: tour.date, time: tour.time });
+  if (!start) return;
+  const end = new Date(start.getTime() + 60 * 60 * 1000); // 1-hr default duration
+  const fmt = (d) =>
+    d.getUTCFullYear() +
+    String(d.getUTCMonth() + 1).padStart(2, '0') +
+    String(d.getUTCDate()).padStart(2, '0') + 'T' +
+    String(d.getUTCHours()).padStart(2, '0') +
+    String(d.getUTCMinutes()).padStart(2, '0') + '00Z';
+  const addresses = (tour.listings || []).map((l) => l.address).filter(Boolean).join(' · ');
+  const leadName = tour.lead?.fullName || 'Lead';
+  const leadPhone = tour.lead?.phone || '';
+  const summary = `Tour: ${leadName}${addresses ? ` @ ${addresses.split(' · ')[0]}` : ''}`;
+  const description = [
+    `Lead: ${leadName}`,
+    leadPhone ? `Phone: ${leadPhone}` : null,
+    addresses ? `Stops: ${addresses}` : null,
+    'Rentals Philly · Skale Real Estate',
+  ].filter(Boolean).join('\\n');
+  const ics = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Rentals Philly//Tour//EN',
+    'BEGIN:VEVENT',
+    `UID:tour-${tour.id}@rentalsphilly.vercel.app`,
+    `DTSTAMP:${fmt(new Date())}`,
+    `DTSTART:${fmt(start)}`,
+    `DTEND:${fmt(end)}`,
+    `SUMMARY:${summary.replace(/[,;]/g, '\\$&')}`,
+    `DESCRIPTION:${description.replace(/[,;]/g, '\\$&')}`,
+    addresses ? `LOCATION:${addresses.split(' · ')[0].replace(/[,;]/g, '\\$&')}` : '',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].filter(Boolean).join('\r\n');
+
+  const blob = new Blob([ics], { type: 'text/calendar' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tour-${tour.date}-${(leadName || 'lead').replace(/\s+/g, '-')}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
 const slotIsBookable = (slot) => {
   if (!slot || slot.status !== 'open') return false;
   const slotDateTime = parseSlotDateTime(slot);
@@ -783,6 +832,10 @@ function hydrateLeads(data) {
     tourAvailability: Array.isArray(lead.raw?.tour_availability) ? lead.raw.tour_availability : [],
     curatedLinkUrl: lead.raw?.curated_link_url || null,
     curatedLinkSentAt: lead.raw?.curated_link_sent_at || null,
+    // Lead detail enrichment: source, tags, private agent notes
+    source: lead.raw?.source || lead.source || 'Unknown',
+    tags: Array.isArray(lead.raw?.tags) ? lead.raw.tags : [],
+    notes: lead.raw?.notes || '',
 
     tours: (toursByLead[lead.id] || []).map((t) => ({
       id: t.id,
@@ -886,7 +939,7 @@ export default function App() {
   const [timeOffset, setTimeOffset] = useState(0);
   const [currentLead, setCurrentLead] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  const [adminSubview, setAdminSubview] = useState('inbox');
+  const [adminSubview, setAdminSubview] = useState('today');
   const [selectedLeadId, setSelectedLeadId] = useState(null);
   const [toast, setToast] = useState(null);
   // Auth state for the admin views. `session` is the Supabase session (or null);
@@ -1514,6 +1567,22 @@ export default function App() {
     const isSoon = bucket === 'GCMS' || bucket === 'BCMS';
     const createdAt = new Date().toISOString();
 
+    // ---- DEDUP CHECK ----
+    // Look for an existing lead with the same email or phone (normalized).
+    // If found, we still create the new one (history matters), but flag it
+    // for the agent + auto-tag.
+    const normPhone = String(lead.phone || '').replace(/\D/g, '').slice(-10);
+    const dupLead = leads.find((l) => {
+      if (!l) return false;
+      if (l.email && lead.email && l.email.toLowerCase() === lead.email.toLowerCase()) return true;
+      const lp = String(l.phone || '').replace(/\D/g, '').slice(-10);
+      if (lp && normPhone && lp === normPhone) return true;
+      return false;
+    });
+    const dupNote = dupLead
+      ? `Possible duplicate of ${dupLead.fullName} (${dupLead.email || dupLead.phone}) — created ${new Date(dupLead.createdAt).toLocaleDateString()}`
+      : null;
+
     // Pick the right template based on the lead's bucket (GCMS / GCM75+ /
     // BCMS / BC75+). Each bucket has its own SMS + email pair editable in
     // Settings → Welcome messages.
@@ -1593,10 +1662,12 @@ export default function App() {
         tour_type: lead.tourType,
         bucket,
         stage: 'new',
-        // Stash range + tour windows in raw jsonb so we don't need a
-        // schema migration. The CRM reads these via hydrateLeads.
+        // Stash extra fields in raw jsonb so we don't need a schema migration.
         raw: {
-          // beds/baths stored directly on the lead row above
+          source: lead.source || 'Unknown',     // where the lead came from
+          tags: dupLead ? ['Possible duplicate'] : [],  // user-applied tags
+          notes: dupNote || '',                 // private agent notes
+          duplicate_of: dupLead?.id || null,    // pointer back to original lead
         },
       });
       // Activity + tasks. Email + SMS rows are inserted by the server wrappers.
@@ -1628,6 +1699,9 @@ export default function App() {
     const newLead = {
       ...lead, id, bucket, stage: 'new',
       createdAt,
+      source: lead.source || 'Unknown',
+      tags: dupLead ? ['Possible duplicate'] : [],
+      notes: dupNote || '',
       tours: [], followUps: [],
       tasks: tasks.map(t => ({ id: t.id, title: t.title, dueDate: t.due_date, status: t.status, auto: t.auto })),
       activities: [{ id: welcomeActivity.id, type: welcomeActivity.type, message: welcomeActivity.message, timestamp: createdAt }],
@@ -2425,6 +2499,7 @@ function IntakeForm({ onSubmit, onBack }) {
     moveInDate: '', budgetMin: '', budgetMax: '',
     beds: '1', baths: '1', areas: '',
     employed: '', creditScore: '', tourType: '',
+    source: '',
   });
   const update = (k, v) => setData({ ...data, [k]: v });
 
@@ -2516,6 +2591,18 @@ function IntakeForm({ onSubmit, onBack }) {
               <div className="font-semibold text-slate-900 mb-1">{o.title}</div>
               <div className="text-xs text-slate-500 leading-relaxed">{o.desc}</div>
             </button>
+          ))}
+        </div>
+      )
+    },
+    {
+      title: 'How did you hear about us?',
+      subtitle: 'Optional — helps us know what works.',
+      valid: () => true,
+      fields: (
+        <div className="grid grid-cols-2 gap-2">
+          {['Zillow', 'Apartments.com', 'Google', 'Instagram', 'Facebook', 'Referral', 'Walked in', 'Other'].map((s) => (
+            <ChoiceButton key={s} selected={data.source === s} onClick={() => update('source', s)}>{s}</ChoiceButton>
           ))}
         </div>
       )
@@ -3422,6 +3509,335 @@ function AdminUnauthorized({ email }) {
   );
 }
 
+// ============================================================
+// GLOBAL SEARCH — autocomplete jumper for leads + tours + recent messages.
+// ============================================================
+function GlobalSearch({ search, setSearch, leads, onSelectLead, onSelectTour }) {
+  const [focused, setFocused] = useState(false);
+  const results = useMemo(() => {
+    if (!search.trim() || search.length < 2) return null;
+    const q = search.toLowerCase();
+    const out = { leads: [], tours: [], messages: [] };
+    for (const lead of leads) {
+      const matches =
+        (lead.fullName || '').toLowerCase().includes(q) ||
+        (lead.email || '').toLowerCase().includes(q) ||
+        (lead.phone || '').toLowerCase().includes(q) ||
+        (lead.areas || '').toLowerCase().includes(q);
+      if (matches) out.leads.push(lead);
+      // Tour address matches
+      for (const t of (lead.tours || [])) {
+        const addrs = (t.listings || []).map((l) => l.address || '').join(' ').toLowerCase();
+        if (addrs.includes(q)) out.tours.push({ ...t, lead });
+      }
+      // Message body matches (recent only)
+      for (const m of (lead.messages || []).slice(-10)) {
+        if ((m.body || '').toLowerCase().includes(q)) {
+          out.messages.push({ ...m, lead });
+          break;
+        }
+      }
+    }
+    out.leads = out.leads.slice(0, 6);
+    out.tours = out.tours.slice(0, 4);
+    out.messages = out.messages.slice(0, 4);
+    return out;
+  }, [search, leads]);
+
+  const open = focused && search.trim().length >= 2;
+  const empty = open && results && results.leads.length === 0 && results.tours.length === 0 && results.messages.length === 0;
+
+  return (
+    <div className="relative">
+      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 200)}
+        placeholder="Search anything…"
+        className="pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 w-56 md:w-72"
+      />
+      {open && (
+        <div className="absolute right-0 top-full mt-2 z-40 bg-white border border-slate-200 rounded-2xl shadow-xl w-[min(420px,calc(100vw-32px))] overflow-hidden max-h-[70vh] overflow-y-auto">
+          {empty && <div className="p-4 text-xs italic text-slate-400 text-center">No matches</div>}
+          {results.leads.length > 0 && (
+            <div>
+              <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-slate-400">Leads</div>
+              {results.leads.map((l) => (
+                <button key={l.id} onClick={() => onSelectLead(l.id)} className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                  <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-900 truncate">{l.fullName}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{l.email || l.phone || ''} · {l.stage}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {results.tours.length > 0 && (
+            <div className="border-t border-slate-100">
+              <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-slate-400">Tours</div>
+              {results.tours.map((t) => (
+                <button key={t.id} onClick={() => onSelectTour(t.lead.id)} className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                  <CalendarDays className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-slate-900 truncate">{t.lead.fullName} · {t.date} {t.time}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(', ')}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {results.messages.length > 0 && (
+            <div className="border-t border-slate-100">
+              <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider font-semibold text-slate-400">Messages</div>
+              {results.messages.map((m) => (
+                <button key={m.id} onClick={() => onSelectLead(m.lead.id)} className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                  <MessageSquare className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-slate-900 truncate">{m.lead.fullName}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{(m.body || '').slice(0, 80)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// TODAY VIEW — at-a-glance morning brief: tasks, tours, replies, hot leads.
+// One screen for "what do I need to do right now?"
+// ============================================================
+function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, onSelectLead, updateLead, showToast, setSubview }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+  // Bundle leads with their most-recent inbound message into "needs reply".
+  const needsReply = useMemo(() => {
+    const out = [];
+    for (const lead of leads) {
+      const msgs = (lead.messages || []).filter((m) => !m.internal);
+      const last = msgs[msgs.length - 1];
+      if (last && last.direction === 'inbound') out.push({ lead, last });
+    }
+    return out.sort((a, b) => new Date(b.last.timestamp) - new Date(a.last.timestamp));
+  }, [leads]);
+
+  const newLeadsNoCurate = useMemo(() =>
+    leads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [leads]);
+  const tourRequested = useMemo(() =>
+    leads.filter((l) => l.stage === 'tour-requested'), [leads]);
+
+  const toursToday = useMemo(() =>
+    leads.flatMap((l) => (l.tours || [])
+      .filter((t) => t.date === todayStr && t.status !== 'cancelled')
+      .map((t) => ({ ...t, lead: l }))), [leads, todayStr]);
+  const toursTomorrow = useMemo(() =>
+    leads.flatMap((l) => (l.tours || [])
+      .filter((t) => t.date === tomorrowStr && t.status !== 'cancelled')
+      .map((t) => ({ ...t, lead: l }))), [leads, tomorrowStr]);
+
+  // Task helpers
+  const findLead = (taskOrId) => {
+    const id = typeof taskOrId === 'string' ? taskOrId : taskOrId.lead_id || taskOrId.leadId;
+    return leads.find((l) => (l.tasks || []).some((t) => t.id === id)) ||
+           leads.find((l) => l.id === id);
+  };
+  const completeTask = async (task) => {
+    const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+    if (!lead) return;
+    const tasks = lead.tasks.map((t) => (t.id === task.id ? { ...t, status: 'done', completedAt: new Date().toISOString() } : t));
+    await updateLead(lead.id, { tasks });
+    showToast('Task completed');
+  };
+  const snoozeTask = async (task, days = 1) => {
+    const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+    if (!lead) return;
+    const newDate = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    const tasks = lead.tasks.map((t) => (t.id === task.id ? { ...t, dueDate: newDate } : t));
+    await updateLead(lead.id, { tasks });
+    showToast(`Snoozed ${days} day${days === 1 ? '' : 's'}`);
+  };
+
+  const TaskRow = ({ task, lead, danger }) => (
+    <div className={`flex items-center gap-2 p-2.5 rounded-lg border ${danger ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'}`}>
+      <button
+        onClick={() => completeTask(task)}
+        className="w-4 h-4 rounded border-2 border-slate-300 hover:border-emerald-500 hover:bg-emerald-50 shrink-0"
+        title="Mark complete"
+      />
+      <button onClick={() => onSelectLead(lead.id)} className="flex-1 min-w-0 text-left">
+        <div className="text-sm text-slate-900 truncate">{task.title}</div>
+        <div className="text-[11px] text-slate-500">{lead.fullName}{task.priority === 'high' ? ' · HIGH' : ''}</div>
+      </button>
+      <div className="flex items-center gap-1 shrink-0">
+        <button onClick={() => snoozeTask(task, 1)} className="text-[10px] text-slate-500 hover:text-slate-900 px-1.5 py-0.5 rounded hover:bg-slate-100" title="Snooze 1 day">+1d</button>
+        <button onClick={() => snoozeTask(task, 7)} className="text-[10px] text-slate-500 hover:text-slate-900 px-1.5 py-0.5 rounded hover:bg-slate-100" title="Snooze 1 week">+1w</button>
+      </div>
+    </div>
+  );
+
+  const empty = (
+    overdueTasks.length === 0 && todayTasks.length === 0 &&
+    needsReply.length === 0 && newLeadsNoCurate.length === 0 &&
+    tourRequested.length === 0 && toursToday.length === 0
+  );
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-end justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-2xl font-semibold text-slate-900">Good morning</h2>
+          <p className="text-sm text-slate-500">{dateLabel}</p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <button onClick={() => setSubview('inbox')} className="px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium inline-flex items-center gap-1.5">
+            <Inbox className="w-3 h-3" /> Inbox
+          </button>
+          <button onClick={() => setSubview('pipeline')} className="px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium inline-flex items-center gap-1.5">
+            <Activity className="w-3 h-3" /> Pipeline
+          </button>
+        </div>
+      </div>
+
+      {empty && (
+        <Card className="p-8 text-center">
+          <Sparkles className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--brand-gold)' }} />
+          <div className="text-lg font-semibold text-slate-900 mb-1">Inbox zero</div>
+          <div className="text-sm text-slate-500">Nothing on the board right now. Enjoy the quiet.</div>
+        </Card>
+      )}
+
+      {/* TASKS */}
+      {(overdueTasks.length > 0 || todayTasks.length > 0) && (
+        <Card className="p-5 space-y-3">
+          <SectionHeader icon={CheckCircle2}>Tasks</SectionHeader>
+          {overdueTasks.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-red-600">Overdue · {overdueTasks.length}</div>
+              {overdueTasks.slice(0, 8).map((task) => {
+                const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+                if (!lead) return null;
+                return <TaskRow key={task.id} task={task} lead={lead} danger />;
+              })}
+            </div>
+          )}
+          {todayTasks.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Due today · {todayTasks.length}</div>
+              {todayTasks.slice(0, 8).map((task) => {
+                const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+                if (!lead) return null;
+                return <TaskRow key={task.id} task={task} lead={lead} />;
+              })}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* TOURS TODAY */}
+      {(toursToday.length > 0 || toursTomorrow.length > 0) && (
+        <Card className="p-5 space-y-3">
+          <SectionHeader icon={CalendarDays}>Tours</SectionHeader>
+          {toursToday.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-emerald-700">Today · {toursToday.length}</div>
+              {toursToday.map((t) => (
+                <button key={t.id} onClick={() => onSelectLead(t.lead.id)} className="w-full text-left flex items-center gap-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100">
+                  <div className="font-bold text-sm tabular-nums shrink-0 w-20 text-emerald-900">{t.time}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-900 truncate">{t.lead.fullName}</div>
+                    <div className="text-xs text-slate-600 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(' · ')}</div>
+                  </div>
+                  {t.lead.phone && <a href={`tel:${t.lead.phone}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900"><Phone className="w-4 h-4" /></a>}
+                </button>
+              ))}
+            </div>
+          )}
+          {toursTomorrow.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Tomorrow · {toursTomorrow.length}</div>
+              {toursTomorrow.map((t) => (
+                <button key={t.id} onClick={() => onSelectLead(t.lead.id)} className="w-full text-left flex items-center gap-3 p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50">
+                  <div className="font-medium text-xs tabular-nums shrink-0 w-20 text-slate-600">{t.time}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-slate-900 truncate">{t.lead.fullName}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(' · ')}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* ACTIONS */}
+      {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {newLeadsNoCurate.length > 0 && (
+            <Card className="p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles className="w-4 h-4" style={{ color: 'var(--brand-gold)' }} />
+                <div className="text-sm font-semibold text-slate-900">Send curated link · {newLeadsNoCurate.length}</div>
+              </div>
+              <div className="space-y-1">
+                {newLeadsNoCurate.slice(0, 5).map((l) => (
+                  <button key={l.id} onClick={() => onSelectLead(l.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 flex items-center justify-between gap-2">
+                    <span className="text-sm text-slate-900 truncate">{l.fullName}</span>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
+          {tourRequested.length > 0 && (
+            <Card className="p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Calendar className="w-4 h-4 text-blue-600" />
+                <div className="text-sm font-semibold text-slate-900">Send scheduling link · {tourRequested.length}</div>
+              </div>
+              <div className="space-y-1">
+                {tourRequested.slice(0, 5).map((l) => (
+                  <button key={l.id} onClick={() => onSelectLead(l.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 flex items-center justify-between gap-2">
+                    <span className="text-sm text-slate-900 truncate">{l.fullName}</span>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
+          {needsReply.length > 0 && (
+            <Card className="p-4 md:col-span-2">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-red-600" />
+                  <div className="text-sm font-semibold text-slate-900">Conversations awaiting reply · {needsReply.length}</div>
+                </div>
+                <button onClick={() => setSubview('inbox')} className="text-[11px] text-slate-500 hover:text-slate-900 underline">Open inbox</button>
+              </div>
+              <div className="space-y-1">
+                {needsReply.slice(0, 6).map(({ lead, last }) => (
+                  <button key={lead.id} onClick={() => onSelectLead(lead.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 flex items-center gap-2">
+                    <div className="text-sm font-medium text-slate-900 truncate shrink-0">{lead.fullName}:</div>
+                    <div className="text-xs text-slate-500 truncate flex-1">{(last.body || '').slice(0, 80)}</div>
+                    <span className="text-[10px] text-slate-400 shrink-0">{timeAgo(last.timestamp)}</span>
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
@@ -3480,10 +3896,13 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           <p className="text-sm text-slate-500 mt-1">Every lead, every touchpoint, automated.</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search leads…" className="pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 w-56" />
-          </div>
+          <GlobalSearch
+            search={search}
+            setSearch={setSearch}
+            leads={leads}
+            onSelectLead={(id) => { setSelectedLeadId(id); setSearch(''); }}
+            onSelectTour={(leadId) => { setSelectedLeadId(leadId); setSearch(''); }}
+          />
           {sessionEmail && (
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <span className="hidden sm:inline">{sessionEmail}</span>
@@ -3498,9 +3917,10 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         </div>
       </div>
 
-      {/* 5-tab top nav. Inbox is the default; everything else routes under here. */}
+      {/* 6-tab top nav. Today is the default landing for at-a-glance work. */}
       <div className="flex gap-1 mb-6 border-b border-slate-200 overflow-x-auto">
         {[
+          { k: 'today', label: 'Today', icon: Sparkles, badge: flagCount + needsReplyBadge },
           { k: 'inbox', label: 'Inbox', icon: Inbox, badge: needsReplyBadge },
           { k: 'pipeline', label: 'Pipeline', icon: Activity, count: leads.filter(l => l.stage && !['lost', 'paid'].includes(l.stage)).length },
           { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
@@ -3533,6 +3953,19 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         leads={leads}
       />
 
+      {subview === 'today' && (
+        <TodayView
+          leads={leads}
+          allTasks={allTasks}
+          overdueTasks={overdueTasks}
+          todayTasks={todayTasks}
+          upcomingTours={upcomingTours}
+          onSelectLead={setSelectedLeadId}
+          updateLead={updateLead}
+          showToast={showToast}
+          setSubview={setSubview}
+        />
+      )}
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} updateLead={updateLead} settings={settings} showToast={showToast} />}
       {subview === 'pipeline' && (
         <PipelineView leads={leads} updateLead={updateLead} onSelectLead={setSelectedLeadId} showToast={showToast} />
@@ -3998,6 +4431,9 @@ function ActivityIcon({ type }) {
 function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], allTasks, updateLead, showToast }) {
   const [bucketFilter, setBucketFilter] = useState('all');
   const [stageFilter, setStageFilter] = useState('active');  // 'active' = not leased/lost/archived
+  const [selected, setSelected] = useState(new Set());
+  const [bulkBody, setBulkBody] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Stages that actually appear in this list of leads — derived so the chips
   // only show options that match real data.
@@ -4017,6 +4453,46 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
   });
 
   const waitlistedLeadIds = new Set(waitlist.filter(w => w.status === 'waiting').map(w => w.leadId));
+
+  const toggleSelected = (id) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+  };
+  const selectAll = () => setSelected(new Set(filtered.map((l) => l.id)));
+  const clearSelected = () => setSelected(new Set());
+
+  // Bulk-text the selected leads. Confirms before sending. Skips opted-out.
+  const sendBulkSms = async () => {
+    if (!bulkBody.trim()) return;
+    const sendable = filtered.filter((l) => selected.has(l.id) && !l.opted_out && l.phone);
+    if (sendable.length === 0) {
+      showToast('No sendable recipients (check opt-out + phone).');
+      return;
+    }
+    if (!confirm(`Send this SMS to ${sendable.length} lead${sendable.length === 1 ? '' : 's'}?\n\n"${bulkBody.slice(0, 200)}${bulkBody.length > 200 ? '…' : ''}"`)) return;
+    setBulkBusy(true);
+    let sent = 0;
+    let failed = 0;
+    for (const lead of sendable) {
+      const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+      const body = bulkBody.replace(/\{firstName\}/g, firstName);
+      try {
+        const res = await sendSMS({
+          leadId: lead.id,
+          body,
+          kind: 'bulk',
+          idempotencyKey: `bulk-list-${lead.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          automated: false,
+        });
+        if (res.ok) sent++; else failed++;
+      } catch { failed++; }
+    }
+    setBulkBusy(false);
+    setBulkBody('');
+    clearSelected();
+    showToast(`Sent ${sent} SMS${failed ? ` · ${failed} failed` : ''}`);
+  };
 
   return (
     <>
@@ -4040,47 +4516,106 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
         })}
       </div>
 
+      {/* Bulk-action bar — appears when ≥1 lead selected. */}
+      {selected.size > 0 && (
+        <Card className="p-3 mb-3 bg-slate-900 text-white border-slate-900">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-sm font-semibold">{selected.size} selected</div>
+            <button onClick={clearSelected} className="text-xs text-slate-300 hover:text-white underline">Clear</button>
+            <input
+              value={bulkBody}
+              onChange={(e) => setBulkBody(e.target.value)}
+              placeholder="Type SMS — use {firstName} for personalization"
+              className="flex-1 min-w-[200px] text-sm bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-slate-400"
+            />
+            <div className="text-[10px] text-slate-400 tabular-nums">{bulkBody.length} chars · {Math.max(1, Math.ceil(bulkBody.length / 160))} seg</div>
+            <button
+              onClick={sendBulkSms}
+              disabled={!bulkBody.trim() || bulkBusy}
+              className="px-4 py-1.5 bg-white text-slate-900 rounded-full text-sm font-medium hover:bg-slate-100 disabled:opacity-30 inline-flex items-center gap-1.5"
+            >
+              <Send className="w-3.5 h-3.5" /> {bulkBusy ? 'Sending…' : `Send to ${selected.size}`}
+            </button>
+          </div>
+        </Card>
+      )}
+
       {leads.length === 0 ? (
         <EmptyState icon={Users} title="No leads yet" desc="Submit a lead through the intake form." />
       ) : filtered.length === 0 ? (
         <EmptyState icon={Filter} title="No matches" desc="Try a different filter." />
       ) : (
-        <Card className="overflow-hidden">
-          {filtered.map((lead, i) => (
-            <LeadRow key={lead.id} lead={lead} isFirst={i === 0} onClick={() => onSelectLead(lead.id)} waitlisted={waitlistedLeadIds.has(lead.id)} />
-          ))}
-        </Card>
+        <>
+          <div className="flex items-center gap-2 mb-2 text-xs">
+            <button onClick={selectAll} className="text-slate-500 hover:text-slate-900 underline">Select all {filtered.length}</button>
+            {selected.size > 0 && <span className="text-slate-400">·</span>}
+            {selected.size > 0 && <button onClick={clearSelected} className="text-slate-500 hover:text-slate-900 underline">Deselect</button>}
+          </div>
+          <Card className="overflow-hidden">
+            {filtered.map((lead, i) => (
+              <LeadRow
+                key={lead.id}
+                lead={lead}
+                isFirst={i === 0}
+                onClick={() => onSelectLead(lead.id)}
+                waitlisted={waitlistedLeadIds.has(lead.id)}
+                checked={selected.has(lead.id)}
+                onToggleCheck={() => toggleSelected(lead.id)}
+              />
+            ))}
+          </Card>
+        </>
       )}
     </>
   );
 }
 
-function LeadRow({ lead, isFirst, onClick, waitlisted }) {
+function LeadRow({ lead, isFirst, onClick, waitlisted, checked, onToggleCheck }) {
   const stageInfo = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
   const hasApp = lead.application;
   const hasScreening = lead.screening?.status === 'completed';
 
   return (
-    <button onClick={onClick} className={`w-full text-left p-4 hover:bg-slate-50 transition-colors flex items-center gap-4 ${!isFirst ? 'border-t border-slate-100' : ''}`}>
-      <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-sm font-semibold text-slate-600 shrink-0">
-        {lead.fullName.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase()}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="font-semibold text-slate-900 truncate">{lead.fullName}</div>
-          {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out</Pill>}
-          {waitlisted && <Pill tone="warning" icon={Hourglass}>Waitlist</Pill>}
-          {hasScreening && <Pill tone="accent" icon={Shield}>Screened</Pill>}
-          {hasApp && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
+    <div className={`flex items-stretch ${!isFirst ? 'border-t border-slate-100' : ''}`}>
+      {onToggleCheck && (
+        <label
+          onClick={(e) => { e.stopPropagation(); onToggleCheck(); }}
+          className="flex items-center pl-4 pr-2 hover:bg-slate-50 cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            checked={!!checked}
+            readOnly
+            className="w-3.5 h-3.5 rounded border-slate-300 cursor-pointer"
+          />
+        </label>
+      )}
+      <button onClick={onClick} className="flex-1 text-left p-4 hover:bg-slate-50 transition-colors flex items-center gap-4">
+        <div className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-sm font-semibold text-slate-600 shrink-0">
+          {lead.fullName.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase()}
         </div>
-        <div className="text-sm text-slate-500 truncate mt-0.5">{lead.email} · Move {fmtDate(lead.moveInDate)}</div>
-      </div>
-      <div className="flex flex-col gap-1 items-end shrink-0">
-        <Pill tone="neutral">{stageInfo.label}</Pill>
-        <span className="text-[10px] text-slate-400 font-medium">{lead.bucket}</span>
-      </div>
-      <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
-    </button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="font-semibold text-slate-900 truncate">{lead.fullName}</div>
+            {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out</Pill>}
+            {waitlisted && <Pill tone="warning" icon={Hourglass}>Waitlist</Pill>}
+            {hasScreening && <Pill tone="accent" icon={Shield}>Screened</Pill>}
+            {hasApp && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
+            {(lead.tags || []).slice(0, 3).map((t) => (
+              <span key={t} className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${tagTone(t)}`}>
+                {t}
+              </span>
+            ))}
+          </div>
+          <div className="text-sm text-slate-500 truncate mt-0.5">{lead.email} · Move {fmtDate(lead.moveInDate)}{lead.source && lead.source !== 'Unknown' ? ` · via ${lead.source}` : ''}</div>
+        </div>
+        <div className="flex flex-col gap-1 items-end shrink-0">
+          <Pill tone="neutral">{stageInfo.label}</Pill>
+          <span className="text-[10px] text-slate-400 font-medium">{lead.bucket}</span>
+        </div>
+        <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+      </button>
+    </div>
   );
 }
 
@@ -4193,6 +4728,13 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
               </div>
               <div className="flex items-center gap-1.5 flex-wrap shrink-0">
                 {t.tourType === 'virtual' && <Pill icon={Video}>Virtual</Pill>}
+                <button
+                  onClick={(e) => { e.stopPropagation(); downloadIcsForTour(t); }}
+                  className="px-3 py-1.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 inline-flex items-center gap-1"
+                  title="Download .ics — add this tour to your phone calendar"
+                >
+                  <Download className="w-3 h-3" /> Add to calendar
+                </button>
                 {isPast && (
                   <>
                     <button
@@ -4726,6 +5268,18 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
           <FormField label="Your email"><input type="email" value={form.agentEmail} onChange={e => update('agentEmail', e.target.value)} className="form-input" /></FormField>
           <FormField label="Your phone"><input type="tel" value={form.agentPhone} onChange={e => update('agentPhone', e.target.value)} className="form-input" /></FormField>
           <FormField label="Twilio number"><input type="tel" value={form.twilioNumber} onChange={e => update('twilioNumber', e.target.value)} className="form-input" /></FormField>
+          <FormField label="Email signature (auto-appended to every outbound email)">
+            <textarea
+              value={form.emailSignature || ''}
+              onChange={(e) => update('emailSignature', e.target.value)}
+              rows={5}
+              placeholder={`Best,\n${form.agentName || 'Morgan Page'}\n${form.agentPhone || '(215) 555-0123'}\nSkale Real Estate · Philadelphia`}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-slate-400 resize-y font-mono"
+            />
+            <div className="text-[10px] text-slate-400 mt-1">
+              Appended automatically to outbound emails sent through the inbox or templates. SMS is not affected.
+            </div>
+          </FormField>
         </div>
       </Card>
 
@@ -5613,6 +6167,138 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
   );
 }
 
+// ============================================================
+// NOTES + TAGS PANEL — private agent context. Notes are free-form, tags are
+// short labels. Both live in lead.raw so they save without a schema migration.
+// ============================================================
+const TAG_PRESETS = [
+  { label: 'VIP', tone: 'bg-amber-100 text-amber-800 border-amber-300' },
+  { label: 'Hot lead', tone: 'bg-red-100 text-red-800 border-red-300' },
+  { label: 'Cold', tone: 'bg-slate-100 text-slate-700 border-slate-300' },
+  { label: 'Cosigner needed', tone: 'bg-violet-100 text-violet-800 border-violet-300' },
+  { label: 'Pet owner', tone: 'bg-emerald-100 text-emerald-800 border-emerald-300' },
+  { label: 'Investor', tone: 'bg-blue-100 text-blue-800 border-blue-300' },
+  { label: 'Referral source', tone: 'bg-pink-100 text-pink-800 border-pink-300' },
+  { label: 'Renewal candidate', tone: 'bg-teal-100 text-teal-800 border-teal-300' },
+];
+
+function tagTone(label) {
+  const preset = TAG_PRESETS.find((t) => t.label.toLowerCase() === (label || '').toLowerCase());
+  return preset?.tone || 'bg-slate-100 text-slate-700 border-slate-300';
+}
+
+function NotesAndTagsPanel({ lead, updateLead, showToast }) {
+  const [notes, setNotes] = useState(lead.notes || '');
+  const [tagDraft, setTagDraft] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const tags = Array.isArray(lead.tags) ? lead.tags : [];
+
+  useEffect(() => { setNotes(lead.notes || ''); }, [lead.id]);
+
+  // Debounced auto-save: 800ms after last keystroke.
+  useEffect(() => {
+    if (notes === (lead.notes || '')) return;
+    const handle = setTimeout(async () => {
+      setSavingNotes(true);
+      await updateLead(lead.id, { notes, raw: { ...(lead.raw || {}), notes } });
+      setSavingNotes(false);
+    }, 800);
+    return () => clearTimeout(handle);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes]);
+
+  const addTag = (label) => {
+    const trimmed = String(label || '').trim();
+    if (!trimmed) return;
+    if (tags.some((t) => t.toLowerCase() === trimmed.toLowerCase())) return;
+    const next = [...tags, trimmed];
+    updateLead(lead.id, { tags: next, raw: { ...(lead.raw || {}), tags: next } });
+    setTagDraft('');
+    setPickerOpen(false);
+  };
+  const removeTag = (label) => {
+    const next = tags.filter((t) => t !== label);
+    updateLead(lead.id, { tags: next, raw: { ...(lead.raw || {}), tags: next } });
+  };
+
+  const availablePresets = TAG_PRESETS.filter(
+    (p) => !tags.some((t) => t.toLowerCase() === p.label.toLowerCase())
+  );
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <SectionHeader>Notes &amp; tags</SectionHeader>
+        {savingNotes && <span className="text-[10px] text-slate-400 italic">Saving…</span>}
+      </div>
+
+      {/* TAGS */}
+      <div className="space-y-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Tags</div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {tags.map((t) => (
+            <span key={t} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${tagTone(t)}`}>
+              {t}
+              <button onClick={() => removeTag(t)} className="hover:text-red-600 opacity-60 hover:opacity-100">
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))}
+          {tags.length === 0 && <span className="text-xs italic text-slate-400 mr-1">No tags yet</span>}
+          <div className="relative">
+            <button
+              onClick={() => setPickerOpen(!pickerOpen)}
+              className="px-2 py-1 rounded-full text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1"
+            >
+              <Plus className="w-3 h-3" /> Add tag
+            </button>
+            {pickerOpen && (
+              <div className="absolute left-0 top-7 z-30 bg-white border border-slate-200 rounded-xl shadow-lg p-2 min-w-[220px]">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold px-1 mb-1">Presets</div>
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {availablePresets.length === 0 ? (
+                    <span className="text-xs italic text-slate-400 px-1">All presets added</span>
+                  ) : availablePresets.map((p) => (
+                    <button key={p.label} onClick={() => addTag(p.label)}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium border ${p.tone}`}>
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold px-1 mb-1">Custom</div>
+                <div className="flex gap-1">
+                  <input
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') addTag(tagDraft); }}
+                    placeholder="Tag name…"
+                    className="flex-1 text-xs px-2 py-1 border border-slate-200 rounded outline-none focus:border-slate-400"
+                  />
+                  <button onClick={() => addTag(tagDraft)} className="text-xs px-2 py-1 bg-slate-900 text-white rounded">Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* NOTES */}
+      <div className="space-y-1">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Private notes (only you see these)</div>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Anything you want to remember about this lead — preferences, what they said, landlord feedback, etc."
+          rows={4}
+          className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-y"
+        />
+        <div className="text-[10px] text-slate-400">Saves automatically</div>
+      </div>
+    </Card>
+  );
+}
+
 function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
@@ -5641,6 +6327,11 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
             {lead.screening?.status === 'completed' && <Pill tone="accent" icon={Shield}>Screened</Pill>}
             {lead.application && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
             {submissionCount > 0 && <Pill tone="info">{submissionCount} {submissionCount === 1 ? 'submission' : 'submissions'}</Pill>}
+            {(lead.tags || []).map((t) => (
+              <span key={t} className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${tagTone(t)}`}>
+                {t}
+              </span>
+            ))}
             <span className="text-xs text-slate-500">Move {fmtDate(lead.moveInDate)}</span>
             <Button
               size="sm"
@@ -5684,6 +6375,9 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
               {/* Commission tracking (only after stage >= applied). */}
               <CommissionPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
+              {/* Notes + tags + source — private agent context */}
+              <NotesAndTagsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+
               <div>
                 <SectionHeader>Lead details</SectionHeader>
                 <div className="grid grid-cols-2 gap-4">
@@ -5701,6 +6395,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
                       : 'Not specified'}
                   />
                   <InfoItem label="Credit (self-reported)" value={lead.creditScore} />
+                  <InfoItem label="Source" value={lead.source || 'Unknown'} />
                 </div>
               </div>
 
@@ -5969,6 +6664,43 @@ function MessagesTab({ lead, onCompose }) {
 function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
   const [showWon, setShowWon] = useState(false);
   const [search, setSearch] = useState('');
+  const [draggingId, setDraggingId] = useState(null);
+  const [dragOverStage, setDragOverStage] = useState(null);
+
+  // Drag-and-drop handlers. Drag a lead card onto a new stage column to move it.
+  const onDragStart = (e, leadId) => {
+    setDraggingId(leadId);
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', leadId); } catch {}
+  };
+  const onDragEnd = () => { setDraggingId(null); setDragOverStage(null); };
+  const onDragOver = (e, stageId) => {
+    e.preventDefault();
+    if (dragOverStage !== stageId) setDragOverStage(stageId);
+  };
+  const onDrop = async (e, stageId) => {
+    e.preventDefault();
+    const leadId = draggingId || e.dataTransfer.getData('text/plain');
+    setDraggingId(null);
+    setDragOverStage(null);
+    if (!leadId) return;
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    if ((lead.stage || 'new') === stageId) return;
+    const target = PIPELINE_STAGES.find((s) => s.id === stageId);
+    const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+    const newTasks = stageDefaultTasks(stageId, lead, firstName);
+    await updateLead(lead.id, {
+      stage: stageId,
+      tasks: [...(lead.tasks || []), ...newTasks],
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`, type: 'stage-changed',
+        timestamp: new Date().toISOString(),
+        message: `Stage → ${target?.label || stageId} (drag)`,
+      }],
+    });
+    showToast(`${firstName} → ${target?.label}${newTasks.length ? ` · +${newTasks.length} task${newTasks.length === 1 ? '' : 's'}` : ''}`);
+  };
 
   // Group leads by stage.
   const byStage = useMemo(() => {
@@ -6085,16 +6817,25 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
           const all = byStage[stage.id] || [];
           const filtered = all.filter(matchesSearch);
           return (
-            <div key={stage.id} className="flex-shrink-0 w-72 flex flex-col">
-              <div className={`px-3 py-2 rounded-t-xl border-t border-x ${toneClass(stage.tone)}`}>
+            <div
+              key={stage.id}
+              className="flex-shrink-0 w-72 flex flex-col"
+              onDragOver={(e) => onDragOver(e, stage.id)}
+              onDrop={(e) => onDrop(e, stage.id)}
+              onDragLeave={() => setDragOverStage(null)}
+            >
+              <div className={`px-3 py-2 rounded-t-xl border-t border-x ${toneClass(stage.tone)} ${dragOverStage === stage.id ? 'ring-2 ring-brand-gold' : ''}`}
+                style={dragOverStage === stage.id ? { boxShadow: `0 0 0 2px var(--brand-gold)` } : {}}>
                 <div className="flex items-center justify-between">
                   <div className="font-semibold text-xs uppercase tracking-wider">{stage.label}</div>
                   <div className="text-[10px] font-bold tabular-nums">{filtered.length}{filtered.length !== all.length && ` / ${all.length}`}</div>
                 </div>
               </div>
-              <div className="flex-1 bg-slate-50 border-x border-b border-slate-200 rounded-b-xl p-2 space-y-2 min-h-[200px] max-h-[calc(100vh-260px)] overflow-y-auto">
+              <div className={`flex-1 border-x border-b border-slate-200 rounded-b-xl p-2 space-y-2 min-h-[200px] max-h-[calc(100vh-260px)] overflow-y-auto transition-colors ${
+                dragOverStage === stage.id ? 'bg-amber-50' : 'bg-slate-50'
+              }`}>
                 {filtered.length === 0 ? (
-                  <div className="text-[11px] italic text-slate-400 text-center py-4">Empty</div>
+                  <div className="text-[11px] italic text-slate-400 text-center py-4">{dragOverStage === stage.id ? 'Drop here' : 'Empty'}</div>
                 ) : filtered.map((lead) => {
                   const attention = needsAttention(lead);
                   const canAdvance = !['leased', 'paid', 'lost'].includes(lead.stage || 'new');
@@ -6102,9 +6843,12 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                     <button
                       key={lead.id}
                       onClick={() => onSelectLead(lead.id)}
-                      className={`w-full text-left bg-white rounded-lg p-2.5 border transition-all hover:shadow-sm hover:border-slate-300 ${
+                      draggable
+                      onDragStart={(e) => onDragStart(e, lead.id)}
+                      onDragEnd={onDragEnd}
+                      className={`w-full text-left bg-white rounded-lg p-2.5 border transition-all hover:shadow-sm hover:border-slate-300 cursor-grab active:cursor-grabbing ${
                         attention ? 'border-amber-300 ring-1 ring-amber-200' : 'border-slate-200'
-                      }`}
+                      } ${draggingId === lead.id ? 'opacity-40' : ''}`}
                     >
                       <div className="flex items-center gap-1.5 mb-1">
                         {attention && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />}
@@ -6345,8 +7089,14 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           automated: false,
         };
       } else {
+        // Auto-append the agent's signature if they have one and the body
+        // doesn't already include it (avoid double-signing on quoted replies).
+        const sig = (settings?.emailSignature || '').trim();
+        const finalBody = sig && !composerBody.includes(sig)
+          ? `${composerBody}\n\n${sig}`
+          : composerBody;
         const result = await sendEmail({
-          leadId: lead.id, subject: composerSubject || '(no subject)', body: composerBody,
+          leadId: lead.id, subject: composerSubject || '(no subject)', body: finalBody,
           kind: 'manual', idempotencyKey: `inbox-email-${lead.id}-${Date.now()}`, automated: false,
         });
         if (!result.ok) {
@@ -7219,6 +7969,7 @@ function SettingsSection({
         {[
           { k: 'agent',      label: 'Agent & automation' },
           { k: 'templates',  label: 'Templates' },
+          { k: 'analytics',  label: 'Analytics' },
           { k: 'blast',      label: 'Bulk SMS' },
         ].map(t => (
           <button
@@ -7253,7 +8004,168 @@ function SettingsSection({
           onClearFocus={() => setTemplateFocus(null)}
         />
       )}
+      {tab === 'analytics' && <AnalyticsView leads={leads} />}
       {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
+    </div>
+  );
+}
+
+// ============================================================
+// ANALYTICS — conversion funnel, time-in-stage, source attribution.
+// Pure derived metrics from the leads array; no extra fetches.
+// ============================================================
+function AnalyticsView({ leads }) {
+  const stats = useMemo(() => {
+    const total = leads.length;
+    const buckets = { GCMS: 0, 'GCM75+': 0, BCMS: 0, 'BC75+': 0 };
+    const stageCounts = {};
+    const sourceCounts = {};
+    const sourceConverted = {}; // leases by source
+    let commissionEarned = 0;
+    let commissionReceived = 0;
+
+    for (const lead of leads) {
+      if (lead.bucket && buckets[lead.bucket] !== undefined) buckets[lead.bucket]++;
+      const stage = lead.stage || 'new';
+      stageCounts[stage] = (stageCounts[stage] || 0) + 1;
+      const source = lead.source || 'Unknown';
+      sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+      if (lead.stage === 'leased' || lead.stage === 'paid') sourceConverted[source] = (sourceConverted[source] || 0) + 1;
+      const amt = Number(lead.commission?.amount || 0);
+      if (amt && (lead.stage === 'leased' || lead.stage === 'paid')) commissionEarned += amt;
+      if (amt && lead.commission?.received_at) commissionReceived += amt;
+    }
+
+    const matched = leads.filter((l) => l.curatedLinkSentAt || ['matched', 'tour-requested', 'tour-booked', 'post-tour', 'applied', 'leased', 'paid'].includes(l.stage)).length;
+    const toured = leads.filter((l) => (l.tours || []).length > 0).length;
+    const applied = leads.filter((l) => ['applied', 'leased', 'paid'].includes(l.stage)).length;
+    const leased = leads.filter((l) => ['leased', 'paid'].includes(l.stage)).length;
+    const paid = leads.filter((l) => l.stage === 'paid').length;
+
+    const funnel = [
+      { label: 'Leads', value: total, color: 'bg-slate-400' },
+      { label: 'Curated link sent', value: matched, color: 'bg-amber-400' },
+      { label: 'Toured', value: toured, color: 'bg-blue-500' },
+      { label: 'Applied', value: applied, color: 'bg-violet-500' },
+      { label: 'Leased', value: leased, color: 'bg-emerald-500' },
+      { label: 'Commission paid', value: paid, color: 'bg-emerald-700' },
+    ];
+
+    // Time-in-stage = avg days from createdAt to today for currently active leads per stage.
+    const today = Date.now();
+    const stageAvgDays = {};
+    for (const [stage, count] of Object.entries(stageCounts)) {
+      const inStage = leads.filter((l) => (l.stage || 'new') === stage);
+      const totalDays = inStage.reduce((sum, l) => {
+        const created = new Date(l.createdAt || 0).getTime();
+        return sum + Math.max(0, (today - created) / 86400000);
+      }, 0);
+      stageAvgDays[stage] = count > 0 ? Math.round(totalDays / count) : 0;
+    }
+
+    return { total, buckets, stageCounts, sourceCounts, sourceConverted, funnel, stageAvgDays, commissionEarned, commissionReceived, matched, toured, applied, leased };
+  }, [leads]);
+
+  const fmtPct = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '–');
+  const maxFunnel = Math.max(...stats.funnel.map((f) => f.value), 1);
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      {/* TOP CARDS */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Card className="p-4">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Total leads</div>
+          <div className="text-2xl font-bold text-slate-900 tabular-nums">{stats.total}</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Conversion rate</div>
+          <div className="text-2xl font-bold text-slate-900 tabular-nums">{fmtPct(stats.leased, stats.total)}</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">leads → leased</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Commission earned</div>
+          <div className="text-2xl font-bold text-emerald-700 tabular-nums">{fmtCurrency(stats.commissionEarned)}</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">{fmtCurrency(stats.commissionReceived)} received</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Toured</div>
+          <div className="text-2xl font-bold text-slate-900 tabular-nums">{stats.toured}</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">{fmtPct(stats.toured, stats.matched)} of curated</div>
+        </Card>
+      </div>
+
+      {/* FUNNEL */}
+      <Card className="p-5">
+        <SectionHeader icon={Activity}>Conversion funnel</SectionHeader>
+        <div className="space-y-2">
+          {stats.funnel.map((f, i) => {
+            const width = Math.max(8, Math.round((f.value / maxFunnel) * 100));
+            const prevValue = i > 0 ? stats.funnel[i - 1].value : null;
+            const stepConv = prevValue !== null && prevValue > 0 ? fmtPct(f.value, prevValue) : '';
+            return (
+              <div key={f.label} className="flex items-center gap-3">
+                <div className="w-32 text-xs font-medium text-slate-700 shrink-0">{f.label}</div>
+                <div className="flex-1 bg-slate-100 rounded-full h-7 overflow-hidden relative">
+                  <div className={`${f.color} h-full transition-all`} style={{ width: `${width}%` }} />
+                  <div className="absolute inset-0 flex items-center px-3 text-xs font-semibold">
+                    <span className="text-white drop-shadow">{f.value}</span>
+                    {stepConv && <span className="text-slate-500 ml-auto">{stepConv}</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* TIME IN STAGE */}
+      <Card className="p-5">
+        <SectionHeader icon={Hourglass}>Time in stage (avg days since lead creation)</SectionHeader>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
+          {PIPELINE_STAGES.map((stage) => {
+            const count = stats.stageCounts[stage.id] || 0;
+            const days = stats.stageAvgDays[stage.id] || 0;
+            if (count === 0) return null;
+            return (
+              <div key={stage.id} className="border border-slate-200 rounded-lg p-3">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">{stage.label}</div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-lg font-bold text-slate-900 tabular-nums">{count}</span>
+                  <span className="text-xs text-slate-500">leads · {days}d avg</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* SOURCES */}
+      <Card className="p-5">
+        <SectionHeader icon={Star}>Lead sources</SectionHeader>
+        {Object.keys(stats.sourceCounts).length === 0 ? (
+          <div className="text-sm italic text-slate-400 mt-2">No source data yet.</div>
+        ) : (
+          <div className="space-y-1.5 mt-3">
+            {Object.entries(stats.sourceCounts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([source, count]) => {
+                const converted = stats.sourceConverted[source] || 0;
+                const convPct = fmtPct(converted, count);
+                const width = Math.max(8, Math.round((count / stats.total) * 100));
+                return (
+                  <div key={source} className="flex items-center gap-3">
+                    <div className="w-28 text-xs font-medium text-slate-700 shrink-0 truncate">{source}</div>
+                    <div className="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden relative">
+                      <div className="bg-slate-400 h-full" style={{ width: `${width}%` }} />
+                      <div className="absolute inset-0 flex items-center px-2 text-[11px] font-semibold text-white drop-shadow">{count}</div>
+                    </div>
+                    <div className="w-20 text-right text-[11px] text-slate-500 shrink-0 tabular-nums">{converted} · {convPct}</div>
+                  </div>
+                );
+              })}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
