@@ -146,6 +146,42 @@ const DEFAULT_AGENT_SETTINGS = {
   //   BC75+ = Limited credit (<650), moving in 75+ days — LONGTAIL, light touch
   //
   // Available placeholders: {firstName}, {moveInDate}, {agentName}
+  // Quick-reply templates the user can edit/add/delete in Settings → Templates.
+  // Available placeholders: {firstName}, {portalUrl}, {tourDate}, {tourTime}, {agentName}.
+  // Shown in the inbox composer as one-click inserts.
+  quickReplyTemplates: [
+    {
+      id: 'qr_portal',
+      label: 'Send portal link',
+      channel: 'sms',
+      body: "Hi {firstName} — here's the portal link with rentals matching your criteria: {portalUrl}\n\nReply with the addresses you'd like to tour.",
+    },
+    {
+      id: 'qr_ask_times',
+      label: 'Ask for tour times',
+      channel: 'sms',
+      body: "Hi {firstName} — what days/times work best for a tour this week or next?",
+    },
+    {
+      id: 'qr_confirm_tour',
+      label: 'Confirm tour',
+      channel: 'sms',
+      body: "Hi {firstName} — confirming your tour on {tourDate} at {tourTime}. See you there!",
+    },
+    {
+      id: 'qr_post_tour',
+      label: 'Post-tour follow up',
+      channel: 'sms',
+      body: "Hi {firstName} — what were your thoughts on the properties? Want to put together an application?",
+    },
+    {
+      id: 'qr_nudge',
+      label: 'Nudge after silence',
+      channel: 'sms',
+      body: "Hi {firstName} — checking in. Want me to send a fresh batch of rentals based on what you've seen?",
+    },
+  ],
+
   welcomeMessages: {
     GCMS: {
       sms: `Rentals Philly: Got it {firstName} — I'm hand-picking rentals that fit you right now. Expect a personalized link with photos within a few hours.`,
@@ -4274,12 +4310,12 @@ function applyWeeklyTemplate(template, existingShifts, weeks = 4) {
 }
 
 // Build a 4-week calendar grid (Sun-first weeks) starting from today's week.
-function buildCalendarWeeks(numWeeks = 4) {
+function buildCalendarWeeks(numWeeks = 4, weekOffset = 0) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  // Find the Sunday of this week.
+  // Find the Sunday of this week, then shift by the requested week offset.
   const firstSun = new Date(today);
-  firstSun.setDate(today.getDate() - today.getDay());
+  firstSun.setDate(today.getDate() - today.getDay() + weekOffset * 7);
   const weeks = [];
   for (let w = 0; w < numWeeks; w++) {
     const days = [];
@@ -4293,14 +4329,50 @@ function buildCalendarWeeks(numWeeks = 4) {
   return weeks;
 }
 
+// "May 17 – Jun 13, 2026" — works across month + year boundaries.
+function calendarRangeLabel(weeks) {
+  if (!weeks?.length) return '';
+  const first = weeks[0][0];
+  const last = weeks[weeks.length - 1][6];
+  const sameYear = first.getFullYear() === last.getFullYear();
+  const sameMonth = sameYear && first.getMonth() === last.getMonth();
+  const opts = { month: 'short', day: 'numeric' };
+  const firstLabel = first.toLocaleDateString('en-US', opts);
+  const lastLabel = sameMonth
+    ? last.getDate()
+    : last.toLocaleDateString('en-US', opts);
+  return `${firstLabel} – ${lastLabel}, ${last.getFullYear()}`;
+}
+
+// Header row component for navigating the calendar.
+function CalendarNav({ rangeLabel, onPrev, onNext, onToday, extra }) {
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <button onClick={onPrev} className="w-7 h-7 rounded-full border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center" title="Previous 4 weeks">
+        <ChevronRight className="w-4 h-4 rotate-180" />
+      </button>
+      <button onClick={onToday} className="px-3 py-1 rounded-full border border-slate-200 hover:bg-slate-50 text-xs font-medium">
+        Today
+      </button>
+      <button onClick={onNext} className="w-7 h-7 rounded-full border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center" title="Next 4 weeks">
+        <ChevronRight className="w-4 h-4" />
+      </button>
+      <div className="font-semibold text-sm text-slate-900 ml-2">{rangeLabel}</div>
+      {extra && <div className="ml-auto">{extra}</div>}
+    </div>
+  );
+}
+
 function ShiftEditor({ value, onChange, tours = [] }) {
   const shifts = value?.shifts || [];
   const blocked = value?.blocked_dates || [];
   const template = value?.weekly_template || {};
   const [editingDate, setEditingDate] = useState(null); // YYYY-MM-DD
   const [showTemplate, setShowTemplate] = useState(false);
+  const [weekOffset, setWeekOffset] = useState(0);
 
-  const weeks = buildCalendarWeeks(4);
+  const weeks = useMemo(() => buildCalendarWeeks(4, weekOffset), [weekOffset]);
+  const rangeLabel = useMemo(() => calendarRangeLabel(weeks), [weeks]);
   const todayStr = new Date().toISOString().slice(0, 10);
   const isBlocked = (d) => blocked.includes(d);
 
@@ -4408,6 +4480,14 @@ function ShiftEditor({ value, onChange, tours = [] }) {
 
       {/* CALENDAR GRID */}
       <div>
+        <div className="mb-3">
+          <CalendarNav
+            rangeLabel={rangeLabel}
+            onPrev={() => setWeekOffset(weekOffset - 4)}
+            onNext={() => setWeekOffset(weekOffset + 4)}
+            onToday={() => setWeekOffset(0)}
+          />
+        </div>
         <div className="grid grid-cols-7 gap-1 mb-1">
           {DAYS.map((d) => (
             <div key={d} className="text-[10px] uppercase tracking-wider text-slate-400 text-center font-semibold py-1">{d}</div>
@@ -4415,13 +4495,15 @@ function ShiftEditor({ value, onChange, tours = [] }) {
         </div>
         {weeks.map((week, wi) => (
           <div key={wi} className="grid grid-cols-7 gap-1 mb-1">
-            {week.map((d) => {
+            {week.map((d, di) => {
               const dateStr = d.toISOString().slice(0, 10);
               const isPast = dateStr < todayStr;
               const isToday = dateStr === todayStr;
               const dayShifts = shiftsByDate[dateStr] || [];
               const dayTours = toursByDate[dateStr] || [];
               const blockedDay = isBlocked(dateStr);
+              // Show month label on day 1 OR on the first cell of the entire grid.
+              const isMonthStart = d.getDate() === 1 || (wi === 0 && di === 0);
               return (
                 <button
                   key={dateStr}
@@ -4437,7 +4519,9 @@ function ShiftEditor({ value, onChange, tours = [] }) {
                 >
                   <div className="flex items-center justify-between">
                     <span className={`text-[11px] font-semibold ${isToday ? 'text-brand-gold' : ''}`}>
-                      {d.getDate()}
+                      {isMonthStart
+                        ? `${d.toLocaleDateString('en-US', { month: 'short' })} ${d.getDate()}`
+                        : d.getDate()}
                     </span>
                     {dayTours.length > 0 && (
                       <span className="text-[9px] bg-blue-600 text-white rounded-full px-1.5 leading-tight">{dayTours.length}</span>
@@ -6067,14 +6151,6 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
 // ============================================================
 // UNIFIED INBOX — split-pane: thread list + conversation + lead context
 // ============================================================
-const QUICK_REPLY_TEMPLATES = [
-  { label: 'Send portal link', body: 'Hi {firstName} — here\'s the portal link with rentals matching your criteria: {portalUrl}\n\nReply with the addresses you\'d like to tour.' },
-  { label: 'Ask for tour times', body: 'Hi {firstName} — what days/times work best for a tour this week or next?' },
-  { label: 'Confirm tour', body: 'Hi {firstName} — confirming your tour on {tourDate} at {tourTime}. See you there!' },
-  { label: 'Follow up post-tour', body: 'Hi {firstName} — what were your thoughts on the properties? Want to put together an application?' },
-  { label: 'Nudge after silence', body: 'Hi {firstName} — checking in. Want me to send a fresh batch of rentals based on what you\'ve seen?' },
-];
-
 function fillTemplate(tpl, lead, settings) {
   const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
   const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
@@ -6097,7 +6173,15 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   const [composerBody, setComposerBody] = useState('');
   const [composerSubject, setComposerSubject] = useState('');
   const [sending, setSending] = useState(false);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  // AI suggestion cache — keyed by lead.id + last inbound message id so we don't
+  // re-burn the API on every render. Values: { suggestion, loading, error }.
+  const [aiSuggestions, setAiSuggestions] = useState({});
+  const [aiDismissed, setAiDismissed] = useState({});
   const scrollerRef = useRef(null);
+
+  // User templates (live-edited in Settings).
+  const userTemplates = settings?.quickReplyTemplates || DEFAULT_AGENT_SETTINGS.quickReplyTemplates;
 
   // Build a thread per lead = lead + sorted messages + lastMessage + unread flag.
   const threads = useMemo(() => {
@@ -6179,6 +6263,48 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     setComposerSubject('');
     setComposerChannel('sms');
   }, [activeThread?.lead.id]);
+
+  // Cache key for the current thread = leadId + last inbound message id.
+  // Re-fetching only when the lead OR the last inbound message changes prevents
+  // re-burning the API on every render.
+  const aiCacheKey = useMemo(() => {
+    if (!activeThread) return null;
+    const last = activeThread.last;
+    if (!last || last.direction !== 'inbound') return null;
+    return `${activeThread.lead.id}::${last.id}`;
+  }, [activeThread]);
+
+  const aiSlot = aiCacheKey ? aiSuggestions[aiCacheKey] : null;
+  const isDismissed = aiCacheKey ? !!aiDismissed[aiCacheKey] : false;
+
+  // Auto-fetch the AI suggestion when a thread that needs a reply is opened.
+  const fetchSuggestion = async (force = false) => {
+    if (!aiCacheKey || !activeThread) return;
+    if (!force && aiSuggestions[aiCacheKey]?.suggestion) return;
+    setAiSuggestions((prev) => ({ ...prev, [aiCacheKey]: { loading: true } }));
+    try {
+      const res = await fetch('/api/ai/suggest-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId: activeThread.lead.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setAiSuggestions((prev) => ({ ...prev, [aiCacheKey]: { error: data.error || 'failed' } }));
+      } else {
+        setAiSuggestions((prev) => ({ ...prev, [aiCacheKey]: { suggestion: data.suggestion } }));
+      }
+    } catch (err) {
+      setAiSuggestions((prev) => ({ ...prev, [aiCacheKey]: { error: err.message } }));
+    }
+  };
+
+  useEffect(() => {
+    if (!aiCacheKey || isDismissed) return;
+    if (aiSuggestions[aiCacheKey]) return; // cached
+    fetchSuggestion(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiCacheKey, isDismissed]);
 
   const insertTemplate = (tpl) => {
     if (!activeThread) return;
@@ -6404,6 +6530,80 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                   );
                 })}
               </div>
+              {/* AI SUGGESTED REPLY — appears above composer when the last
+                  message is inbound. */}
+              {aiCacheKey && !isDismissed && (
+                <div
+                  className="border-t border-slate-200 px-3 py-2.5"
+                  style={{ background: 'linear-gradient(180deg, rgba(181,142,84,0.06), transparent)' }}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--brand-gold)' }} />
+                    <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--brand-gold)' }}>
+                      AI suggested reply
+                    </span>
+                    <div className="ml-auto flex items-center gap-1">
+                      <button
+                        onClick={() => fetchSuggestion(true)}
+                        disabled={aiSlot?.loading}
+                        className="text-[10px] text-slate-500 hover:text-slate-900 px-2 py-0.5 rounded"
+                        title="Regenerate"
+                      >
+                        ↻ Regenerate
+                      </button>
+                      <button
+                        onClick={() => setAiDismissed((p) => ({ ...p, [aiCacheKey]: true }))}
+                        className="text-slate-400 hover:text-slate-700"
+                        title="Hide"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  {aiSlot?.loading ? (
+                    <div className="text-xs text-slate-500 italic flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-brand-gold animate-pulse" style={{ backgroundColor: 'var(--brand-gold)' }} />
+                      Drafting a reply…
+                    </div>
+                  ) : aiSlot?.error ? (
+                    <div className="text-xs text-red-600">
+                      Couldn&apos;t draft a reply: {aiSlot.error}.{' '}
+                      <button onClick={() => fetchSuggestion(true)} className="underline">Retry</button>
+                    </div>
+                  ) : aiSlot?.suggestion ? (
+                    <div className="space-y-2">
+                      <div className="text-sm text-slate-800 whitespace-pre-wrap bg-white rounded-lg p-2.5 border border-slate-200">
+                        {aiSlot.suggestion}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setComposerBody(aiSlot.suggestion)}
+                          className="px-3 py-1.5 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5"
+                          style={{ backgroundColor: 'var(--brand-gold)' }}
+                        >
+                          <Check className="w-3 h-3" /> Use this draft
+                        </button>
+                        <button
+                          onClick={() => { setComposerBody(aiSlot.suggestion); }}
+                          className="text-[10px] text-slate-500 hover:text-slate-900"
+                          title="Paste and edit before sending"
+                        >
+                          Use &amp; edit
+                        </button>
+                        <span className="text-[10px] text-slate-400 ml-auto">Claude Haiku · review before sending</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => fetchSuggestion(true)}
+                      className="text-xs text-slate-500 underline hover:text-slate-900"
+                    >
+                      Draft an AI reply
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* COMPOSER */}
               <div className="border-t border-slate-200 bg-white p-3 space-y-2">
                 <div className="flex items-center gap-2">
@@ -6417,24 +6617,14 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                       <Mail className="w-3 h-3 inline mr-1" /> Email
                     </button>
                   </div>
-                  <div className="flex-1 flex flex-wrap gap-1 justify-end">
-                    {QUICK_REPLY_TEMPLATES.slice(0, 3).map((tpl) => (
-                      <button key={tpl.label} onClick={() => insertTemplate(tpl)}
-                        className="px-2 py-1 rounded-full text-[10px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700">
-                        {tpl.label}
-                      </button>
-                    ))}
-                    <details className="relative">
-                      <summary className="px-2 py-1 rounded-full text-[10px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer list-none">More…</summary>
-                      <div className="absolute right-0 top-7 z-10 bg-white border border-slate-200 rounded-lg shadow-lg p-1 min-w-[180px]">
-                        {QUICK_REPLY_TEMPLATES.slice(3).map((tpl) => (
-                          <button key={tpl.label} onClick={() => insertTemplate(tpl)}
-                            className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-slate-100">
-                            {tpl.label}
-                          </button>
-                        ))}
-                      </div>
-                    </details>
+                  <div className="flex-1 flex items-center justify-end gap-1.5">
+                    <button
+                      onClick={() => setShowTemplatePicker(true)}
+                      className="px-3 py-1 rounded-full text-xs font-medium border-2 inline-flex items-center gap-1.5 transition-colors hover:bg-slate-50"
+                      style={{ borderColor: 'var(--brand-gold)', color: 'var(--brand-gold)' }}
+                    >
+                      <FileText className="w-3.5 h-3.5" /> Use template
+                    </button>
                   </div>
                 </div>
                 {composerChannel === 'email' && (
@@ -6533,6 +6723,112 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           )}
         </div>
       )}
+
+      {showTemplatePicker && activeThread && (
+        <TemplatePickerModal
+          templates={userTemplates}
+          lead={activeThread.lead}
+          settings={settings}
+          channel={composerChannel}
+          onPick={(filled) => {
+            setComposerBody(filled);
+            setShowTemplatePicker(false);
+          }}
+          onClose={() => setShowTemplatePicker(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TemplatePickerModal({ templates, lead, settings, channel, onPick, onClose }) {
+  const [search, setSearch] = useState('');
+  const [hoveredId, setHoveredId] = useState(templates[0]?.id || null);
+
+  const visible = useMemo(() => {
+    const list = templates.filter((t) => !t.channel || t.channel === channel || t.channel === 'both');
+    if (!search.trim()) return list;
+    const q = search.toLowerCase();
+    return list.filter((t) =>
+      (t.label || '').toLowerCase().includes(q) ||
+      (t.body || '').toLowerCase().includes(q)
+    );
+  }, [templates, search, channel]);
+
+  const previewed = visible.find((t) => t.id === hoveredId) || visible[0];
+  const previewText = previewed ? fillTemplate(previewed.body, lead, settings) : '';
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <div className="font-semibold text-slate-900">Choose a template</div>
+            <div className="text-xs text-slate-500">Filtered for {channel === 'sms' ? 'SMS' : 'email'} · placeholders auto-fill for {lead.fullName}</div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-3 border-b border-slate-100">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search templates…"
+              className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400"
+            />
+          </div>
+        </div>
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-[260px_1fr] overflow-hidden">
+          {/* LIST */}
+          <div className="border-r border-slate-100 overflow-y-auto">
+            {visible.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-400 italic">
+                No templates match.{' '}
+                Add some in <span className="text-slate-600">Settings → Templates</span>.
+              </div>
+            ) : visible.map((tpl) => (
+              <button
+                key={tpl.id}
+                onMouseEnter={() => setHoveredId(tpl.id)}
+                onClick={() => onPick(fillTemplate(tpl.body, lead, settings))}
+                className={`w-full text-left px-3 py-2.5 border-b border-slate-50 transition-colors ${
+                  previewed?.id === tpl.id ? 'bg-slate-50' : 'hover:bg-slate-50'
+                }`}
+              >
+                <div className="font-medium text-sm text-slate-900">{tpl.label}</div>
+                <div className="text-[11px] text-slate-500 truncate mt-0.5">{(tpl.body || '').replace(/\n+/g, ' ').slice(0, 60)}</div>
+              </button>
+            ))}
+          </div>
+          {/* PREVIEW */}
+          <div className="p-4 overflow-y-auto bg-slate-50">
+            {previewed ? (
+              <>
+                <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Preview (placeholders filled in)</div>
+                <div className="bg-white rounded-xl p-4 border border-slate-200 text-sm whitespace-pre-wrap text-slate-800 leading-relaxed font-mono">
+                  {previewText}
+                </div>
+                <div className="flex items-center gap-2 mt-3">
+                  <button
+                    onClick={() => onPick(previewText)}
+                    className="px-4 py-2 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 inline-flex items-center gap-1.5"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Use this template
+                  </button>
+                  <span className="text-[10px] text-slate-400">{previewText.length} chars</span>
+                </div>
+              </>
+            ) : (
+              <div className="text-xs text-slate-400 italic text-center py-12">Pick a template to preview</div>
+            )}
+          </div>
+        </div>
+        <div className="px-5 py-2.5 border-t border-slate-100 text-[11px] text-slate-500 text-center">
+          Manage your templates in <span className="font-medium text-slate-700">Settings → Templates → Quick replies</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -6782,17 +7078,26 @@ function CalendarView({ settings, leads, onSelectLead }) {
     return m;
   }, [allTours]);
 
-  const weeks = buildCalendarWeeks(4);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weeks = useMemo(() => buildCalendarWeeks(4, weekOffset), [weekOffset]);
+  const rangeLabel = useMemo(() => calendarRangeLabel(weeks), [weeks]);
   const todayStr = new Date().toISOString().slice(0, 10);
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-        <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-200 border border-emerald-300" /> Available shift</div>
-        <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-600" /> Booked tour</div>
-        <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-100 border border-red-300" /> Day off</div>
-        <div className="ml-auto text-slate-400">Manage shifts in Settings → Tour availability</div>
-      </div>
+      <CalendarNav
+        rangeLabel={rangeLabel}
+        onPrev={() => setWeekOffset(weekOffset - 4)}
+        onNext={() => setWeekOffset(weekOffset + 4)}
+        onToday={() => setWeekOffset(0)}
+        extra={
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-200 border border-emerald-300" /> Shift</div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-600" /> Booked</div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-100 border border-red-300" /> Off</div>
+          </div>
+        }
+      />
 
       <Card className="p-4">
         <div className="grid grid-cols-7 gap-1 mb-1">
@@ -7073,8 +7378,121 @@ function TemplatesEditor({ settings, saveSettings, showToast, focusBucket, onCle
           <Button size="md" onClick={save}>Save all templates</Button>
         </div>
       </Card>
+
+      {/* QUICK REPLY TEMPLATES — for the inbox composer */}
+      <QuickReplyEditor
+        templates={form.quickReplyTemplates || DEFAULT_AGENT_SETTINGS.quickReplyTemplates}
+        onChange={(next) => setForm({ ...form, quickReplyTemplates: next })}
+        onSave={save}
+      />
       <style>{`.form-input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid rgb(226 232 240); border-radius: 0.5rem; font-size: 0.875rem; outline: none; transition: border-color 0.15s; } .form-input:focus { border-color: rgb(100 116 139); }`}</style>
     </div>
+  );
+}
+
+// ============================================================
+// QUICK REPLY EDITOR — manage the templates that appear in the inbox composer.
+// CRUD: rename, edit body, change channel, delete, reorder, add new.
+// ============================================================
+function QuickReplyEditor({ templates, onChange, onSave }) {
+  const [expandedId, setExpandedId] = useState(null);
+
+  const update = (id, patch) => {
+    onChange(templates.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  };
+  const remove = (id) => {
+    if (!confirm('Delete this template?')) return;
+    onChange(templates.filter((t) => t.id !== id));
+  };
+  const addNew = () => {
+    const id = `qr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const t = { id, label: 'New template', channel: 'sms', body: 'Hi {firstName} — ' };
+    onChange([...templates, t]);
+    setExpandedId(id);
+  };
+  const move = (id, dir) => {
+    const idx = templates.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= templates.length) return;
+    const next = [...templates];
+    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+    onChange(next);
+  };
+
+  return (
+    <Card className="p-5 space-y-4 max-w-3xl">
+      <div className="flex items-center justify-between">
+        <SectionHeader icon={Zap}>Quick replies</SectionHeader>
+        <Button size="sm" icon={Plus} onClick={addNew}>New template</Button>
+      </div>
+      <div className="text-sm text-slate-600 leading-relaxed">
+        These appear in the inbox composer when you click <strong>Use template</strong>.
+        Use placeholders like <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">{'{firstName}'}</span>,{' '}
+        <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">{'{portalUrl}'}</span>,{' '}
+        <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">{'{tourDate}'}</span>,{' '}
+        <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">{'{tourTime}'}</span>,{' '}
+        <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">{'{agentName}'}</span>.
+      </div>
+
+      <div className="space-y-2">
+        {templates.length === 0 && (
+          <div className="text-xs italic text-slate-400 text-center py-6">No templates yet. Click "New template" above.</div>
+        )}
+        {templates.map((t, i) => {
+          const open = expandedId === t.id;
+          return (
+            <div key={t.id} className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2.5 hover:bg-slate-50">
+                <div className="flex flex-col">
+                  <button onClick={() => move(t.id, -1)} disabled={i === 0} className="text-slate-300 hover:text-slate-700 disabled:opacity-30">▲</button>
+                  <button onClick={() => move(t.id, 1)} disabled={i === templates.length - 1} className="text-slate-300 hover:text-slate-700 disabled:opacity-30">▼</button>
+                </div>
+                <button onClick={() => setExpandedId(open ? null : t.id)} className="flex-1 text-left">
+                  <div className="flex items-center gap-2">
+                    {t.channel === 'email' ? <Mail className="w-3.5 h-3.5 text-blue-600" /> :
+                     t.channel === 'both' ? <Send className="w-3.5 h-3.5 text-slate-500" /> :
+                     <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />}
+                    <span className="font-medium text-sm text-slate-900">{t.label}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate mt-0.5">{(t.body || '').replace(/\n+/g, ' ').slice(0, 80)}</div>
+                </button>
+                <button onClick={() => remove(t.id)} className="text-slate-400 hover:text-red-600 p-1">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={() => setExpandedId(open ? null : t.id)} className="text-slate-400 hover:text-slate-900 p-1">
+                  <ChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+              {open && (
+                <div className="border-t border-slate-100 p-3 bg-slate-50 space-y-3">
+                  <div className="flex gap-3">
+                    <FormField label="Name (shown in picker)">
+                      <input value={t.label} onChange={(e) => update(t.id, { label: e.target.value })} className="form-input" />
+                    </FormField>
+                    <div className="w-32">
+                      <div className="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1.5">Channel</div>
+                      <select value={t.channel || 'sms'} onChange={(e) => update(t.id, { channel: e.target.value })} className="form-input">
+                        <option value="sms">SMS</option>
+                        <option value="email">Email</option>
+                        <option value="both">Both</option>
+                      </select>
+                    </div>
+                  </div>
+                  <FormField label={`Message${t.channel === 'sms' ? ` (${(t.body || '').length} chars, ${Math.max(1, Math.ceil((t.body || '').length / 160))} segment${Math.ceil((t.body || '').length / 160) === 1 ? '' : 's'})` : ''}`}>
+                    <textarea value={t.body} onChange={(e) => update(t.id, { body: e.target.value })} rows={5} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-y font-mono" />
+                  </FormField>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex justify-end pt-2 border-t border-slate-100">
+        <Button size="md" onClick={onSave}>Save quick replies</Button>
+      </div>
+    </Card>
   );
 }
 
