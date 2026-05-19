@@ -2068,10 +2068,10 @@ function Landing({ onStart }) {
                 Real agent · Real listings · Real fast
               </div>
               <h1 className="text-4xl md:text-6xl font-semibold text-brand-ink tracking-[-0.03em] leading-[1.04] mb-5">
-                Find your next Philly rental in <span style={{ color: 'var(--brand-gold)' }}>two days, not two weeks</span>.
+                Find your next Philly rental, <span style={{ color: 'var(--brand-gold)' }}>without the endless scroll</span>.
               </h1>
               <p className="text-lg md:text-xl text-slate-600 leading-relaxed mb-7 max-w-xl">
-                Tell us what you want. A real Skale Real Estate agent hand-picks rentals that fit, books your tours, and follows up. No scrolling, no broken Zillow links, no ghosting.
+                Tell us what you want. A real agent hand-picks rentals that fit, books your tours, and follows up. No more dead listings, no more ghosting.
               </p>
               <div className="flex flex-wrap items-center gap-3">
                 <button
@@ -2089,10 +2089,10 @@ function Landing({ onStart }) {
               {/* Trust strip */}
               <div className="mt-8 pt-6 border-t border-slate-200 flex flex-wrap items-center gap-x-6 gap-y-3 text-xs text-slate-500">
                 <div className="inline-flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5" /> Licensed in PA
+                  <Shield className="w-3.5 h-3.5" /> Licensed agent
                 </div>
                 <div className="inline-flex items-center gap-1.5">
-                  <Building2 className="w-3.5 h-3.5" /> Skale Real Estate
+                  <Sparkles className="w-3.5 h-3.5" /> Personally curated
                 </div>
                 <div className="inline-flex items-center gap-1.5">
                   <MessageSquare className="w-3.5 h-3.5" /> Text-first communication
@@ -2141,9 +2141,9 @@ function Landing({ onStart }) {
         <div className="max-w-6xl mx-auto px-5 md:px-8 py-8 grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
           {[
             { n: '< 2hr', l: 'Avg time to first reply' },
-            { n: '48hr', l: 'From form to tour' },
-            { n: 'BrightMLS', l: 'Live MLS data' },
             { n: 'Free', l: 'No cost to renters' },
+            { n: 'All Philly', l: 'Every neighborhood' },
+            { n: 'Real agent', l: 'Not a chatbot' },
           ].map((s, i) => (
             <div key={i}>
               <div className="text-2xl md:text-3xl font-bold text-brand-ink tabular-nums">{s.n}</div>
@@ -2186,7 +2186,7 @@ function Landing({ onStart }) {
           </div>
           <div className="grid md:grid-cols-2 gap-3 md:gap-4 max-w-4xl mx-auto">
             {[
-              { yes: 'Live MLS listings updated daily — including units that never hit Zillow', no: 'Zillow / Apartments.com: stale, missing units, dead links' },
+              { yes: 'Fresh listings — including units that never hit Zillow', no: 'Zillow / Apartments.com: stale, missing units, dead links' },
               { yes: 'Pre-vetted listings — no scams, no bait-and-switch pricing', no: 'You contact 15 listings, hear back from 3, none are still available' },
               { yes: 'One agent who knows your situation', no: 'Different leasing agent at every showing' },
               { yes: 'We coordinate tours, deposits, applications — all from your phone', no: 'Endless email tag with landlords' },
@@ -2215,7 +2215,7 @@ function Landing({ onStart }) {
         <div className="space-y-2">
           {[
             { q: 'How much does this cost?', a: 'Free for renters. The landlord pays the agent commission when you sign a lease. You never pay us a fee.' },
-            { q: 'How fast will I hear back?', a: 'Usually within an hour or two during the day. Always within 24 hours. If your move-in is soon (under 75 days), you\'re top priority.' },
+            { q: 'How fast will I hear back?', a: 'Usually within an hour or two during the day. Always within 24 hours. If your move-in is soon, you go to the top of the list.' },
             { q: 'Do I have to use SMS?', a: 'Texts are the fastest way to stay in sync but you can reply by email if you prefer. No app to download either way.' },
             { q: 'Can you help if my credit isn\'t great?', a: 'Yes. We work across all credit profiles and know which buildings are flexible on requirements, cosigners, and deposits.' },
             { q: 'What neighborhoods do you cover?', a: 'All of Philadelphia — Center City, Fishtown, Fairmount, University City, South Philly, North Philly, Northeast, NW. If you can rent it, we can show it.' },
@@ -2258,7 +2258,7 @@ function Landing({ onStart }) {
           <div className="flex items-center gap-4 text-xs text-slate-400">
             <a href="/privacy" className="hover:text-slate-700">Privacy</a>
             <a href="/terms" className="hover:text-slate-700">Terms</a>
-            <span>© {new Date().getFullYear()} Rentals Philly · Skale Real Estate</span>
+            <span>© {new Date().getFullYear()} Rentals Philly</span>
           </div>
         </div>
       </div>
@@ -3445,23 +3445,6 @@ function CuratingConfirmed({ lead, agentName /* unused, onDone */ }) {
           )}
         </div>
       </Card>
-
-      {windows.length > 0 && (
-        <Card className="p-5 mb-5">
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Tour windows you picked</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {windows.map((w) => (
-              <div key={w.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
-                <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900 truncate">{w.label}</div>
-                  <div className="text-[11px] text-slate-500">{w.sub}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
       <div className="text-center text-xs text-slate-500 mt-6 leading-relaxed">
         Your link will arrive at <span className="text-slate-700 font-medium">{lead.email}</span><br />
@@ -5638,7 +5621,7 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
               value={form.emailSignature || ''}
               onChange={(e) => update('emailSignature', e.target.value)}
               rows={5}
-              placeholder={`Best,\n${form.agentName || 'Morgan Page'}\n${form.agentPhone || '(215) 555-0123'}\nSkale Real Estate · Philadelphia`}
+              placeholder={`Best,\n${form.agentName || 'Morgan Page'}\n${form.agentPhone || '(215) 555-0123'}\nRentals Philly`}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-slate-400 resize-y font-mono"
             />
             <div className="text-[10px] text-slate-400 mt-1">
@@ -6419,7 +6402,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
     const emailSubject = 'Your hand-picked Philly rentals';
     const emailBody =
       `Hi ${firstName},\n\n` +
-      `I hand-picked rentals for you. Click below to browse photos on BrightMLS, then tell me which you'd like to tour and what times work:\n\n` +
+      `I hand-picked rentals for you. Click below to browse photos, then tell me which you'd like to tour and what times work:\n\n` +
       `${curatedUrl}\n\n` +
       `— Morgan`;
 

@@ -160,7 +160,7 @@ export default function CuratedPage() {
 
     const submit1 = async () => {
       if (parsedAddresses.length === 0) {
-        alert('Tell us which properties you like — paste addresses from the BrightMLS tab, one per line.');
+        alert('Tell us which properties you like — paste addresses from the listings tab, one per line.');
         return;
       }
       setSubmitting1(true);
@@ -188,15 +188,15 @@ export default function CuratedPage() {
         <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-7 pb-28">
           <div className="rounded-2xl bg-white border border-slate-200 p-5">
             <p className="text-[15px] text-slate-700 leading-relaxed">
-              {agentLabel} hand-picked rentals for you on BrightMLS. Browse the photos, then tell us which
-              ones interest you. We&apos;ll check availability and send you a scheduling link with open times.
+              {agentLabel} hand-picked rentals for you. Browse the photos, then tell us which ones interest
+              you. We&apos;ll check availability and send you a scheduling link with open times.
             </p>
           </div>
 
           <section>
             <div className="flex items-center gap-3 mb-3">
               <StepNum n={1} />
-              <h2 className="text-base font-semibold text-slate-900">Browse on BrightMLS</h2>
+              <h2 className="text-base font-semibold text-slate-900">Browse your listings</h2>
             </div>
             {portalUrl ? (
               <a
@@ -207,12 +207,12 @@ export default function CuratedPage() {
                 className="block rounded-2xl p-5 border-2 transition-colors text-center hover:shadow-md"
                 style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}
               >
-                <div className="text-sm font-semibold text-slate-900 mb-1">Open your listings on BrightMLS</div>
-                <div className="text-xs text-slate-600">Opens in a new tab — full photo galleries & details</div>
+                <div className="text-sm font-semibold text-slate-900 mb-1">Open your hand-picked listings</div>
+                <div className="text-xs text-slate-600">Opens in a new tab — full photo galleries &amp; details</div>
               </a>
             ) : (
               <div className="rounded-2xl p-5 border-2 border-dashed border-slate-300 text-center text-sm text-slate-500">
-                Your agent will send the BrightMLS link shortly.
+                Your agent will send your listing link shortly.
               </div>
             )}
             {opened && (
@@ -228,7 +228,7 @@ export default function CuratedPage() {
               <h2 className="text-base font-semibold text-slate-900">Which ones do you like?</h2>
             </div>
             <p className="text-sm text-slate-500 mb-3">
-              Copy addresses from the BrightMLS tab — one per line. No need to be exact, anything that
+              Copy addresses from the listings tab — one per line. No need to be exact, anything that
               identifies the listing works.
             </p>
             <textarea
@@ -510,7 +510,7 @@ export default function CuratedPage() {
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-semibold text-slate-900">{data.agentName || 'Your agent'}</div>
-              <div className="text-sm text-slate-500">Rentals Philly · Skale Real Estate</div>
+              <div className="text-sm text-slate-500">Rentals Philly</div>
               {data.agentPhone && <div className="text-xs text-slate-400 mt-0.5">{data.agentPhone}</div>}
             </div>
             <button
@@ -624,7 +624,7 @@ function downloadVcard(name, phone) {
   const vcard = [
     'BEGIN:VCARD', 'VERSION:3.0',
     `FN:${name || 'Rentals Philly'}`,
-    `ORG:Rentals Philly · Skale Real Estate`,
+    `ORG:Rentals Philly`,
     phone ? `TEL;TYPE=CELL,VOICE:${phone}` : '',
     'END:VCARD',
   ].filter(Boolean).join('\r\n');
