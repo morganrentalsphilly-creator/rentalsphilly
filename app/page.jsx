@@ -459,6 +459,26 @@ const downloadLeadsCsv = (leads) => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
+// Open Google Maps with all of today's tour addresses as a routed trip.
+// Takes the first address as origin and chains the rest as waypoints —
+// the result is a single Maps URL the agent can drive from start to finish.
+const openTourRoute = (tours) => {
+  const addrs = (tours || [])
+    .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
+    .flatMap((t) => (t.listings || []).map((l) => l.address).filter(Boolean));
+  if (addrs.length === 0) return;
+  if (addrs.length === 1) {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addrs[0])}`, '_blank');
+    return;
+  }
+  // Multi-stop: Google Maps URL with origin → waypoints → destination.
+  const origin = encodeURIComponent(addrs[0]);
+  const destination = encodeURIComponent(addrs[addrs.length - 1]);
+  const waypoints = addrs.slice(1, -1).map(encodeURIComponent).join('|');
+  const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints ? `&waypoints=${waypoints}` : ''}&travelmode=driving`;
+  window.open(url, '_blank');
+};
+
 // Generate + download an .ics file for a single tour so it can be added to
 // Google Calendar / Apple Calendar with one tap.
 const downloadIcsForTour = (tour) => {
@@ -734,6 +754,76 @@ function timeAgo(iso) {
   if (days < 7) return `${days}d ago`;
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
+
+// Compute the "health" of a lead — an at-a-glance status that combines
+// engagement and time-in-stage. Returns:
+//   { status, label, tone, days }
+// status:
+//   'hot'    → multiple inbound replies recently, actively engaged
+//   'stuck'  → > 7 days in current stage, no recent inbound activity
+//   'cold'   → > 14 days since any activity (inbound OR outbound)
+//   'fresh'  → < 24 hours old
+//   'normal' → none of the above
+//
+// Stage transitions reset the clock by using createdAt + last stage-change
+// activity as the reference points.
+function leadHealth(lead) {
+  const now = Date.now();
+  const created = new Date(lead.createdAt || now).getTime();
+  const ageMs = now - created;
+  const ageDays = Math.floor(ageMs / 86400000);
+
+  const msgs = (lead.messages || []).filter((m) => !m.internal);
+  const inbound = msgs.filter((m) => m.direction === 'inbound');
+  const lastMsg = msgs[msgs.length - 1];
+  const lastMsgAt = lastMsg ? new Date(lastMsg.timestamp).getTime() : created;
+  const daysSinceMsg = Math.floor((now - lastMsgAt) / 86400000);
+
+  // Days since the most recent stage-change activity (or createdAt if none).
+  const stageChanges = (lead.activities || []).filter((a) =>
+    a.type === 'stage-changed' || a.type === 'stage-advanced' || a.type === 'lead-created'
+  );
+  const lastStageChange = stageChanges[stageChanges.length - 1];
+  const stageEnteredAt = lastStageChange
+    ? new Date(lastStageChange.timestamp).getTime()
+    : created;
+  const daysInStage = Math.floor((now - stageEnteredAt) / 86400000);
+
+  // Don't flag won/lost — they're terminal.
+  if (['leased', 'paid', 'lost', 'archived'].includes(lead.stage)) {
+    return { status: 'normal', label: '', tone: '', days: daysInStage };
+  }
+
+  // FRESH: < 24h old
+  if (ageMs < 24 * 60 * 60 * 1000) {
+    return { status: 'fresh', label: 'New', tone: 'positive', days: 0 };
+  }
+
+  // HOT: ≥ 2 inbound messages AND last inbound was within last 48h
+  const recentInbound = inbound.filter((m) => now - new Date(m.timestamp).getTime() < 48 * 60 * 60 * 1000);
+  if (inbound.length >= 2 && recentInbound.length >= 1) {
+    return { status: 'hot', label: 'Engaged', tone: 'warning', days: daysInStage };
+  }
+
+  // COLD: no activity in 14+ days
+  if (daysSinceMsg >= 14) {
+    return { status: 'cold', label: 'Cold', tone: 'neutral', days: daysSinceMsg };
+  }
+
+  // STUCK: > 7 days in current stage, last message was outbound (waiting on them)
+  if (daysInStage > 7 && (!lastMsg || lastMsg.direction === 'outbound')) {
+    return { status: 'stuck', label: `Stuck ${daysInStage}d`, tone: 'danger', days: daysInStage };
+  }
+
+  return { status: 'normal', label: '', tone: '', days: daysInStage };
+}
+
+const HEALTH_TONE_CLASS = {
+  positive: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+  warning: 'bg-amber-100 text-amber-800 border-amber-300',
+  danger: 'bg-red-100 text-red-800 border-red-300',
+  neutral: 'bg-slate-100 text-slate-700 border-slate-300',
+};
 
 // ============================================================
 // REUSABLE UI PRIMITIVES
@@ -3782,7 +3872,94 @@ function GlobalSearch({ search, setSearch, leads, onSelectLead, onSelectTour }) 
 // TODAY VIEW — at-a-glance morning brief: tasks, tours, replies, hot leads.
 // One screen for "what do I need to do right now?"
 // ============================================================
-function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, onSelectLead, updateLead, showToast, setSubview }) {
+// Setup checklist — shows on Today view while critical settings are missing.
+// Dismisses itself once everything's filled in. Auto-detects from settings.
+function SetupChecklist({ settings, setSubview }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || !settings) return null;
+
+  const items = [
+    {
+      key: 'agentName',
+      label: 'Set your agent name',
+      done: !!(settings.agentName && settings.agentName !== '[Your name]' && settings.agentName.trim()),
+      hint: 'Used in welcome messages + email signatures',
+    },
+    {
+      key: 'agentPhone',
+      label: 'Add your phone number',
+      done: !!(settings.agentPhone && settings.agentPhone.length >= 7),
+      hint: 'Shown to leads on the booking confirmation',
+    },
+    {
+      key: 'agentEmail',
+      label: 'Add your reply-to email',
+      done: !!(settings.agentEmail && /.+@.+\..+/.test(settings.agentEmail)),
+      hint: 'Where leads can reach you outside SMS',
+    },
+    {
+      key: 'twilioNumber',
+      label: 'Set your Twilio sending number',
+      done: !!(settings.twilioNumber && settings.twilioNumber.length >= 7),
+      hint: 'The number SMS messages are sent from',
+    },
+    {
+      key: 'emailSignature',
+      label: 'Add an email signature',
+      done: !!(settings.emailSignature && settings.emailSignature.trim().length > 5),
+      hint: 'Auto-appended to outbound emails from the inbox',
+    },
+    {
+      key: 'shifts',
+      label: 'Add tour availability shifts',
+      done: Array.isArray(settings.agent_availability?.shifts) && settings.agent_availability.shifts.length > 0,
+      hint: 'Open windows leads see when booking tours',
+    },
+  ];
+
+  const doneCount = items.filter((i) => i.done).length;
+  const allDone = doneCount === items.length;
+  if (allDone) return null;
+
+  return (
+    <Card className="p-4 border-2" style={{ borderColor: 'var(--brand-gold)', backgroundColor: 'var(--brand-gold-soft)' }}>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="font-semibold text-slate-900 text-sm inline-flex items-center gap-2">
+            <Sparkles className="w-4 h-4" style={{ color: 'var(--brand-gold)' }} />
+            Finish setup
+          </div>
+          <div className="text-xs text-slate-700 mt-0.5">
+            {doneCount} of {items.length} done. A few quick fields and you&apos;re launch-ready.
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setSubview('settings')} className="text-xs font-semibold px-3 py-1.5 rounded-full text-white" style={{ backgroundColor: 'var(--brand-gold)' }}>
+            Go to settings →
+          </button>
+          <button onClick={() => setDismissed(true)} className="text-slate-400 hover:text-slate-700" title="Hide for now">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div className="space-y-1">
+        {items.map((item) => (
+          <div key={item.key} className="flex items-center gap-2 text-xs">
+            {item.done ? (
+              <span className="w-4 h-4 rounded-full bg-emerald-500 text-white inline-flex items-center justify-center shrink-0 text-[10px]">✓</span>
+            ) : (
+              <span className="w-4 h-4 rounded-full border-2 border-slate-300 shrink-0" />
+            )}
+            <span className={item.done ? 'text-slate-500 line-through' : 'text-slate-900 font-medium'}>{item.label}</span>
+            <span className="text-slate-500 hidden sm:inline">— {item.hint}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, onSelectLead, updateLead, showToast, setSubview, settings }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
@@ -3875,6 +4052,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
         </div>
       </div>
 
+      {/* Setup checklist — only renders while there's outstanding setup */}
+      <SetupChecklist settings={settings} setSubview={setSubview} />
+
       {empty && (
         <Card className="p-8 text-center">
           <Sparkles className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--brand-gold)' }} />
@@ -3920,17 +4100,35 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
           <SectionHeader icon={CalendarDays}>Tours</SectionHeader>
           {toursToday.length > 0 && (
             <div className="space-y-1.5">
-              <div className="text-[10px] uppercase tracking-wider font-semibold text-emerald-700">Today · {toursToday.length}</div>
-              {toursToday.map((t) => (
-                <button key={t.id} onClick={() => onSelectLead(t.lead.id)} className="w-full text-left flex items-center gap-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100">
-                  <div className="font-bold text-sm tabular-nums shrink-0 w-20 text-emerald-900">{t.time}</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-900 truncate">{t.lead.fullName}</div>
-                    <div className="text-xs text-slate-600 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(' · ')}</div>
-                  </div>
-                  {t.lead.phone && <a href={`tel:${t.lead.phone}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900"><Phone className="w-4 h-4" /></a>}
+              <div className="flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-emerald-700">Today · {toursToday.length}</div>
+                <button
+                  onClick={() => openTourRoute(toursToday)}
+                  className="text-[10px] font-medium text-emerald-700 hover:text-emerald-900 underline inline-flex items-center gap-1"
+                  title="Open all stops in Google Maps as one route"
+                >
+                  <MapPin className="w-3 h-3" /> Route in Maps
                 </button>
-              ))}
+              </div>
+              {toursToday.map((t) => {
+                const firstAddr = (t.listings || []).map((l) => l.address).filter(Boolean)[0];
+                const mapsUrl = firstAddr ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(firstAddr)}` : null;
+                return (
+                  <button key={t.id} onClick={() => onSelectLead(t.lead.id)} className="w-full text-left flex items-center gap-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100">
+                    <div className="font-bold text-sm tabular-nums shrink-0 w-20 text-emerald-900">{t.time}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-900 truncate">{t.lead.fullName}</div>
+                      <div className="text-xs text-slate-600 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(' · ')}</div>
+                    </div>
+                    {mapsUrl && (
+                      <a href={mapsUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Open directions">
+                        <MapPin className="w-4 h-4" />
+                      </a>
+                    )}
+                    {t.lead.phone && <a href={`tel:${t.lead.phone}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Call lead"><Phone className="w-4 h-4" /></a>}
+                  </button>
+                );
+              })}
             </div>
           )}
           {toursTomorrow.length > 0 && (
@@ -4241,6 +4439,7 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
           updateLead={updateLead}
           showToast={showToast}
           setSubview={setSubview}
+          settings={settings}
         />
       )}
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} updateLead={updateLead} settings={settings} showToast={showToast} />}
@@ -4725,7 +4924,10 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
       stageFilter === 'all' ? true :
       stageFilter === 'active' ? !['leased', 'lost', 'archived'].includes(l.stage) :
       l.stage === stageFilter;
-    const matchSearch = !search || l.fullName.toLowerCase().includes(search.toLowerCase()) || l.email.toLowerCase().includes(search.toLowerCase());
+    const q = (search || '').toLowerCase();
+    const matchSearch = !q ||
+      (l.fullName || '').toLowerCase().includes(q) ||
+      (l.email || '').toLowerCase().includes(q);
     return matchBucket && matchStage && matchSearch;
   });
 
@@ -7300,6 +7502,15 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                           </button>
                         )}
                       </div>
+                      {(() => {
+                        const h = leadHealth(lead);
+                        if (!h.label) return null;
+                        return (
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border mb-1.5 ${HEALTH_TONE_CLASS[h.tone] || HEALTH_TONE_CLASS.neutral}`}>
+                            {h.label}
+                          </span>
+                        );
+                      })()}
                       <div className="text-[11px] text-slate-500 mb-1 truncate">
                         {lead.budgetMin && lead.budgetMax
                           ? `${fmtCurrency(Number(lead.budgetMin))}–${fmtCurrency(Number(lead.budgetMax))}`
