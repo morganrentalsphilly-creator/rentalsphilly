@@ -8211,6 +8211,10 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
     : null);
 
   if (picks.length === 0) return null;   // hidden until lead picks properties
+  // Also hide for late-stage leads — by the time you're at applied+, the
+  // scheduling-link conversation is over.
+  const lateStages = ['applied', 'leased', 'paid', 'lost', 'archived'];
+  if (lateStages.includes(lead.stage || '')) return null;
 
   const onSend = async () => {
     if (!curatedUrl) {
@@ -8331,6 +8335,13 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
   const [busy, setBusy] = useState(false);
   const alreadySent = !!lead.curatedLinkSentAt;
   const firstName = (lead.fullName || '').split(' ')[0];
+
+  // Hide once the lead has moved past the early discovery phase. Past `applied`
+  // the curated link panel is just noise on the Overview screen — the lead has
+  // already picked properties and you're working the application/landlord side.
+  // Same for lost / archived leads.
+  const earlyStages = ['new', 'matched', 'tour-requested', 'tour-booked', 'post-tour'];
+  if (!earlyStages.includes(lead.stage || 'new')) return null;
 
   const onSend = async () => {
     const cleanUrl = url.trim();
