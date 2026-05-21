@@ -5057,7 +5057,7 @@ function NeedsAttentionCard({ leads, onSelectLead }) {
 //   11 cadence-due touches
 //
 // We cap at 10 items so the queue stays scannable.
-function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubview }) {
+function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubview, updateLead, showToast }) {
   const items = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const now = Date.now();
@@ -5117,6 +5117,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
       out.push({
         id: `task-${task.id}`,
         leadId: lead.id,
+        taskId: task.id,
         priority: 3,
         kind: 'task',
         leadName: lead.fullName,
@@ -5133,6 +5134,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
       out.push({
         id: `task-${task.id}`,
         leadId: lead.id,
+        taskId: task.id,
         priority: task.priority === 'high' ? 6 : 9,
         kind: 'task',
         leadName: lead.fullName,
@@ -5292,11 +5294,33 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         {items.map((item, idx) => {
           const tone = TONE[item.tone] || TONE.slate;
           const Icon = item.icon;
+          const lead = leads.find((l) => l.id === item.leadId);
+          const phone = lead?.phone;
+          const completeTask = async (e) => {
+            e.stopPropagation();
+            if (!lead || !item.taskId) return;
+            const tasks = (lead.tasks || []).map((t) =>
+              t.id === item.taskId ? { ...t, status: 'done', completedAt: new Date().toISOString() } : t
+            );
+            await updateLead(lead.id, {
+              tasks,
+              activities: [...(lead.activities || []), {
+                id: `a_${Date.now()}`,
+                type: 'task-completed',
+                timestamp: new Date().toISOString(),
+                message: `Task completed: ${item.action}`,
+              }],
+            });
+            showToast('Task completed');
+          };
           return (
-            <button
+            <div
               key={item.id}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelectLead(item.leadId)}
-              className={`w-full text-left flex items-start gap-3 p-2.5 rounded-lg border ${tone.bg} ${tone.border} hover:brightness-95 active:scale-[0.99] transition`}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectLead(item.leadId); } }}
+              className={`w-full text-left flex items-start gap-3 p-2.5 rounded-lg border ${tone.bg} ${tone.border} hover:brightness-95 active:scale-[0.99] transition cursor-pointer`}
             >
               <div className="flex flex-col items-center gap-0.5 shrink-0 pt-0.5">
                 <div className="text-[10px] font-bold tabular-nums text-slate-400 leading-none">{idx + 1}</div>
@@ -5311,10 +5335,123 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
                 </div>
                 <div className="text-[11px] text-slate-500 truncate">{item.subtitle}</div>
               </div>
-              <div className="shrink-0 flex flex-col items-end gap-0.5">
-                <div className="text-[10px] text-slate-400 tabular-nums">{item.meta}</div>
-                <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+              <div className="shrink-0 flex items-center gap-1">
+                {item.kind === 'task' && (
+                  <button
+                    onClick={completeTask}
+                    title="Mark task complete"
+                    className="w-7 h-7 rounded-full bg-white border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50 flex items-center justify-center transition"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-slate-400 hover:text-emerald-600" />
+                  </button>
+                )}
+                {phone && (item.kind === 'tour' || item.kind === 'reply' || item.kind === 'stuck') && (
+                  <a
+                    href={`tel:${phone}`}
+                    onClick={(e) => e.stopPropagation()}
+                    title={`Call ${item.leadName}`}
+                    className="w-7 h-7 rounded-full bg-white border border-slate-200 hover:border-blue-500 hover:bg-blue-50 flex items-center justify-center transition"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-slate-500" />
+                  </a>
+                )}
+                <div className="flex flex-col items-end gap-0.5 ml-1">
+                  <div className="text-[10px] text-slate-400 tabular-nums">{item.meta}</div>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+                </div>
               </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// Today's Wins — small rolling log of outbound activity from today. Pure
+// momentum visualization: no decisions, no actions, just a quiet celebration
+// of what's been moving. Surfaces at the bottom of Today so the day's effort
+// is always visible.
+function TodaysWinsCard({ leads, onSelectLead }) {
+  const wins = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const out = [];
+    for (const lead of leads) {
+      // Outbound messages today
+      for (const msg of (lead.messages || [])) {
+        if (msg.direction !== 'outbound') continue;
+        if (msg.internal) continue;
+        if (!(msg.timestamp || '').startsWith(todayStr)) continue;
+        out.push({
+          id: `m-${msg.id}`,
+          ts: msg.timestamp,
+          leadId: lead.id,
+          leadName: lead.fullName,
+          kind: msg.channel === 'email' ? 'email' : 'sms',
+          label: msg.channel === 'email' ? 'Sent email' : 'Sent text',
+          excerpt: (msg.body || '').slice(0, 60),
+        });
+      }
+      // Stage advancements today
+      for (const act of (lead.activities || [])) {
+        if (!(act.timestamp || '').startsWith(todayStr)) continue;
+        if (act.type === 'stage-changed' || act.type === 'lease-signed' || act.type === 'tour-booked' || act.type === 'tour-completed') {
+          out.push({
+            id: `a-${act.id}`,
+            ts: act.timestamp,
+            leadId: lead.id,
+            leadName: lead.fullName,
+            kind: 'milestone',
+            label: act.message || act.type,
+            excerpt: '',
+          });
+        }
+      }
+    }
+    return out.sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 8);
+  }, [leads]);
+
+  if (wins.length === 0) return null;
+
+  const ICON_FOR = {
+    sms: MessageSquare,
+    email: Mail,
+    milestone: Sparkles,
+  };
+  const TONE_FOR = {
+    sms: 'text-blue-600',
+    email: 'text-violet-600',
+    milestone: 'text-emerald-600',
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+        <div className="text-sm font-semibold text-slate-900">Today's wins</div>
+        <div className="text-[10px] text-slate-500">{wins.length}</div>
+      </div>
+      <div className="space-y-1">
+        {wins.map((w) => {
+          const Icon = ICON_FOR[w.kind] || CheckCircle2;
+          const tone = TONE_FOR[w.kind] || 'text-slate-500';
+          const t = new Date(w.ts);
+          const timeLabel = t.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          return (
+            <button
+              key={w.id}
+              onClick={() => onSelectLead(w.leadId)}
+              className="w-full text-left flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-slate-50"
+            >
+              <Icon className={`w-3.5 h-3.5 shrink-0 ${tone}`} />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-slate-900 truncate">
+                  <span className="font-medium">{w.label}</span>
+                  <span className="text-slate-500"> · {w.leadName}</span>
+                </div>
+                {w.excerpt && <div className="text-[10px] text-slate-400 truncate">{w.excerpt}</div>}
+              </div>
+              <div className="text-[10px] text-slate-400 tabular-nums shrink-0">{timeLabel}</div>
             </button>
           );
         })}
@@ -5431,6 +5568,8 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
         todayTasks={todayTasks}
         onSelectLead={onSelectLead}
         setSubview={setSubview}
+        updateLead={updateLead}
+        showToast={showToast}
       />
 
       {/* Touch tracker — daily + weekly outbound activity counter */}
@@ -5552,6 +5691,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* CADENCE DUE — leads hitting their per-stage touch interval */}
       <CadenceDueCard leads={leads} onSelectLead={onSelectLead} />
+
+      {/* TODAY'S WINS — rolling log of today's outbound activity for momentum */}
+      <TodaysWinsCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* ACTIONS */}
       {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
