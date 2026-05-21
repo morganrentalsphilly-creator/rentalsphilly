@@ -49,6 +49,11 @@ export async function GET(request) {
   const tasks = tasksRes.data || [];
   const settings = settingsRes.data || {};
 
+  // Master automation switch — if off, skip the whole daily summary.
+  if (settings.automation?.enabled === false) {
+    return NextResponse.json({ ok: true, skipped: 'automation master switch off' });
+  }
+
   // Compute the sections.
   const newLeadsNoCurate = leads.filter((l) =>
     l.stage === 'new' && !l.raw?.curated_link_sent_at

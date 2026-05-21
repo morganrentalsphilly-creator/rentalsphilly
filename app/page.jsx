@@ -1959,22 +1959,30 @@ export default function App() {
     }
 
     // Fire welcome email + SMS through the server wrappers. Each wrapper
-    // inserts its own messages row with delivery_status tracking.
-    const emailResult = await sendEmail({
-      leadId: id,
-      subject: finalEmailSubject,
-      body: finalEmailBody,
-      kind: 'welcome',
-      idempotencyKey: `welcome-email-${id}`,
-      automated: true,
-    });
-    const smsResult = await sendSMS({
-      leadId: id,
-      body: finalSms,
-      kind: 'welcome',
-      idempotencyKey: `welcome-${id}`,
-      automated: true,
-    });
+    // inserts its own messages row with delivery_status tracking. Both gated
+    // behind Settings → Automation: master switch + welcomeMessages toggle.
+    const welcomeOn =
+      settings.automation?.enabled !== false &&
+      settings.automation?.welcomeMessages !== false;
+    const emailResult = welcomeOn
+      ? await sendEmail({
+          leadId: id,
+          subject: finalEmailSubject,
+          body: finalEmailBody,
+          kind: 'welcome',
+          idempotencyKey: `welcome-email-${id}`,
+          automated: true,
+        })
+      : { ok: false, skipped: 'welcome automation off' };
+    const smsResult = welcomeOn
+      ? await sendSMS({
+          leadId: id,
+          body: finalSms,
+          kind: 'welcome',
+          idempotencyKey: `welcome-${id}`,
+          automated: true,
+        })
+      : { ok: false, skipped: 'welcome automation off' };
 
     // Notify the agent of the new lead (if enabled in Settings → Notifications).
     // Uses sendEmail with the agent's email as `to` and no leadId — keeps it
@@ -7348,20 +7356,6 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
           desc="If a lead goes quiet at a key step (got the curated link but hasn't picked properties at 48h; got the scheduling link but hasn't picked times at 48h; post-tour silence at 48h and 5 days) — automatically text a friendly nudge. Each lead gets each nudge once."
           value={form.automation?.autoNudgeNoResponse !== false}
           onChange={(v) => updateAutomation('autoNudgeNoResponse', v)}
-          disabled={form.automation?.enabled === false}
-        />
-        <AutomationRow
-          name="Daily morning summary"
-          desc="At 7 AM ET each day, email you a brief listing: new leads needing curation, leads who requested tours, conversations awaiting your reply, today's + tomorrow's tours, and overdue tasks. Sends to morganrentalsphilly@gmail.com."
-          value={form.automation?.dailySummary !== false}
-          onChange={(v) => updateAutomation('dailySummary', v)}
-          disabled={form.automation?.enabled === false}
-        />
-        <AutomationRow
-          name="Auto-archive stale leads"
-          desc="After 30 days of no activity (no messages from you OR them), automatically move the lead to 'archived' so they fall out of the active inbox. They stay in the database — you can always un-archive."
-          value={form.automation?.autoArchiveStale !== false}
-          onChange={(v) => updateAutomation('autoArchiveStale', v)}
           disabled={form.automation?.enabled === false}
         />
       </Card>

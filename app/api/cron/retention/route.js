@@ -33,6 +33,14 @@ export async function GET(request) {
     return new NextResponse('Unauthorized', { status: 401 });
   }
   const db = supabaseAdmin();
+
+  // Honor the global automation master switch. If it's off, the whole
+  // referral / anniversary cron sits quiet.
+  const { data: settingsRow } = await db.from('settings').select('automation').eq('id', 1).single();
+  if (settingsRow?.automation?.enabled === false) {
+    return NextResponse.json({ ok: true, skipped: 'automation master switch off' });
+  }
+
   const { data: leads, error } = await db
     .from('leads')
     .select('id, full_name, phone, move_in_date, opted_out, stage, raw, created_at')

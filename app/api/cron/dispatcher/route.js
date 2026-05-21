@@ -434,12 +434,26 @@ export async function GET(request) {
     return new NextResponse('Unauthorized', { status: 401 });
   }
   const db = supabaseAdmin();
-  const reminders = await runReminders(db);
+
+  // Read the global automation toggles from settings. Each toggle short-circuits
+  // the corresponding sub-task. The master switch (`automation.enabled`) bails
+  // out of everything at once — useful as an emergency "pause everything" stop.
+  // Outbound transactional sends like blast drain still flow because those are
+  // user-initiated, not automated nudges. Default is "enabled" if the setting
+  // hasn't been written yet (back-compat with installs predating these toggles).
+  const { data: settingsRow } = await db.from('settings').select('automation').eq('id', 1).single();
+  const auto = settingsRow?.automation || {};
+  const automationOn = auto.enabled !== false;
+  const remindersOn = automationOn && auto.tourReminders !== false;
+  const nudgesOn = automationOn && auto.autoNudgeNoResponse !== false;
+  const autoCompleteOn = automationOn && auto.autoCompleteTours !== false;
+
+  const reminders = remindersOn ? await runReminders(db) : { skipped: 'tourReminders disabled' };
   const blast = await runBlastDrain(db);
-  const nudges = await runStageNudges(db);
-  const tourOutcomes = await runTourOutcomePrompts(db);
-  console.log('[cron] dispatcher tick', { reminders, blast, nudges, tourOutcomes });
-  return NextResponse.json({ ok: true, reminders, blast, nudges, tourOutcomes });
+  const nudges = nudgesOn ? await runStageNudges(db) : { skipped: 'autoNudgeNoResponse disabled' };
+  const tourOutcomes = autoCompleteOn ? await runTourOutcomePrompts(db) : { skipped: 'autoCompleteTours disabled' };
+  console.log('[cron] dispatcher tick', { automationOn, reminders, blast, nudges, tourOutcomes });
+  return NextResponse.json({ ok: true, automationOn, reminders, blast, nudges, tourOutcomes });
 }
 
 // Allow POST too so it's easy to test from curl with a bearer header.
