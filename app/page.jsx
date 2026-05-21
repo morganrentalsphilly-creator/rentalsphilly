@@ -849,6 +849,14 @@ const HEALTH_TONE_CLASS = {
   neutral: 'bg-slate-100 text-slate-700 border-slate-300',
 };
 
+// True when the lead is snoozed and the snooze hasn't expired yet. Used to
+// hide leads from Today + Pipeline + Needs Attention so they don't clutter.
+function isLeadSnoozed(lead) {
+  const until = lead?.raw?.snoozed_until;
+  if (!until) return false;
+  return new Date(until) > new Date();
+}
+
 // ============================================================
 // REUSABLE UI PRIMITIVES
 // ============================================================
@@ -4213,6 +4221,7 @@ function TourPrepBriefing({ leadId, tourId }) {
 function NeedsAttentionCard({ leads, onSelectLead }) {
   const flagged = useMemo(() => {
     return leads
+      .filter((l) => !isLeadSnoozed(l))
       .map((l) => ({ lead: l, health: leadHealth(l) }))
       .filter(({ health }) => health.status === 'stuck' || health.status === 'cold')
       .sort((a, b) => b.health.days - a.health.days)
@@ -4259,9 +4268,11 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
   const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
   // Bundle leads with their most-recent inbound message into "needs reply".
+  // Skip snoozed leads so they don't keep nagging.
   const needsReply = useMemo(() => {
     const out = [];
     for (const lead of leads) {
+      if (isLeadSnoozed(lead)) continue;
       const msgs = (lead.messages || []).filter((m) => !m.internal);
       const last = msgs[msgs.length - 1];
       if (last && last.direction === 'inbound') out.push({ lead, last });
@@ -4269,10 +4280,13 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
     return out.sort((a, b) => new Date(b.last.timestamp) - new Date(a.last.timestamp));
   }, [leads]);
 
+  // Snoozed leads stay out of Today action surfaces (tours still surface).
+  const activeLeads = useMemo(() => leads.filter((l) => !isLeadSnoozed(l)), [leads]);
+
   const newLeadsNoCurate = useMemo(() =>
-    leads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [leads]);
+    activeLeads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [activeLeads]);
   const tourRequested = useMemo(() =>
-    leads.filter((l) => l.stage === 'tour-requested'), [leads]);
+    activeLeads.filter((l) => l.stage === 'tour-requested'), [activeLeads]);
 
   const toursToday = useMemo(() =>
     leads.flatMap((l) => (l.tours || [])
@@ -7372,6 +7386,8 @@ function LeadActivityTimeline({ lead }) {
 function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
   const [open, setOpen] = useState(false);
   const isArchived = lead.stage === 'archived';
+  const snoozedUntil = lead.raw?.snoozed_until;
+  const isSnoozed = snoozedUntil && new Date(snoozedUntil) > new Date();
 
   const setStage = async (newStage, label) => {
     await updateLead(lead.id, {
@@ -7383,6 +7399,32 @@ function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
       }],
     });
     showToast(`Marked ${label.toLowerCase()}`);
+    setOpen(false);
+  };
+
+  const snooze = async (days) => {
+    const until = new Date(Date.now() + days * 86400000);
+    await updateLead(lead.id, {
+      raw: { ...(lead.raw || {}), snoozed_until: until.toISOString() },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`, type: 'snoozed',
+        timestamp: new Date().toISOString(),
+        message: `Snoozed for ${days} day${days === 1 ? '' : 's'}`,
+      }],
+    });
+    showToast(`Snoozed ${days} day${days === 1 ? '' : 's'}`);
+    setOpen(false);
+  };
+  const unsnooze = async () => {
+    await updateLead(lead.id, {
+      raw: { ...(lead.raw || {}), snoozed_until: null },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`, type: 'unsnoozed',
+        timestamp: new Date().toISOString(),
+        message: `Unsnoozed`,
+      }],
+    });
+    showToast('Unsnoozed');
     setOpen(false);
   };
 
@@ -7419,7 +7461,25 @@ function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
       {open && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-9 z-40 bg-white border border-slate-200 rounded-xl shadow-xl min-w-[200px] py-1">
+          <div className="absolute right-0 top-9 z-40 bg-white border border-slate-200 rounded-xl shadow-xl min-w-[220px] py-1">
+            {isSnoozed ? (
+              <button onClick={unsnooze} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+                <Bell className="w-3.5 h-3.5 text-amber-500" /> Unsnooze
+                <span className="text-[10px] text-slate-400 ml-auto">until {new Date(snoozedUntil).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+              </button>
+            ) : (
+              <div className="px-3 py-1.5">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-1">Snooze</div>
+                <div className="flex flex-wrap gap-1">
+                  {[1, 3, 7, 14, 30].map((d) => (
+                    <button key={d} onClick={() => snooze(d)} className="px-2 py-1 text-[11px] rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700">
+                      {d}d
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="border-t border-slate-100 my-1" />
             {!isArchived && (
               <button onClick={() => setStage('archived', 'Archived')} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
                 <Inbox className="w-3.5 h-3.5 text-slate-400" /> Archive lead
@@ -7477,6 +7537,11 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
             {lead.screening?.status === 'completed' && <Pill tone="accent" icon={Shield}>Screened</Pill>}
             {lead.application && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
             {submissionCount > 0 && <Pill tone="info">{submissionCount} {submissionCount === 1 ? 'submission' : 'submissions'}</Pill>}
+            {isLeadSnoozed(lead) && (
+              <Pill tone="warning" icon={Bell}>
+                Snoozed until {new Date(lead.raw.snoozed_until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </Pill>
+            )}
             {(lead.tags || []).map((t) => (
               <span key={t} className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${tagTone(t)}`}>
                 {t}
@@ -9386,7 +9451,85 @@ function IntegrationsView() {
         nothing is actually being delivered — Twilio + Resend run as no-ops so you can build safely.
         To go live, set <span className="font-mono">ENABLE_REAL_SENDING=true</span> in Vercel and redeploy.
       </div>
+
+      {/* iCal calendar subscribe URL */}
+      <CalendarFeedCard />
     </div>
+  );
+}
+
+// Card showing the iCal subscribe URL for tours. The URL is token-gated;
+// rotate generates a new token (invalidates the old one).
+function CalendarFeedCard() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch('/api/calendar/feed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: data?.token || '' }),
+      });
+      const json = await res.json();
+      if (json.ok) setData(json);
+      else alert(`Couldn't generate: ${json.error || res.status}`);
+    } catch (err) {
+      alert(err.message);
+    }
+    setBusy(false);
+  };
+
+  const copy = async () => {
+    if (!data?.url) return;
+    try { await navigator.clipboard.writeText(data.url); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch {}
+  };
+
+  return (
+    <Card className="p-5 space-y-3">
+      <SectionHeader icon={CalendarDays}>Calendar feed</SectionHeader>
+      <div className="text-sm text-slate-600 leading-relaxed">
+        Subscribe to a live calendar feed of every tour. Once you add the URL in Apple Calendar or Google Calendar, every future tour automatically appears on your phone — no manual sync.
+      </div>
+
+      {!data && (
+        <Button size="md" onClick={generate} disabled={busy} icon={CalendarDays}>
+          {busy ? 'Generating…' : 'Generate subscribe URL'}
+        </Button>
+      )}
+
+      {data && (
+        <>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 font-mono text-[11px] text-slate-700 break-all">
+            {data.url}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={copy} icon={copied ? Check : ClipboardPaste}>
+              {copied ? 'Copied!' : 'Copy URL'}
+            </Button>
+            <button
+              onClick={generate}
+              disabled={busy}
+              className="text-xs text-slate-500 hover:text-slate-900 underline"
+              title="Generate a new token — invalidates the old URL"
+            >
+              {busy ? 'Rotating…' : 'Rotate token'}
+            </button>
+          </div>
+          <div className="text-[11px] text-slate-500 leading-relaxed bg-blue-50 border border-blue-200 rounded-lg p-3">
+            <div className="font-semibold text-blue-900 mb-1">How to subscribe</div>
+            <div className="space-y-1">
+              <div><strong>Apple Calendar (iPhone):</strong> Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar → paste the URL.</div>
+              <div><strong>Apple Calendar (Mac):</strong> File → New Calendar Subscription → paste the URL.</div>
+              <div><strong>Google Calendar:</strong> Settings → Add calendar → From URL → paste the URL.</div>
+              <div className="text-slate-500">Refresh interval: ~15 minutes. Tours show up automatically as they&apos;re booked.</div>
+            </div>
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 
