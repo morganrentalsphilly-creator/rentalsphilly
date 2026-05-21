@@ -13,8 +13,34 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Rentals Philly",
-  description: "Find your next Philly rental — handpicked listings, real showings, real fast.",
+  title: "Rentals Philly — Hand-picked Philly rentals, scheduled by text",
+  description: "Tell us what you want. A real agent hand-picks rentals that fit, books your tours, and follows up. No endless scrolling.",
+  openGraph: {
+    title: "Rentals Philly",
+    description: "Hand-picked Philadelphia rentals. Real agent. Booked by text.",
+    url: "https://rentalsphilly.vercel.app",
+    siteName: "Rentals Philly",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Rentals Philly",
+    description: "Hand-picked Philadelphia rentals. Real agent. Booked by text.",
+  },
+  // Apple touch icon falls back to /apple-icon if you add one in /public
+  appleWebApp: {
+    title: "Rentals Philly",
+    statusBarStyle: "default",
+    capable: true,
+  },
+};
+
+// Force mobile viewport handling: prevent maximum-scale=1 (Apple rejects forms
+// that block pinch zoom for accessibility) but ensure correct width.
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#b58e54",
 };
 
 export default function RootLayout({

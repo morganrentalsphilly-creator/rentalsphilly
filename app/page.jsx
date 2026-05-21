@@ -2751,18 +2751,22 @@ function BudgetRange({ min, max, onChange, lo = 500, hi = 5000, step = 100 }) {
       </div>
 
       <style>{`
-        /* WebKit thumb */
+        /* WebKit thumb — 28px diameter for comfortable thumb tap on mobile */
         .budget-range::-webkit-slider-thumb {
           appearance: none;
-          width: 22px;
-          height: 22px;
+          width: 28px;
+          height: 28px;
           background: #fff;
-          border: 2.5px solid #0f172a;
+          border: 3px solid #0f172a;
           border-radius: 9999px;
           cursor: pointer;
           pointer-events: auto;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-          margin-top: -10px;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+          margin-top: -13px;
+          transition: transform 0.1s ease;
+        }
+        .budget-range::-webkit-slider-thumb:active {
+          transform: scale(1.15);
         }
         .budget-range::-webkit-slider-runnable-track {
           height: 2px;
@@ -2770,14 +2774,14 @@ function BudgetRange({ min, max, onChange, lo = 500, hi = 5000, step = 100 }) {
         }
         /* Firefox */
         .budget-range::-moz-range-thumb {
-          width: 22px;
-          height: 22px;
+          width: 28px;
+          height: 28px;
           background: #fff;
-          border: 2.5px solid #0f172a;
+          border: 3px solid #0f172a;
           border-radius: 9999px;
           cursor: pointer;
           pointer-events: auto;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+          box-shadow: 0 2px 6px rgba(0,0,0,0.2);
         }
         .budget-range::-moz-range-track {
           height: 2px;
@@ -2907,6 +2911,7 @@ function AreasPicker({ value, onChange }) {
 
 function IntakeForm({ onSubmit, onBack }) {
   const [step, setStep] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
     moveInDate: '', budgetMin: '', budgetMax: '',
@@ -2915,6 +2920,29 @@ function IntakeForm({ onSubmit, onBack }) {
     source: '',
   });
   const update = (k, v) => setData({ ...data, [k]: v });
+
+  // ---- Persist progress to localStorage ----
+  // Mobile users sometimes get a phone call or tab eviction mid-form.
+  // We save after every change and restore on mount so they don't lose work.
+  // Cleared on successful submit.
+  const STORAGE_KEY = 'rp_intake_draft_v1';
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved?.data) setData((d) => ({ ...d, ...saved.data }));
+        if (typeof saved?.step === 'number') setStep(saved.step);
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, step, ts: Date.now() }));
+    } catch {}
+  }, [data, step]);
 
   // Pre-fill source from ?ref= query param (e.g. /?ref=instagram tags lead
   // source as Instagram). Capitalize first letter for display. Falls back to
@@ -2931,6 +2959,16 @@ function IntakeForm({ onSubmit, onBack }) {
     } catch {}
   }, []);
 
+  // Mobile-input helper — applies all the carrier-specific attributes that
+  // make iOS / Android keyboards behave correctly. Without these, iOS shows
+  // the alphabetic keyboard for "phone" type, autocaps "Email", etc.
+  const inputProps = {
+    fullName: { autoComplete: 'name', autoCapitalize: 'words', enterKeyHint: 'next', spellCheck: 'false' },
+    email:    { autoComplete: 'email', autoCapitalize: 'off', enterKeyHint: 'next', spellCheck: 'false', inputMode: 'email' },
+    phone:    { autoComplete: 'tel', enterKeyHint: 'next', inputMode: 'tel' },
+    areas:    { autoComplete: 'off', autoCapitalize: 'words', enterKeyHint: 'next' },
+  };
+
   const steps = [
     {
       title: 'Let\'s start with the basics',
@@ -2938,9 +2976,9 @@ function IntakeForm({ onSubmit, onBack }) {
       valid: () => data.fullName.trim() && /.+@.+\..+/.test(data.email) && data.phone.trim().length >= 7,
       fields: (
         <div className="space-y-4">
-          <FormField label="Full name" icon={User}><input value={data.fullName} onChange={e => update('fullName', e.target.value)} placeholder="Alex Morgan" className="form-input" /></FormField>
-          <FormField label="Email" icon={Mail}><input type="email" value={data.email} onChange={e => update('email', e.target.value)} placeholder="alex@example.com" className="form-input" /></FormField>
-          <FormField label="Phone" icon={Phone}><input type="tel" value={data.phone} onChange={e => update('phone', formatUsPhone(e.target.value))} placeholder="(215) 555-0123" className="form-input" maxLength={14} /></FormField>
+          <FormField label="Full name" icon={User}><input {...inputProps.fullName} value={data.fullName} onChange={e => update('fullName', e.target.value)} placeholder="Alex Morgan" className="form-input" /></FormField>
+          <FormField label="Email" icon={Mail}><input {...inputProps.email} type="email" value={data.email} onChange={e => update('email', e.target.value)} placeholder="alex@example.com" className="form-input" /></FormField>
+          <FormField label="Mobile phone" icon={Phone}><input {...inputProps.phone} type="tel" value={data.phone} onChange={e => update('phone', formatUsPhone(e.target.value))} placeholder="(215) 555-0123" className="form-input" maxLength={14} /></FormField>
         </div>
       )
     },
@@ -3039,46 +3077,95 @@ function IntakeForm({ onSubmit, onBack }) {
 
   const s = steps[step];
   const progress = ((step + 1) / steps.length) * 100;
+  const isLastStep = step === steps.length - 1;
+
+  const handleNext = async () => {
+    if (!s.valid() || submitting) return;
+    if (!isLastStep) { setStep(step + 1); return; }
+    setSubmitting(true);
+    try {
+      await onSubmit(data);
+      // Clear draft on success
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    } catch (err) {
+      console.error('[intake submit] failed', err);
+      alert("Something went wrong sending your info. Please try again.");
+      setSubmitting(false);
+    }
+  };
 
   return (
-    <div className="max-w-xl mx-auto px-6 md:px-8 pt-10 pb-24">
-      <style>{`.form-input { width: 100%; padding: 0.75rem 1rem; border: 1.5px solid rgb(226 232 240); border-radius: 0.75rem; font-size: 0.95rem; outline: none; transition: all 0.15s; background: white; } .form-input:focus { border-color: rgb(15 23 42); box-shadow: 0 0 0 3px rgba(15,23,42,0.06); }`}</style>
-      <div className="mb-10">
-        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={step === 0 ? onBack : () => setStep(step - 1)} className="mb-6 -ml-2">Back</Button>
-        <div className="flex items-center gap-3 mb-2">
-          <div className="flex-1 h-1 bg-slate-100 rounded-full overflow-hidden">
-            <div className="h-full bg-slate-900 rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+    <div className="min-h-screen flex flex-col bg-white">
+      <style>{`
+        .form-input { width: 100%; padding: 0.875rem 1rem; border: 1.5px solid rgb(226 232 240); border-radius: 0.875rem; font-size: 16px; outline: none; transition: all 0.15s; background: white; -webkit-appearance: none; appearance: none; min-height: 48px; }
+        .form-input:focus { border-color: rgb(15 23 42); box-shadow: 0 0 0 3px rgba(15,23,42,0.06); }
+        @media (max-width: 768px) {
+          .form-input { font-size: 16px !important; } /* prevent iOS auto-zoom */
+        }
+      `}</style>
+
+      {/* HEADER — sticky progress bar so the user always sees where they are */}
+      <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-100">
+        <div className="max-w-xl mx-auto px-5 md:px-8 py-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={step === 0 ? onBack : () => setStep(step - 1)}
+              disabled={submitting}
+              className="w-10 h-10 rounded-full hover:bg-slate-100 flex items-center justify-center shrink-0 -ml-2 disabled:opacity-30"
+              aria-label="Back"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${progress}%`, backgroundColor: 'var(--brand-gold)' }} />
+            </div>
+            <div className="text-xs text-slate-500 font-medium tabular-nums shrink-0">{step + 1} / {steps.length}</div>
           </div>
-          <div className="text-xs text-slate-400 font-medium tabular-nums">{step + 1} / {steps.length}</div>
         </div>
       </div>
-      <div className="mb-8">
-        <h2 className="text-4xl md:text-5xl font-semibold text-slate-900 tracking-[-0.02em] leading-[1.1] mb-3">{s.title}</h2>
-        <p className="text-slate-600">{s.subtitle}</p>
+
+      {/* CONTENT — generous bottom padding so the sticky CTA never covers fields */}
+      <div className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 pt-6 pb-44 md:pb-32">
+        <div className="mb-7">
+          <h2 className="text-[28px] md:text-4xl font-semibold text-slate-900 tracking-[-0.02em] leading-[1.15] mb-2">{s.title}</h2>
+          <p className="text-base text-slate-600 leading-relaxed">{s.subtitle}</p>
+        </div>
+        <div>{s.fields}</div>
       </div>
-      <div className="mb-10">{s.fields}</div>
-      <button
-        onClick={() => { if (!s.valid()) return; if (step === steps.length - 1) onSubmit(data); else setStep(step + 1); }}
-        disabled={!s.valid()}
-        className="w-full bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
-      >
-        {step === steps.length - 1 ? 'Send to my agent' : 'Continue'}
-        <ArrowRight className="w-4 h-4" />
-      </button>
-      {/* A2P 10DLC + CTIA compliance: explicit SMS opt-in disclosure visible
-          on every step. The exact phrases below ("recurring automated text
-          messages", "consent is not a condition of purchase", "Msg & data
-          rates may apply", "Reply HELP/STOP") are what carriers look for. */}
-      <div className="mt-4 text-[11px] text-slate-500 leading-relaxed text-center">
-        By tapping &ldquo;{step === steps.length - 1 ? 'Send to my agent' : 'Continue'}&rdquo;, you
-        agree to receive <strong>recurring automated</strong> text messages from
-        Rentals Philly at the mobile number you provided, including rental listings,
-        showing confirmations, and appointment reminders, sent via an automatic dialing
-        system. Consent is not a condition of any purchase. Msg frequency varies.
-        Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help,{' '}
-        <strong>STOP</strong> to cancel at any time. See our{' '}
-        <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline">SMS Privacy Policy</a> and{' '}
-        <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">Terms</a>.
+
+      {/* STICKY CTA — fixed to bottom of viewport on mobile, easy thumb reach */}
+      <div className="fixed bottom-0 left-0 right-0 z-10 bg-white border-t border-slate-200 shadow-[0_-4px_24px_-12px_rgba(0,0,0,0.12)]">
+        <div className="max-w-xl mx-auto px-5 md:px-8 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+          <button
+            onClick={handleNext}
+            disabled={!s.valid() || submitting}
+            className="w-full text-white py-4 rounded-full text-base font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 active:scale-[0.98]"
+            style={{ backgroundColor: 'var(--brand-gold)', minHeight: 52 }}
+          >
+            {submitting ? (
+              <>
+                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Sending…
+              </>
+            ) : (
+              <>
+                {isLastStep ? 'Send to my agent' : 'Continue'}
+                <ArrowRight className="w-5 h-5" />
+              </>
+            )}
+          </button>
+          {/* A2P 10DLC + CTIA compliance: explicit SMS opt-in disclosure under
+              the CTA, visible on every step. The exact phrases below
+              ("recurring automated text messages", "consent is not a
+              condition of purchase", "Msg & data rates may apply", "Reply
+              HELP/STOP") are what carriers look for. */}
+          <div className="mt-2.5 text-[10px] text-slate-500 leading-snug text-center">
+            By tapping &ldquo;{isLastStep ? 'Send to my agent' : 'Continue'}&rdquo;, you agree to receive{' '}
+            <strong>recurring automated</strong> text messages from Rentals Philly at the mobile number you provided, including rental listings, showing confirmations, and appointment reminders, sent via an automatic dialing system. Consent is not a condition of any purchase. Msg frequency varies. Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help, <strong>STOP</strong> to cancel.{' '}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline">Privacy</a> ·{' '}
+            <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">Terms</a>.
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -3164,7 +3251,8 @@ function DatePicker({ value, onChange }) {
             key={s.label}
             type="button"
             onClick={() => setQuick(s.months)}
-            className="px-3.5 py-1.5 rounded-full text-sm font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+            style={{ minHeight: 44 }}
+            className="px-4 py-2 rounded-full text-sm font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 active:scale-[0.97] transition-all"
           >
             {s.label}
           </button>
@@ -3179,18 +3267,18 @@ function DatePicker({ value, onChange }) {
             type="button"
             onClick={prevMonth}
             disabled={isPrevDisabled}
-            className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="w-11 h-11 rounded-full hover:bg-slate-100 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="font-semibold text-slate-900">{monthName}</div>
           <button
             type="button"
             onClick={nextMonth}
             disabled={isNextDisabled}
-            className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="w-11 h-11 rounded-full hover:bg-slate-100 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            <ArrowRight className="w-4 h-4" />
+            <ArrowRight className="w-5 h-5" />
           </button>
         </div>
 
@@ -3265,7 +3353,7 @@ function BedBathSelector({ beds, baths, onChange }) {
   ];
 
   const renderRow = (options, currentValue, onPick, Icon) => (
-    <div className="grid grid-cols-5 gap-2">
+    <div className="grid grid-cols-5 gap-1.5 sm:gap-2">
       {options.map((o) => {
         const selected = currentValue === o.value;
         return (
@@ -3273,14 +3361,15 @@ function BedBathSelector({ beds, baths, onChange }) {
             key={o.value}
             type="button"
             onClick={() => onPick(o.value)}
-            className={`flex flex-col items-center justify-center gap-1.5 py-5 rounded-2xl transition-all ${
+            style={{ minHeight: 68 }}
+            className={`flex flex-col items-center justify-center gap-1.5 py-3 px-1 rounded-2xl transition-all active:scale-[0.96] ${
               selected
-                ? 'bg-slate-900 text-white shadow-lg scale-[1.03]'
+                ? 'bg-slate-900 text-white shadow-lg scale-[1.02]'
                 : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
             }`}
           >
             <Icon className={`w-5 h-5 ${selected ? 'text-white' : 'text-slate-400'}`} />
-            <span className="text-base font-semibold">{o.label}</span>
+            <span className="text-sm sm:text-base font-semibold whitespace-nowrap">{o.label}</span>
           </button>
         );
       })}
@@ -3320,8 +3409,16 @@ function FormField({ label, icon: Icon, children }) {
 }
 
 function ChoiceButton({ selected, onClick, children }) {
+  // Min 48px tap target for mobile (iOS HIG minimum is 44pt, Material is 48dp).
   return (
-    <button type="button" onClick={onClick} className={`py-2.5 px-3 rounded-xl border-2 font-medium text-sm transition-colors ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 hover:border-slate-300'}`}>{children}</button>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`py-3.5 px-4 rounded-xl border-2 font-medium text-sm transition-all active:scale-[0.97] ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 hover:border-slate-300'}`}
+      style={{ minHeight: 48 }}
+    >
+      {children}
+    </button>
   );
 }
 
