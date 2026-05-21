@@ -163,8 +163,10 @@ export async function GET(request) {
   // If there are tours today, also text Morgan a compact tour brief.
   // Goes through Twilio directly (not sendSms wrapper) because the recipient
   // is the AGENT, not a lead — we don't want to log it on a lead's thread.
+  // Skip if the agent has disabled tour-day SMS in Settings → Notifications.
   let tourSmsResult = null;
-  if (toursToday.length > 0) {
+  const tourSmsEnabled = settings.notifications?.tourSms !== false;
+  if (toursToday.length > 0 && tourSmsEnabled) {
     try {
       const leadById = Object.fromEntries(leads.map((l) => [l.id, l]));
       const lines = toursToday
@@ -203,6 +205,12 @@ export async function GET(request) {
       console.error('[tour brief SMS] failed', smsErr);
       tourSmsResult = { ok: false, error: smsErr.message };
     }
+  }
+
+  // Honor the dailyEmail notification toggle. If disabled, skip the email send
+  // but still return the tour SMS result (since that has its own toggle).
+  if (settings.notifications?.dailyEmail === false) {
+    return NextResponse.json({ ok: true, skipped: 'dailyEmail disabled', tourSms: tourSmsResult });
   }
 
   // Send via Resend directly (we don't want this in a per-lead messages row).

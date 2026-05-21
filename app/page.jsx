@@ -1193,10 +1193,10 @@ export default function App() {
             };
             return { ...l, messages: [...(l.messages || []), incoming] };
           }));
-          // Inbound real-message? Surface it. Toast always; browser
-          // notification if the agent granted permission and the tab is
-          // backgrounded.
-          if (isNewInbound) {
+          // Inbound real-message? Surface it. Toast + (with permission)
+          // browser notification when the tab is backgrounded. Both are
+          // gated by the inboundToast notification preference.
+          if (isNewInbound && settings?.notifications?.inboundToast !== false) {
             const preview = (row.body || '').slice(0, 80);
             showToast(`💬 ${leadName}: ${preview}`);
             try {
@@ -1862,6 +1862,41 @@ export default function App() {
       idempotencyKey: `welcome-${id}`,
       automated: true,
     });
+
+    // Notify the agent of the new lead (if enabled in Settings → Notifications).
+    // Uses sendEmail with the agent's email as `to` and no leadId — keeps it
+    // off the lead's thread but still goes through the wrapper for tracking.
+    if (settings.notifications?.newLeadEmail !== false && settings.agentEmail) {
+      const bucketHint = {
+        GCMS: 'HOT — moving soon, good credit',
+        'GCM75+': 'WARM — moving 75+ days, good credit',
+        BCMS: 'WORK WITH — moving soon, limited credit',
+        'BC75+': 'LONGTAIL — moving 75+ days, limited credit',
+      }[bucket] || bucket;
+      try {
+        await sendEmail({
+          to: settings.agentEmail,
+          subject: `New lead: ${lead.fullName} (${bucket})`,
+          body:
+            `New lead just submitted the intake form.\n\n` +
+            `Name: ${lead.fullName}\n` +
+            `Email: ${lead.email}\n` +
+            `Phone: ${lead.phone}\n` +
+            `Budget: $${lead.budgetMin} – $${lead.budgetMax}/mo\n` +
+            `Beds: ${lead.beds}+\n` +
+            `Move-in: ${lead.moveInDate}\n` +
+            `Areas: ${lead.areas || 'no preference'}\n` +
+            `Source: ${lead.source || 'Unknown'}\n` +
+            `Bucket: ${bucketHint}\n\n` +
+            `Open the CRM: https://rentalsphilly.vercel.app/#admin`,
+          kind: 'new_lead_alert',
+          idempotencyKey: `agent-new-lead-${id}`,
+          automated: true,
+        });
+      } catch (err) {
+        console.warn('[addLead] agent notification failed', err?.message);
+      }
+    }
 
     // Build the in-memory lead object for immediate UI use (matches old shape)
     const newLead = {
@@ -4363,15 +4398,26 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
           <SectionHeader icon={CalendarDays}>Tours</SectionHeader>
           {toursToday.length > 0 && (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="text-[10px] uppercase tracking-wider font-semibold text-emerald-700">Today · {toursToday.length}</div>
-                <button
-                  onClick={() => openTourRoute(toursToday)}
-                  className="text-[10px] font-medium text-emerald-700 hover:text-emerald-900 underline inline-flex items-center gap-1"
-                  title="Open all stops in Google Maps as one route"
-                >
-                  <MapPin className="w-3 h-3" /> Route in Maps
-                </button>
+                <div className="flex items-center gap-2">
+                  <a
+                    href="/tours/today/print"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] font-medium text-emerald-700 hover:text-emerald-900 underline inline-flex items-center gap-1"
+                    title="Open print-friendly daily sheet"
+                  >
+                    <FileText className="w-3 h-3" /> Print sheet
+                  </a>
+                  <button
+                    onClick={() => openTourRoute(toursToday)}
+                    className="text-[10px] font-medium text-emerald-700 hover:text-emerald-900 underline inline-flex items-center gap-1"
+                    title="Open all stops in Google Maps as one route"
+                  >
+                    <MapPin className="w-3 h-3" /> Route in Maps
+                  </button>
+                </div>
               </div>
               {toursToday.map((t) => {
                 const firstAddr = (t.listings || []).map((l) => l.address).filter(Boolean)[0];
@@ -6159,6 +6205,45 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
           value={form.automation?.autoArchiveStale !== false}
           onChange={(v) => updateAutomation('autoArchiveStale', v)}
           disabled={form.automation?.enabled === false}
+        />
+      </Card>
+
+      <Card className="divide-y divide-slate-100 overflow-hidden">
+        <div className="p-5">
+          <SectionHeader icon={Bell}>Notifications</SectionHeader>
+          <div className="text-sm text-slate-500 leading-relaxed">
+            Pick what gets sent to <span className="text-slate-900 font-medium">{form.agentEmail || 'your email'}</span> and <span className="text-slate-900 font-medium">{form.agentPhone || 'your phone'}</span>. Crons check these each run, so changes take effect immediately.
+          </div>
+        </div>
+        <AutomationRow
+          name="Daily morning summary email"
+          desc="Every morning at 7 AM ET, you'll receive an email with new leads needing curation, tour requests, conversations awaiting reply, today's + tomorrow's tours, and overdue tasks."
+          value={form.notifications?.dailyEmail !== false}
+          onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), dailyEmail: v } })}
+        />
+        <AutomationRow
+          name="Tour-day SMS brief"
+          desc="If you have tours today, get an SMS listing them at the same time as the morning email (with lead names + phones + addresses)."
+          value={form.notifications?.tourSms !== false}
+          onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), tourSms: v } })}
+        />
+        <AutomationRow
+          name="New lead instant email"
+          desc="The moment a lead submits the intake form, you receive a one-line email so you can react fast — even before opening the CRM."
+          value={form.notifications?.newLeadEmail !== false}
+          onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), newLeadEmail: v } })}
+        />
+        <AutomationRow
+          name="Inbound SMS notification"
+          desc="When a lead replies, get a browser notification (if enabled) and an in-app toast. Works automatically — no email or text to your phone."
+          value={form.notifications?.inboundToast !== false}
+          onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), inboundToast: v } })}
+        />
+        <AutomationRow
+          name="Weekly performance recap"
+          desc="Every Sunday at 6 PM ET, get an email recap: leads added this week, tours run, applications submitted, leases signed, commission booked."
+          value={form.notifications?.weeklyRecap !== false}
+          onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), weeklyRecap: v } })}
         />
       </Card>
 
@@ -8446,11 +8531,17 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                     placeholder="Subject"
                     className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
                 )}
-                <textarea value={composerBody} onChange={(e) => setComposerBody(e.target.value)}
-                  placeholder={composerChannel === 'sms' ? 'Type a text…' : 'Type an email…'}
+                <SlashAwareTextarea
+                  value={composerBody}
+                  onChange={setComposerBody}
+                  placeholder={composerChannel === 'sms' ? 'Type a text… (try / for quick inserts)' : 'Type an email… (try / for quick inserts)'}
                   rows={composerChannel === 'sms' ? 3 : 5}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSend(); }}
-                  className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-none" />
+                  onSubmit={handleSend}
+                  onOpenTemplates={() => setShowTemplatePicker(true)}
+                  lead={activeThread.lead}
+                  settings={settings}
+                  userTemplates={userTemplates}
+                />
                 <div className="flex items-center gap-3">
                   {composerChannel === 'sms' && (
                     <div className="text-[10px] text-slate-400">
@@ -8550,6 +8641,127 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           }}
           onClose={() => setShowTemplatePicker(false)}
         />
+      )}
+    </div>
+  );
+}
+
+// Composer textarea with `/` slash-commands. Type `/` on an empty line OR at
+// start of body and a small palette pops up with quick inserts. Esc closes.
+function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOpenTemplates, lead, settings, userTemplates }) {
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const taRef = useRef(null);
+
+  // Detect a / token at the end of the current text. If the user just typed /
+  // (or extended `/x`), show the palette filtered by what's after the slash.
+  const updateValue = (next) => {
+    onChange(next);
+    const match = next.match(/(?:^|\n|\s)\/(\w*)$/);
+    if (match) {
+      setQuery(match[1] || '');
+      setPaletteOpen(true);
+    } else {
+      setPaletteOpen(false);
+      setQuery('');
+    }
+  };
+
+  // Slash command definitions. Each one renders an insert into the textarea
+  // when picked. {portalUrl} etc. resolve from the lead context.
+  const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
+  const nextTour = (lead?.tours || []).find((t) => t.status !== 'cancelled' && t.status !== 'completed');
+  const tourDate = nextTour?.date ? new Date(nextTour.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+  const tourTime = nextTour?.time || '';
+  const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
+
+  const commands = [
+    { key: 'portal',   label: '/portal',   desc: 'Insert curated portal link',  insert: portalUrl },
+    { key: 'tour',     label: '/tour',     desc: 'Tour confirmation snippet',    insert: `Confirming your tour on ${tourDate || '[date]'} at ${tourTime || '[time]'}. See you there!` },
+    { key: 'sched',    label: '/sched',    desc: 'Scheduling link snippet',      insert: `Pick your tour times: ${portalUrl}` },
+    { key: 'hi',       label: '/hi',       desc: `Greet ${firstName}`,           insert: `Hi ${firstName} — ` },
+    { key: 'sig',      label: '/sig',      desc: 'Insert your email signature',  insert: settings?.emailSignature || `Best,\n${settings?.agentName || 'Morgan'}` },
+    { key: 'template', label: '/template', desc: 'Open full template picker',    action: 'openTemplates' },
+  ];
+  // Inline user templates as /tpl-{id} entries (only first 5 for brevity).
+  for (const t of (userTemplates || []).slice(0, 5)) {
+    commands.push({
+      key: `tpl-${t.id}`,
+      label: `/${(t.label || 'template').toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12)}`,
+      desc: `Template: ${t.label}`,
+      insert: t.body
+        ? t.body
+            .replace(/\{firstName\}/g, firstName)
+            .replace(/\{portalUrl\}/g, portalUrl)
+            .replace(/\{tourDate\}/g, tourDate)
+            .replace(/\{tourTime\}/g, tourTime)
+            .replace(/\{agentName\}/g, settings?.agentName || 'Morgan')
+        : '',
+    });
+  }
+
+  const filtered = query
+    ? commands.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()) || (c.desc || '').toLowerCase().includes(query.toLowerCase()))
+    : commands;
+
+  const applyCommand = (cmd) => {
+    if (cmd.action === 'openTemplates') {
+      // Replace the `/x` token then open the picker.
+      const replaced = value.replace(/(?:^|\n|\s)\/(\w*)$/, (m, q, off) => m.slice(0, m.length - q.length - 1));
+      onChange(replaced);
+      setPaletteOpen(false);
+      onOpenTemplates?.();
+      return;
+    }
+    // Replace the trailing /token with the snippet.
+    const replaced = value.replace(/(?:^|\n|\s)\/(\w*)$/, (m, q, off) => {
+      const lead = m.slice(0, m.length - q.length - 1);
+      return lead + (cmd.insert || '');
+    });
+    onChange(replaced);
+    setPaletteOpen(false);
+    setQuery('');
+    // Refocus
+    setTimeout(() => taRef.current?.focus(), 0);
+  };
+
+  return (
+    <div className="relative">
+      <textarea
+        ref={taRef}
+        value={value}
+        onChange={(e) => updateValue(e.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && paletteOpen) { e.preventDefault(); setPaletteOpen(false); return; }
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSubmit?.();
+        }}
+        className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-none"
+      />
+      {paletteOpen && filtered.length > 0 && (
+        <div className="absolute bottom-full left-0 mb-1 z-20 bg-white border border-slate-200 rounded-xl shadow-lg w-full max-w-md max-h-64 overflow-y-auto">
+          <div className="px-3 py-2 text-[10px] uppercase tracking-wider font-semibold text-slate-400 border-b border-slate-100">
+            Quick inserts {query && <span className="font-mono">— /{query}</span>}
+          </div>
+          {filtered.map((cmd) => (
+            <button
+              key={cmd.key}
+              type="button"
+              onMouseDown={(e) => { e.preventDefault(); applyCommand(cmd); }}
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-3 border-b border-slate-50 last:border-b-0"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="font-mono text-xs font-semibold text-slate-900">{cmd.label}</div>
+                <div className="text-[11px] text-slate-500 truncate">{cmd.desc}</div>
+              </div>
+              <kbd className="text-[10px] text-slate-400">↵</kbd>
+            </button>
+          ))}
+          <div className="px-3 py-1.5 text-[10px] text-slate-400 border-t border-slate-100 bg-slate-50">
+            Esc to close
+          </div>
+        </div>
       )}
     </div>
   );
