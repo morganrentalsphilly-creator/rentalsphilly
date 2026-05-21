@@ -849,6 +849,50 @@ const HEALTH_TONE_CLASS = {
   neutral: 'bg-slate-100 text-slate-700 border-slate-300',
 };
 
+// Compute a composite 0-100 priority score per lead. Combines:
+//   bucket   (GCMS=40, BCMS=30, GCM75+=20, BC75+=10)
+//   stage    (later stages score higher because they're closer to commission)
+//   engagement (each inbound reply = +5, capped at +20)
+//   freshness (fresh<24h = +10, 1-3d = +5)
+//   health   (hot = +10, stuck = -10, cold = -20)
+//
+// Returns { score, label } where label is a short tier word.
+function leadScore(lead) {
+  let s = 0;
+  // Bucket weight (intake bucket reflects fit + urgency)
+  const bucketWeights = { GCMS: 40, BCMS: 30, 'GCM75+': 20, 'BC75+': 10 };
+  s += bucketWeights[lead.bucket] || 15;
+
+  // Stage progression
+  const stageWeights = {
+    new: 0, matched: 5, 'tour-requested': 10, 'tour-booked': 15,
+    'post-tour': 20, applied: 25, leased: 30, paid: 30, lost: -10, archived: -20,
+  };
+  s += stageWeights[lead.stage] || 0;
+
+  // Engagement: count inbound replies
+  const inbound = (lead.messages || []).filter((m) => !m.internal && m.direction === 'inbound').length;
+  s += Math.min(inbound * 5, 20);
+
+  // Freshness
+  const ageMs = Date.now() - new Date(lead.createdAt || 0).getTime();
+  const ageDays = ageMs / 86400000;
+  if (ageDays < 1) s += 10;
+  else if (ageDays < 3) s += 5;
+
+  // Health adjustment (reuses leadHealth)
+  const h = leadHealth(lead);
+  if (h.status === 'hot') s += 10;
+  else if (h.status === 'stuck') s -= 10;
+  else if (h.status === 'cold') s -= 20;
+
+  // Clamp to 0-100
+  s = Math.max(0, Math.min(100, s));
+
+  const label = s >= 70 ? 'A' : s >= 50 ? 'B' : s >= 30 ? 'C' : 'D';
+  return { score: s, label };
+}
+
 // True when the lead is snoozed and the snooze hasn't expired yet. Used to
 // hide leads from Today + Pipeline + Needs Attention so they don't clutter.
 function isLeadSnoozed(lead) {
@@ -1022,6 +1066,8 @@ function hydrateLeads(data) {
       kind: m.kind,
       deliveryStatus: m.delivery_status,
       twilioSid: m.twilio_sid,
+      openedAt: m.opened_at,
+      clickedAt: m.clicked_at,
       timestamp: m.created_at,
     })),
 
@@ -5529,6 +5575,18 @@ function LeadRow({ lead, isFirst, onClick, waitlisted, checked, onToggleCheck })
         <div className="flex flex-col gap-1 items-end shrink-0">
           <Pill tone="neutral">{stageInfo.label}</Pill>
           <span className="text-[10px] text-slate-400 font-medium">{lead.bucket}</span>
+          {(() => {
+            const sc = leadScore(lead);
+            const tone = sc.label === 'A' ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+              : sc.label === 'B' ? 'bg-blue-100 text-blue-800 border-blue-300'
+              : sc.label === 'C' ? 'bg-slate-100 text-slate-700 border-slate-300'
+              : 'bg-slate-50 text-slate-500 border-slate-200';
+            return (
+              <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${tone}`} title={`Lead score: ${sc.score}/100`}>
+                {sc.label} · {sc.score}
+              </span>
+            );
+          })()}
         </div>
         <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
       </button>
@@ -8070,11 +8128,22 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                       </div>
                       {(() => {
                         const h = leadHealth(lead);
-                        if (!h.label) return null;
+                        const sc = leadScore(lead);
+                        const scoreTone = sc.label === 'A' ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                          : sc.label === 'B' ? 'bg-blue-100 text-blue-800 border-blue-300'
+                          : sc.label === 'C' ? 'bg-slate-100 text-slate-700 border-slate-300'
+                          : 'bg-slate-50 text-slate-500 border-slate-200';
                         return (
-                          <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border mb-1.5 ${HEALTH_TONE_CLASS[h.tone] || HEALTH_TONE_CLASS.neutral}`}>
-                            {h.label}
-                          </span>
+                          <div className="flex items-center gap-1 mb-1.5 flex-wrap">
+                            <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${scoreTone}`} title={`Lead score: ${sc.score}/100`}>
+                              {sc.label} · {sc.score}
+                            </span>
+                            {h.label && (
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${HEALTH_TONE_CLASS[h.tone] || HEALTH_TONE_CLASS.neutral}`}>
+                                {h.label}
+                              </span>
+                            )}
+                          </div>
                         );
                       })()}
                       <div className="text-[11px] text-slate-500 mb-1 truncate">
@@ -8487,7 +8556,16 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                           {m.channel === 'sms' ? <MessageSquare className="w-2.5 h-2.5" /> : <Mail className="w-2.5 h-2.5" />}
                           {timeAgo(m.timestamp)}
                           {m.automated && <span>· auto</span>}
-                          {m.status && out && <span>· {m.status}</span>}
+                          {out && m.channel === 'email' && m.clickedAt && (
+                            <span title={`Clicked link ${new Date(m.clickedAt).toLocaleString()}`}>· ✓✓ clicked</span>
+                          )}
+                          {out && m.channel === 'email' && m.openedAt && !m.clickedAt && (
+                            <span title={`Opened ${new Date(m.openedAt).toLocaleString()}`}>· ✓✓ opened</span>
+                          )}
+                          {out && m.channel === 'email' && !m.openedAt && m.deliveryStatus === 'delivered' && (
+                            <span>· ✓ delivered</span>
+                          )}
+                          {m.status && out && !m.openedAt && m.channel !== 'email' && <span>· {m.status}</span>}
                         </div>
                       </div>
                     </div>
@@ -9454,7 +9532,109 @@ function IntegrationsView() {
 
       {/* iCal calendar subscribe URL */}
       <CalendarFeedCard />
+
+      {/* Custom domain setup helper */}
+      <CustomDomainCard />
     </div>
+  );
+}
+
+// Static helper card walking the agent through setting up a real domain
+// (rentalsphilly.com) on Vercel + verifying it on Resend for clean from-address
+// deliverability. Cosmetic — no API calls.
+function CustomDomainCard() {
+  const [step, setStep] = useState(0);
+  const steps = [
+    {
+      title: 'Buy a domain',
+      body: (
+        <>
+          Pick something short and brandable like <span className="font-mono">rentalsphilly.com</span> or <span className="font-mono">philadelphia-rentals.com</span>. Cheapest reliable registrars: <a href="https://www.namecheap.com" target="_blank" rel="noopener noreferrer" className="underline">Namecheap</a>, <a href="https://porkbun.com" target="_blank" rel="noopener noreferrer" className="underline">Porkbun</a>, or <a href="https://www.cloudflare.com/products/registrar/" target="_blank" rel="noopener noreferrer" className="underline">Cloudflare Registrar</a> (at-cost). Cost: $10-15/yr.
+        </>
+      ),
+    },
+    {
+      title: 'Point it at Vercel',
+      body: (
+        <>
+          In Vercel → your project → Settings → Domains → Add → type your domain → follow the DNS instructions. Vercel will give you 2 records to add at your registrar:
+          <ul className="list-disc pl-5 mt-2 space-y-0.5 text-[11px]">
+            <li><span className="font-mono">A</span> record for <span className="font-mono">@</span> → <span className="font-mono">76.76.21.21</span></li>
+            <li><span className="font-mono">CNAME</span> for <span className="font-mono">www</span> → <span className="font-mono">cname.vercel-dns.com</span></li>
+          </ul>
+          DNS propagates in 5-60 minutes. Once Vercel shows green, your site lives at the new domain.
+        </>
+      ),
+    },
+    {
+      title: 'Verify the domain on Resend',
+      body: (
+        <>
+          Open <a href="https://resend.com/domains" target="_blank" rel="noopener noreferrer" className="underline">Resend → Domains</a> → Add Domain → enter your domain. Resend gives you 4 DNS records (SPF, DKIM, DMARC, return-path). Add them at the registrar. Once verified, update <span className="font-mono">RESEND_FROM_EMAIL</span> in Vercel to <span className="font-mono">morgan@yourdomain.com</span>. Boost deliverability + lets you actually send from your brand.
+        </>
+      ),
+    },
+    {
+      title: 'Update Vercel + redeploy',
+      body: (
+        <>
+          In Vercel → Environment Variables, set:
+          <ul className="list-disc pl-5 mt-2 space-y-0.5 text-[11px] font-mono">
+            <li>NEXT_PUBLIC_APP_URL = https://yourdomain.com</li>
+            <li>RESEND_FROM_EMAIL = morgan@yourdomain.com</li>
+          </ul>
+          Then click Redeploy. The intake form URL, curated links, calendar feed, privacy policy URL — everything switches over automatically.
+        </>
+      ),
+    },
+    {
+      title: 'Tell Twilio (A2P)',
+      body: (
+        <>
+          Once you have a real domain, edit your A2P campaign on Twilio and replace the rentalsphilly.vercel.app URLs with your new domain. This usually doesn&apos;t require re-approval but keeps things consistent. Privacy + terms URLs both need updating.
+        </>
+      ),
+    },
+  ];
+
+  const active = steps[step];
+
+  return (
+    <Card className="p-5 space-y-4">
+      <SectionHeader icon={ExternalLink}>Custom domain</SectionHeader>
+      <div className="text-sm text-slate-600 leading-relaxed">
+        Move off <span className="font-mono text-xs">rentalsphilly.vercel.app</span> to a real domain you own. Boosts trust with leads, improves email deliverability, and lets you send from <span className="font-mono text-xs">morgan@yourdomain.com</span>. 5 steps, about 20 minutes once DNS propagates.
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {steps.map((s, i) => (
+          <button
+            key={i}
+            onClick={() => setStep(i)}
+            className={`w-6 h-6 rounded-full text-[10px] font-bold inline-flex items-center justify-center transition-colors ${
+              i === step ? 'text-white' : i < step ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+            }`}
+            style={i === step ? { backgroundColor: 'var(--brand-gold)' } : undefined}
+          >
+            {i < step ? '✓' : i + 1}
+          </button>
+        ))}
+        <span className="text-xs text-slate-500 ml-2">{active.title}</span>
+      </div>
+
+      <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm text-slate-700 leading-relaxed">
+        {active.body}
+      </div>
+
+      <div className="flex items-center justify-between pt-2">
+        <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0} className="text-xs text-slate-500 hover:text-slate-900 disabled:opacity-30">
+          ← Back
+        </button>
+        <button onClick={() => setStep(Math.min(steps.length - 1, step + 1))} disabled={step === steps.length - 1} className="text-xs font-semibold text-white px-3 py-1.5 rounded-full disabled:opacity-30" style={{ backgroundColor: 'var(--brand-gold)' }}>
+          Next step →
+        </button>
+      </div>
+    </Card>
   );
 }
 

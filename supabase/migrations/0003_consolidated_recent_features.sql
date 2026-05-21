@@ -34,6 +34,11 @@ ALTER TABLE settings
   ADD COLUMN IF NOT EXISTS notifications          jsonb DEFAULT '{}'::jsonb,
   ADD COLUMN IF NOT EXISTS calendar_feed_token    text;
 
+-- Messages: opened/clicked tracking for outbound emails via Resend webhooks.
+ALTER TABLE messages
+  ADD COLUMN IF NOT EXISTS opened_at  timestamptz,
+  ADD COLUMN IF NOT EXISTS clicked_at timestamptz;
+
 -- The settings row is a singleton (id=1). If the row hasn't been created yet,
 -- create it so saveSettings() can update it without erroring. Safe if it exists.
 INSERT INTO settings (id)
