@@ -12996,6 +12996,42 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
   // If a prefill was provided (e.g. from Next Best Action AI suggestion),
   // use it as the body instead of the template's stock body.
   const [body, setBody] = useState(prefill ? String(prefill) : fill(tpl.body));
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState(null);
+
+  // Detect if the last non-internal message is inbound — i.e., a reply is owed
+  // and the AI draft button is worth offering.
+  const replyOwed = useMemo(() => {
+    const msgs = (lead.messages || []).filter((m) => !m.internal);
+    const last = msgs[msgs.length - 1];
+    return last && last.direction === 'inbound';
+  }, [lead]);
+
+  const draftWithAi = async () => {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const res = await fetch('/api/ai/suggest-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId: lead.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setAiError(data.error || 'AI draft failed');
+      } else if (data.suggestion) {
+        setBody(data.suggestion);
+      }
+    } catch (err) {
+      setAiError(err.message);
+    }
+    setAiLoading(false);
+  };
+
+  const send = () => {
+    if (!body.trim()) return;
+    onSend({ channel, subject, body });
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
@@ -13016,16 +13052,45 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
               <Mail className="w-4 h-4" /> Email
             </button>
           </div>
+          {replyOwed && (
+            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-amber-200 bg-amber-50">
+              <div className="text-[11px] text-amber-900 leading-tight">
+                <span className="font-semibold">Reply owed.</span> Last message from {firstName} is unanswered.
+              </div>
+              <button
+                onClick={draftWithAi}
+                disabled={aiLoading}
+                className="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-900 bg-white border border-slate-300 hover:border-slate-500 rounded-full px-2.5 py-1 disabled:opacity-50"
+              >
+                <Sparkles className="w-3 h-3" /> {aiLoading ? 'Drafting…' : 'AI draft'}
+              </button>
+            </div>
+          )}
+          {aiError && <div className="text-[11px] text-red-600">AI draft failed: {aiError}</div>}
           {channel === 'email' && (
             <FormField label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400" /></FormField>
           )}
           <FormField label={channel === 'sms' ? 'Message (keep it short)' : 'Message'}>
-            <textarea value={body} onChange={e => setBody(e.target.value)} rows={channel === 'sms' ? 4 : 8} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-none" />
+            <textarea
+              value={body}
+              onChange={e => setBody(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
+              rows={channel === 'sms' ? 4 : 8}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-none"
+              autoFocus
+            />
             {channel === 'sms' && <div className="text-xs text-slate-400 mt-1">{body.length} characters · {Math.ceil(body.length / 160)} SMS segment{Math.ceil(body.length / 160) !== 1 ? 's' : ''}</div>}
           </FormField>
-          <button onClick={() => onSend({ channel, subject, body })} disabled={!body.trim()} className="w-full py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-30">
-            <Send className="w-4 h-4" /> Send {channel === 'sms' ? 'text' : 'email'}
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-400 hidden md:inline">⌘+Enter to send</span>
+            <button
+              onClick={send}
+              disabled={!body.trim()}
+              className="ml-auto px-5 py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-30"
+            >
+              <Send className="w-4 h-4" /> Send {channel === 'sms' ? 'text' : 'email'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
