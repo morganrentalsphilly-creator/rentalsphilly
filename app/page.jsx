@@ -4943,102 +4943,6 @@ function TourPrepBriefing({ leadId, tourId }) {
   );
 }
 
-// Cadence Due card — surfaces leads where the per-stage touch interval has
-// elapsed since the last outbound message. Helps Morgan keep deals warm
-// without manually tracking who he's reached out to.
-function CadenceDueCard({ leads, onSelectLead }) {
-  const due = useMemo(() => {
-    return leads
-      .filter((l) => !isLeadSnoozed(l))
-      .map((l) => ({ lead: l, touch: leadTouchState(l) }))
-      .filter(({ touch }) => touch.isDue)
-      .sort((a, b) => b.touch.daysSinceTouch - a.touch.daysSinceTouch)
-      .slice(0, 8);
-  }, [leads]);
-
-  if (due.length === 0) return null;
-
-  return (
-    <Card className="p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <Clock className="w-4 h-4" style={{ color: 'var(--brand-gold)' }} />
-        <div className="text-sm font-semibold text-slate-900">Ready for next touch</div>
-        <div className="text-[10px] text-slate-500">{due.length} flagged</div>
-      </div>
-      <div className="space-y-1.5">
-        {due.map(({ lead, touch }) => {
-          const stageInfo = PIPELINE_STAGES.find((s) => s.id === (lead.stage || 'new'));
-          return (
-            <button
-              key={lead.id}
-              onClick={() => onSelectLead(lead.id)}
-              className="w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-slate-50"
-            >
-              <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 shrink-0">
-                {stageInfo?.label || lead.stage}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-slate-900 truncate">{lead.fullName}</div>
-                <div className="text-[11px] text-slate-500 truncate">
-                  Last touched <span className="text-slate-700">{touch.daysSinceTouch}d ago</span>
-                  {' · '}cadence: every {touch.cadenceDays}d
-                </div>
-              </div>
-              <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-            </button>
-          );
-        })}
-      </div>
-    </Card>
-  );
-}
-
-// Needs Attention card — surface stuck + cold leads on Today so they don't
-// drift. Uses leadHealth() to flag, sorts by days-in-stage descending.
-function NeedsAttentionCard({ leads, onSelectLead }) {
-  const flagged = useMemo(() => {
-    return leads
-      .filter((l) => !isLeadSnoozed(l))
-      .map((l) => ({ lead: l, health: leadHealth(l) }))
-      .filter(({ health }) => health.status === 'stuck' || health.status === 'cold')
-      .sort((a, b) => b.health.days - a.health.days)
-      .slice(0, 6);
-  }, [leads]);
-
-  if (flagged.length === 0) return null;
-
-  return (
-    <Card className="p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="w-4 h-4 text-red-600" />
-        <div className="text-sm font-semibold text-slate-900">Needs attention</div>
-        <div className="text-[10px] text-slate-500">{flagged.length} flagged</div>
-      </div>
-      <div className="space-y-1.5">
-        {flagged.map(({ lead, health }) => (
-          <button
-            key={lead.id}
-            onClick={() => onSelectLead(lead.id)}
-            className="w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-slate-50"
-          >
-            <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${HEALTH_TONE_CLASS[health.tone] || HEALTH_TONE_CLASS.neutral}`}>
-              {health.label}
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-slate-900 truncate">{lead.fullName}</div>
-              <div className="text-[11px] text-slate-500 truncate">
-                Stage: <span className="text-slate-700">{lead.stage || 'new'}</span>
-                {' · '}Last activity {health.days}d ago
-              </div>
-            </div>
-            <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-          </button>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
 // Focus Now — single ranked queue of the highest-priority items across all
 // surfaces. The "one screen to act from" so Morgan doesn't have to scan 6
 // cards to figure out what to do next. Tap any row → opens that lead.
@@ -5063,9 +4967,17 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
     const now = Date.now();
     const out = [];
 
-    // 1. Replies pending — most urgent first
+    // Helpers — closed leads (lost / archived) never appear in the queue;
+    // post-close (leased / paid) skip the noisy categories like cadence and
+    // stuck, but their inbound replies still surface because move-in coord
+    // can be time-sensitive.
+    const isClosed = (lead) => lead.stage === 'lost' || lead.stage === 'archived';
+    const isPostClose = (lead) => lead.stage === 'leased' || lead.stage === 'paid';
+
+    // 1. Replies pending — most urgent first. Skip lost/archived only.
     for (const lead of leads) {
       if (isLeadSnoozed(lead)) continue;
+      if (isClosed(lead)) continue;
       const msgs = (lead.messages || []).filter((m) => !m.internal);
       const last = msgs[msgs.length - 1];
       if (!last || last.direction !== 'inbound') continue;
@@ -5082,11 +4994,13 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: timeAgo(last.timestamp),
         tone: ageHrs >= 2 ? 'red' : 'amber',
         icon: MessageSquare,
+        paused: !!lead.raw?.automation_paused,
       });
     }
 
-    // 2 + 5. Tours today, split by how soon
+    // 2 + 5. Tours today, split by how soon. Skip closed.
     for (const lead of leads) {
+      if (isClosed(lead)) continue;
       for (const tour of (lead.tours || [])) {
         if (tour.date !== todayStr || tour.status === 'cancelled') continue;
         // Parse tour time → minutes from now
@@ -5106,6 +5020,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
           meta: hoursAway >= 0 ? `in ${Math.round(hoursAway)}h` : 'in progress',
           tone: 'emerald',
           icon: Calendar,
+          paused: !!lead.raw?.automation_paused,
         });
       }
     }
@@ -5114,6 +5029,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
     for (const task of overdueTasks) {
       const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
       if (!lead) continue;
+      if (isClosed(lead)) continue;
       out.push({
         id: `task-${task.id}`,
         leadId: lead.id,
@@ -5126,11 +5042,13 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: 'overdue',
         tone: 'red',
         icon: AlertTriangle,
+        paused: !!lead.raw?.automation_paused,
       });
     }
     for (const task of todayTasks) {
       const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
       if (!lead) continue;
+      if (isClosed(lead)) continue;
       out.push({
         id: `task-${task.id}`,
         leadId: lead.id,
@@ -5143,6 +5061,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: 'today',
         tone: task.priority === 'high' ? 'amber' : 'slate',
         icon: CheckCircle2,
+        paused: !!lead.raw?.automation_paused,
       });
     }
 
@@ -5164,6 +5083,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: 'curate',
         tone: 'gold',
         icon: Sparkles,
+        paused: !!lead.raw?.automation_paused,
       });
     }
 
@@ -5182,12 +5102,14 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: 'schedule',
         tone: 'blue',
         icon: Calendar,
+        paused: !!lead.raw?.automation_paused,
       });
     }
 
-    // 10. Stuck / cold leads
+    // 10. Stuck / cold leads — skip closed AND post-close
     for (const lead of leads) {
       if (isLeadSnoozed(lead)) continue;
+      if (isClosed(lead) || isPostClose(lead)) continue;
       const health = leadHealth(lead);
       if (health.status !== 'stuck' && health.status !== 'cold') continue;
       out.push({
@@ -5201,12 +5123,14 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: `${health.days}d`,
         tone: health.tone === 'red' ? 'red' : 'amber',
         icon: AlertTriangle,
+        paused: !!lead.raw?.automation_paused,
       });
     }
 
-    // 11. Cadence-due
+    // 11. Cadence-due — skip closed AND post-close
     for (const lead of leads) {
       if (isLeadSnoozed(lead)) continue;
+      if (isClosed(lead) || isPostClose(lead)) continue;
       const touch = leadTouchState(lead);
       if (!touch.isDue) continue;
       // Skip if already covered above
@@ -5222,6 +5146,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         meta: `${touch.daysSinceTouch}d`,
         tone: 'slate',
         icon: Clock,
+        paused: !!lead.raw?.automation_paused,
       });
     }
 
@@ -5332,6 +5257,11 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
                   <div className={`text-[10px] font-semibold uppercase tracking-wider ${tone.text}`}>
                     {item.action}
                   </div>
+                  {item.paused && (
+                    <span className="text-[9px] font-semibold uppercase tracking-wider text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                      paused
+                    </span>
+                  )}
                 </div>
                 <div className="text-[11px] text-slate-500 truncate">{item.subtitle}</div>
               </div>
@@ -5465,27 +5395,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
-  // Bundle leads with their most-recent inbound message into "needs reply".
-  // Skip snoozed leads so they don't keep nagging.
-  const needsReply = useMemo(() => {
-    const out = [];
-    for (const lead of leads) {
-      if (isLeadSnoozed(lead)) continue;
-      const msgs = (lead.messages || []).filter((m) => !m.internal);
-      const last = msgs[msgs.length - 1];
-      if (last && last.direction === 'inbound') out.push({ lead, last });
-    }
-    return out.sort((a, b) => new Date(b.last.timestamp) - new Date(a.last.timestamp));
-  }, [leads]);
-
-  // Snoozed leads stay out of Today action surfaces (tours still surface).
-  const activeLeads = useMemo(() => leads.filter((l) => !isLeadSnoozed(l)), [leads]);
-
-  const newLeadsNoCurate = useMemo(() =>
-    activeLeads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [activeLeads]);
-  const tourRequested = useMemo(() =>
-    activeLeads.filter((l) => l.stage === 'tour-requested'), [activeLeads]);
-
+  // Focus Now consolidates needs-reply, new-no-curate, tour-requested, cadence,
+  // and stuck leads into a single ranked queue. We only keep the Tours card
+  // here because it has unique side-actions (Route in Maps + Print sheet).
   const toursToday = useMemo(() =>
     leads.flatMap((l) => (l.tours || [])
       .filter((t) => t.date === todayStr && t.status !== 'cancelled')
@@ -5535,12 +5447,6 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
     </div>
   );
 
-  const empty = (
-    overdueTasks.length === 0 && todayTasks.length === 0 &&
-    needsReply.length === 0 && newLeadsNoCurate.length === 0 &&
-    tourRequested.length === 0 && toursToday.length === 0
-  );
-
   return (
     <div className="space-y-5">
       <div className="flex items-end justify-between flex-wrap gap-2">
@@ -5578,14 +5484,6 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
       {/* Browser notification opt-in prompt — only if not yet decided */}
       <NotificationPrompt />
 
-
-      {empty && (
-        <Card className="p-8 text-center">
-          <Sparkles className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--brand-gold)' }} />
-          <div className="text-lg font-semibold text-slate-900 mb-1">Inbox zero</div>
-          <div className="text-sm text-slate-500">Nothing on the board right now. Enjoy the quiet.</div>
-        </Card>
-      )}
 
       {/* TASKS */}
       <Card className="p-5 space-y-3">
@@ -5686,72 +5584,8 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
         </Card>
       )}
 
-      {/* NEEDS ATTENTION — stuck + cold leads */}
-      <NeedsAttentionCard leads={leads} onSelectLead={onSelectLead} />
-
-      {/* CADENCE DUE — leads hitting their per-stage touch interval */}
-      <CadenceDueCard leads={leads} onSelectLead={onSelectLead} />
-
       {/* TODAY'S WINS — rolling log of today's outbound activity for momentum */}
       <TodaysWinsCard leads={leads} onSelectLead={onSelectLead} />
-
-      {/* ACTIONS */}
-      {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {newLeadsNoCurate.length > 0 && (
-            <Card className="p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="w-4 h-4" style={{ color: 'var(--brand-gold)' }} />
-                <div className="text-sm font-semibold text-slate-900">Send curated link · {newLeadsNoCurate.length}</div>
-              </div>
-              <div className="space-y-1">
-                {newLeadsNoCurate.slice(0, 5).map((l) => (
-                  <button key={l.id} onClick={() => onSelectLead(l.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 flex items-center justify-between gap-2">
-                    <span className="text-sm text-slate-900 truncate">{l.fullName}</span>
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  </button>
-                ))}
-              </div>
-            </Card>
-          )}
-          {tourRequested.length > 0 && (
-            <Card className="p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Calendar className="w-4 h-4 text-blue-600" />
-                <div className="text-sm font-semibold text-slate-900">Send scheduling link · {tourRequested.length}</div>
-              </div>
-              <div className="space-y-1">
-                {tourRequested.slice(0, 5).map((l) => (
-                  <button key={l.id} onClick={() => onSelectLead(l.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 flex items-center justify-between gap-2">
-                    <span className="text-sm text-slate-900 truncate">{l.fullName}</span>
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  </button>
-                ))}
-              </div>
-            </Card>
-          )}
-          {needsReply.length > 0 && (
-            <Card className="p-4 md:col-span-2">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-red-600" />
-                  <div className="text-sm font-semibold text-slate-900">Conversations awaiting reply · {needsReply.length}</div>
-                </div>
-                <button onClick={() => setSubview('inbox')} className="text-[11px] text-slate-500 hover:text-slate-900 underline">Open inbox</button>
-              </div>
-              <div className="space-y-1">
-                {needsReply.slice(0, 6).map(({ lead, last }) => (
-                  <button key={lead.id} onClick={() => onSelectLead(lead.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-slate-50 flex items-center gap-2">
-                    <div className="text-sm font-medium text-slate-900 truncate shrink-0">{lead.fullName}:</div>
-                    <div className="text-xs text-slate-500 truncate flex-1">{(last.body || '').slice(0, 80)}</div>
-                    <span className="text-[10px] text-slate-400 shrink-0">{timeAgo(last.timestamp)}</span>
-                  </button>
-                ))}
-              </div>
-            </Card>
-          )}
-        </div>
-      )}
     </div>
   );
 }
