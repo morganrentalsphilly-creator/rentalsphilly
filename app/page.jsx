@@ -182,6 +182,20 @@ const DEFAULT_AGENT_SETTINGS = {
     },
   ],
 
+  // System messages — sent automatically by background jobs (cron + curated
+  // page flow). Each is a short SMS template with placeholders.
+  //   {firstName}     lead's first name
+  //   {tourTime}      tour time string (e.g. "5:00 PM")
+  //   {tourDate}      "Tue, May 19"
+  //   {portalUrl}     curated link URL
+  systemTemplates: {
+    reminder24h: `Reminder: your showing is tomorrow at {tourTime}. Reply if you need to reschedule.`,
+    reminder1h: `Heads up — your showing is in about an hour ({tourTime}). See you soon!`,
+    schedulingLinkSms: `Rentals Philly: I checked availability — tap to pick your tour times: {portalUrl}`,
+    schedulingLinkEmail: `Hi {firstName},\n\nI checked availability on the properties you picked. Pick your tour times here:\n\n{portalUrl}\n\n— {agentName}`,
+    curatedConfirmSms: `Rentals Philly: Got your picks ({addressCount}). I'll review availability and send you a scheduling link with open times shortly.`,
+  },
+
   welcomeMessages: {
     GCMS: {
       sms: `Rentals Philly: Got it {firstName} — I'm hand-picking rentals that fit you right now. Expect a personalized link with photos within a few hours.`,
@@ -755,6 +769,16 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Format a US phone number as the user types: "2155551234" → "(215) 555-1234".
+// Accepts any input (digits, parens, dashes, spaces) and normalizes.
+function formatUsPhone(raw) {
+  const digits = String(raw || '').replace(/\D/g, '').slice(0, 10);
+  if (digits.length === 0) return '';
+  if (digits.length < 4) return `(${digits}`;
+  if (digits.length < 7) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
 // Compute the "health" of a lead — an at-a-glance status that combines
 // engagement and time-in-stage. Returns:
 //   { status, label, tone, days }
@@ -1131,15 +1155,12 @@ export default function App() {
 
   // ---- Supabase Realtime: live inbox updates ------------------------------
   // Subscribe to INSERTs on the `messages` table and merge each new row into
-  // the matching lead's in-memory messages array. Only runs when:
-  //   - in admin AND authed (public visitors don't need it)
-  //   - on the inbox subview OR with a lead detail open
-  // This avoids constant re-renders when viewing properties, blast, etc.
+  // the matching lead's in-memory messages array. Runs whenever the agent is
+  // authed in admin so notifications fire across any subview.
   useEffect(() => {
     if (!loaded) return;
     if (view !== 'admin') return;
     if (!session) return;
-    if (adminSubview !== 'inbox' && !selectedLeadId) return;
     const supa = createBrowserSupabase();
     if (!supa) return;
     const channel = supa
@@ -1150,10 +1171,14 @@ export default function App() {
         (payload) => {
           const row = payload.new;
           if (!row || !row.lead_id) return;
+          let leadName = 'A lead';
+          let isNewInbound = false;
           setLeads((prev) => prev.map((l) => {
             if (l.id !== row.lead_id) return l;
+            leadName = l.fullName || 'A lead';
             // Skip if we already have this message (optimistic insert).
             if ((l.messages || []).some((m) => m.id === row.id)) return l;
+            isNewInbound = row.direction === 'inbound' && !row.internal;
             const incoming = {
               id: row.id,
               channel: row.channel,
@@ -1168,6 +1193,24 @@ export default function App() {
             };
             return { ...l, messages: [...(l.messages || []), incoming] };
           }));
+          // Inbound real-message? Surface it. Toast always; browser
+          // notification if the agent granted permission and the tab is
+          // backgrounded.
+          if (isNewInbound) {
+            const preview = (row.body || '').slice(0, 80);
+            showToast(`💬 ${leadName}: ${preview}`);
+            try {
+              if (typeof Notification !== 'undefined' &&
+                  Notification.permission === 'granted' &&
+                  typeof document !== 'undefined' &&
+                  document.visibilityState !== 'visible') {
+                new Notification(`New message from ${leadName}`, {
+                  body: preview,
+                  tag: `msg-${row.lead_id}`,
+                });
+              }
+            } catch {}
+          }
         }
       )
       .on(
@@ -2176,6 +2219,11 @@ function Landing({ onStart }) {
                   <div>Reply by text — no app to install</div>
                 </div>
               </div>
+              <p className="text-[11px] text-slate-500 mt-3 max-w-md leading-relaxed">
+                By starting, you agree to receive SMS from Rentals Philly about your rental
+                search. Msg &amp; data rates may apply. Reply STOP to opt out, HELP for help.{' '}
+                <a href="/privacy" className="underline">Privacy</a>.
+              </p>
               {/* Trust strip */}
               <div className="mt-8 pt-6 border-t border-slate-200 flex flex-wrap items-center gap-x-6 gap-y-3 text-xs text-slate-500">
                 <div className="inline-flex items-center gap-1.5">
@@ -2779,6 +2827,21 @@ function IntakeForm({ onSubmit, onBack }) {
   });
   const update = (k, v) => setData({ ...data, [k]: v });
 
+  // Pre-fill source from ?ref= query param (e.g. /?ref=instagram tags lead
+  // source as Instagram). Capitalize first letter for display. Falls back to
+  // the picker step if no ref param is provided.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const ref = params.get('ref') || params.get('utm_source') || params.get('src');
+      if (ref) {
+        const normalized = ref.charAt(0).toUpperCase() + ref.slice(1).toLowerCase();
+        setData((d) => ({ ...d, source: normalized }));
+      }
+    } catch {}
+  }, []);
+
   const steps = [
     {
       title: 'Let\'s start with the basics',
@@ -2788,7 +2851,7 @@ function IntakeForm({ onSubmit, onBack }) {
         <div className="space-y-4">
           <FormField label="Full name" icon={User}><input value={data.fullName} onChange={e => update('fullName', e.target.value)} placeholder="Alex Morgan" className="form-input" /></FormField>
           <FormField label="Email" icon={Mail}><input type="email" value={data.email} onChange={e => update('email', e.target.value)} placeholder="alex@example.com" className="form-input" /></FormField>
-          <FormField label="Phone" icon={Phone}><input type="tel" value={data.phone} onChange={e => update('phone', e.target.value)} placeholder="(215) 555-0123" className="form-input" /></FormField>
+          <FormField label="Phone" icon={Phone}><input type="tel" value={data.phone} onChange={e => update('phone', formatUsPhone(e.target.value))} placeholder="(215) 555-0123" className="form-input" maxLength={14} /></FormField>
         </div>
       )
     },
@@ -2913,6 +2976,17 @@ function IntakeForm({ onSubmit, onBack }) {
         {step === steps.length - 1 ? 'Send to my agent' : 'Continue'}
         <ArrowRight className="w-4 h-4" />
       </button>
+      {/* A2P 10DLC compliance: explicit SMS opt-in disclosure visible on
+          every step. Required for carrier approval. */}
+      <div className="mt-4 text-[11px] text-slate-500 leading-relaxed text-center">
+        By tapping &ldquo;{step === steps.length - 1 ? 'Send to my agent' : 'Continue'}&rdquo;, you agree to receive recurring SMS text
+        messages from Rentals Philly at the number provided about rental listings,
+        showing confirmations, and appointment reminders. Consent is not a condition of any
+        purchase. Message frequency varies. Message and data rates may apply.
+        Reply <strong>HELP</strong> for help, <strong>STOP</strong> to cancel.
+        See our <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline">Privacy Policy</a> and{' '}
+        <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">Terms</a>.
+      </div>
     </div>
   );
 }
@@ -3872,6 +3946,75 @@ function GlobalSearch({ search, setSearch, leads, onSelectLead, onSelectTour }) 
 // TODAY VIEW — at-a-glance morning brief: tasks, tours, replies, hot leads.
 // One screen for "what do I need to do right now?"
 // ============================================================
+// Tiny green/red dot in the header that reflects whether the browser thinks
+// we're online + responsive. Pure-frontend signal — flips on the navigator
+// online/offline events. Tooltip explains the state.
+function LiveStatusDot() {
+  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener('online', up);
+    window.addEventListener('offline', down);
+    return () => {
+      window.removeEventListener('online', up);
+      window.removeEventListener('offline', down);
+    };
+  }, []);
+  return (
+    <span
+      title={online ? 'Live · realtime connected' : 'Offline · reconnecting…'}
+      className={`inline-block w-1.5 h-1.5 rounded-full ${online ? 'bg-emerald-500' : 'bg-red-500'} ${online ? 'animate-pulse' : ''}`}
+      aria-label={online ? 'Online' : 'Offline'}
+    />
+  );
+}
+
+// One-time prompt to enable browser notifications. Disappears once the
+// user grants/denies permission OR clicks dismiss. Persists the dismissal in
+// localStorage so it doesn't nag across reloads.
+function NotificationPrompt() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'default') return;
+    try {
+      if (localStorage.getItem('rp_notif_prompt_dismissed') === '1') return;
+    } catch {}
+    setShow(true);
+  }, []);
+  if (!show) return null;
+  const dismiss = () => {
+    try { localStorage.setItem('rp_notif_prompt_dismissed', '1'); } catch {}
+    setShow(false);
+  };
+  const enable = async () => {
+    try {
+      await Notification.requestPermission();
+    } catch {}
+    dismiss();
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-blue-50 border border-blue-200 text-sm">
+      <div className="flex items-center gap-2 flex-1 min-w-0">
+        <Bell className="w-4 h-4 text-blue-600 shrink-0" />
+        <span className="text-blue-900">
+          <strong>Get notified</strong> when a lead replies — even when this tab is in the background.
+        </span>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button onClick={enable} className="px-3 py-1.5 rounded-full bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700">
+          Enable
+        </button>
+        <button onClick={dismiss} className="text-blue-700 hover:text-blue-900" title="Not now">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Setup checklist — shows on Today view while critical settings are missing.
 // Dismisses itself once everything's filled in. Auto-detects from settings.
 function SetupChecklist({ settings, setSubview }) {
@@ -3953,6 +4096,122 @@ function SetupChecklist({ settings, setSubview }) {
             <span className={item.done ? 'text-slate-500 line-through' : 'text-slate-900 font-medium'}>{item.label}</span>
             <span className="text-slate-500 hidden sm:inline">— {item.hint}</span>
           </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// On-demand AI briefing about the lead an agent is about to tour. Collapsed
+// by default so it doesn't burn API calls on page load; one click expands +
+// fetches. Cached per (leadId, tourId) so re-opening within a session is free.
+function TourPrepBriefing({ leadId, tourId }) {
+  const [open, setOpen] = useState(false);
+  const [briefing, setBriefing] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const load = async () => {
+    if (briefing || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/ai/tour-prep', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId, tourId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data.error || 'failed');
+      } else {
+        setBriefing(data.briefing);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+    setLoading(false);
+  };
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) load();
+  };
+
+  return (
+    <div className="border-t border-emerald-200 bg-white">
+      <button
+        onClick={toggle}
+        className="w-full px-3 py-1.5 text-[11px] font-semibold flex items-center justify-between hover:bg-slate-50"
+        style={{ color: 'var(--brand-gold)' }}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <Sparkles className="w-3 h-3" />
+          {open ? 'Hide tour-prep briefing' : 'Show AI tour-prep briefing'}
+        </span>
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-xs text-slate-700 leading-relaxed">
+          {loading && (
+            <div className="text-slate-400 italic flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--brand-gold)' }} />
+              Drafting briefing…
+            </div>
+          )}
+          {error && (
+            <div className="text-red-600">
+              Couldn&apos;t draft briefing: {error}.{' '}
+              <button onClick={() => { setBriefing(null); load(); }} className="underline">Retry</button>
+            </div>
+          )}
+          {briefing && <div className="whitespace-pre-wrap">{briefing}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Needs Attention card — surface stuck + cold leads on Today so they don't
+// drift. Uses leadHealth() to flag, sorts by days-in-stage descending.
+function NeedsAttentionCard({ leads, onSelectLead }) {
+  const flagged = useMemo(() => {
+    return leads
+      .map((l) => ({ lead: l, health: leadHealth(l) }))
+      .filter(({ health }) => health.status === 'stuck' || health.status === 'cold')
+      .sort((a, b) => b.health.days - a.health.days)
+      .slice(0, 6);
+  }, [leads]);
+
+  if (flagged.length === 0) return null;
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <AlertTriangle className="w-4 h-4 text-red-600" />
+        <div className="text-sm font-semibold text-slate-900">Needs attention</div>
+        <div className="text-[10px] text-slate-500">{flagged.length} flagged</div>
+      </div>
+      <div className="space-y-1.5">
+        {flagged.map(({ lead, health }) => (
+          <button
+            key={lead.id}
+            onClick={() => onSelectLead(lead.id)}
+            className="w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-slate-50"
+          >
+            <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${HEALTH_TONE_CLASS[health.tone] || HEALTH_TONE_CLASS.neutral}`}>
+              {health.label}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-slate-900 truncate">{lead.fullName}</div>
+              <div className="text-[11px] text-slate-500 truncate">
+                Stage: <span className="text-slate-700">{lead.stage || 'new'}</span>
+                {' · '}Last activity {health.days}d ago
+              </div>
+            </div>
+            <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+          </button>
         ))}
       </div>
     </Card>
@@ -4055,6 +4314,10 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
       {/* Setup checklist — only renders while there's outstanding setup */}
       <SetupChecklist settings={settings} setSubview={setSubview} />
 
+      {/* Browser notification opt-in prompt — only if not yet decided */}
+      <NotificationPrompt />
+
+
       {empty && (
         <Card className="p-8 text-center">
           <Sparkles className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--brand-gold)' }} />
@@ -4114,19 +4377,22 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
                 const firstAddr = (t.listings || []).map((l) => l.address).filter(Boolean)[0];
                 const mapsUrl = firstAddr ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(firstAddr)}` : null;
                 return (
-                  <button key={t.id} onClick={() => onSelectLead(t.lead.id)} className="w-full text-left flex items-center gap-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100">
-                    <div className="font-bold text-sm tabular-nums shrink-0 w-20 text-emerald-900">{t.time}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-slate-900 truncate">{t.lead.fullName}</div>
-                      <div className="text-xs text-slate-600 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(' · ')}</div>
-                    </div>
-                    {mapsUrl && (
-                      <a href={mapsUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Open directions">
-                        <MapPin className="w-4 h-4" />
-                      </a>
-                    )}
-                    {t.lead.phone && <a href={`tel:${t.lead.phone}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Call lead"><Phone className="w-4 h-4" /></a>}
-                  </button>
+                  <div key={t.id} className="rounded-lg border border-emerald-200 bg-emerald-50 overflow-hidden">
+                    <button onClick={() => onSelectLead(t.lead.id)} className="w-full text-left flex items-center gap-3 p-3 hover:bg-emerald-100">
+                      <div className="font-bold text-sm tabular-nums shrink-0 w-20 text-emerald-900">{t.time}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-slate-900 truncate">{t.lead.fullName}</div>
+                        <div className="text-xs text-slate-600 truncate">{(t.listings || []).map((l) => l.address).filter(Boolean).join(' · ')}</div>
+                      </div>
+                      {mapsUrl && (
+                        <a href={mapsUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Open directions">
+                          <MapPin className="w-4 h-4" />
+                        </a>
+                      )}
+                      {t.lead.phone && <a href={`tel:${t.lead.phone}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Call lead"><Phone className="w-4 h-4" /></a>}
+                    </button>
+                    <TourPrepBriefing leadId={t.lead.id} tourId={t.id} />
+                  </div>
                 );
               })}
             </div>
@@ -4147,6 +4413,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
           )}
         </Card>
       )}
+
+      {/* NEEDS ATTENTION — stuck + cold leads */}
+      <NeedsAttentionCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* ACTIONS */}
       {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
@@ -4310,12 +4579,107 @@ function AddTaskQuickForm({ leads, updateLead, showToast }) {
   );
 }
 
+// Keyboard shortcut help overlay — opened with "?" key.
+function KeyboardShortcutHelp({ onClose }) {
+  const rows = [
+    { keys: ['/'],      label: 'Focus global search' },
+    { keys: ['g', 'i'], label: 'Go to Inbox' },
+    { keys: ['g', 't'], label: 'Go to Today' },
+    { keys: ['g', 'p'], label: 'Go to Pipeline' },
+    { keys: ['g', 'l'], label: 'Go to Leads' },
+    { keys: ['g', 'c'], label: 'Go to Tours (Calendar)' },
+    { keys: ['g', 's'], label: 'Go to Settings' },
+    { keys: ['⌘', 'Enter'], label: 'Send message in inbox composer' },
+    { keys: ['Esc'],    label: 'Close drawer or overlay' },
+    { keys: ['?'],      label: 'Toggle this help' },
+  ];
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="font-semibold text-slate-900">Keyboard shortcuts</div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.label} className="flex items-center justify-between gap-3 py-1">
+              <span className="text-sm text-slate-700">{r.label}</span>
+              <div className="flex items-center gap-1">
+                {r.keys.map((k, i) => (
+                  <span key={i} className="inline-block min-w-[22px] text-center px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-[11px] font-mono font-semibold text-slate-700">
+                    {k}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 pt-4 border-t border-slate-100 text-[11px] text-slate-400 text-center">
+          Press <span className="font-mono font-semibold">?</span> anytime to open this list
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
   const [submitModal, setSubmitModal] = useState(null);
   const [followUpModal, setFollowUpModal] = useState(null);
   const [search, setSearch] = useState('');
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+
+  // Keyboard shortcuts. Active anywhere in admin EXCEPT when the user is
+  // typing in an input/textarea (so / doesn't break search inputs etc.).
+  useEffect(() => {
+    let pendingG = null; // tracks "g, then X" two-key sequences
+    const isTypingIn = (el) => {
+      if (!el) return false;
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      if (el.isContentEditable) return true;
+      return false;
+    };
+    const handler = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingIn(document.activeElement) && e.key !== 'Escape') return;
+      // "?" opens the shortcut help overlay
+      if (e.key === '?') { e.preventDefault(); setShowShortcutHelp((v) => !v); return; }
+      // "/" focuses the global search input
+      if (e.key === '/') {
+        e.preventDefault();
+        const inp = document.querySelector('input[placeholder*="Search anything"]');
+        if (inp) inp.focus();
+        return;
+      }
+      // Escape closes overlays
+      if (e.key === 'Escape') {
+        setShowShortcutHelp(false);
+        setSelectedLeadId(null);
+        return;
+      }
+      // "g" prefix → next key navigates
+      if (pendingG) {
+        const map = { i: 'inbox', p: 'pipeline', l: 'leads', c: 'tours', s: 'settings', t: 'today' };
+        const dest = map[e.key.toLowerCase()];
+        clearTimeout(pendingG);
+        pendingG = null;
+        if (dest) { e.preventDefault(); setSubview(dest); }
+        return;
+      }
+      if (e.key === 'g' || e.key === 'G') {
+        pendingG = setTimeout(() => { pendingG = null; }, 800);
+        return;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      if (pendingG) clearTimeout(pendingG);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectedLead = leads.find(l => l.id === selectedLeadId);
 
@@ -4366,7 +4730,10 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
         <div className="flex items-center gap-3">
           <Logo size="md" />
           <div className="hidden md:block">
-            <div className="text-xs font-semibold uppercase tracking-[0.15em]" style={{ color: 'var(--brand-gold)' }}>CRM</div>
+            <div className="flex items-center gap-1.5">
+              <div className="text-xs font-semibold uppercase tracking-[0.15em]" style={{ color: 'var(--brand-gold)' }}>CRM</div>
+              <LiveStatusDot />
+            </div>
             <div className="text-xs text-slate-500 mt-0.5">{leads.length} lead{leads.length === 1 ? '' : 's'} · {upcomingTours.length} upcoming tour{upcomingTours.length === 1 ? '' : 's'}</div>
           </div>
         </div>
@@ -4489,6 +4856,8 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
       {submitModal && <SubmitApplicationModal lead={submitModal.lead} onClose={() => setSubmitModal(null)} onSubmit={async (submission) => { await createSubmission(submitModal.lead.id, submission); setSubmitModal(null); }} settings={settings} />}
 
       {followUpModal && <LogFollowUpModal lead={followUpModal.lead} submissionId={followUpModal.submissionId} onClose={() => setFollowUpModal(null)} onLog={async (note) => { await logSubmissionFollowUp(followUpModal.lead.id, followUpModal.submissionId, note); setFollowUpModal(null); }} />}
+
+      {showShortcutHelp && <KeyboardShortcutHelp onClose={() => setShowShortcutHelp(false)} />}
 
       {composeModal && <ComposeModal {...composeModal} onClose={() => setComposeModal(null)} onSend={async (msg) => {
         const lead = composeModal.lead;
@@ -5816,7 +6185,7 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
         <div className="space-y-3">
           <FormField label="Your name"><input value={form.agentName} onChange={e => update('agentName', e.target.value)} className="form-input" /></FormField>
           <FormField label="Your email"><input type="email" value={form.agentEmail} onChange={e => update('agentEmail', e.target.value)} className="form-input" /></FormField>
-          <FormField label="Your phone"><input type="tel" value={form.agentPhone} onChange={e => update('agentPhone', e.target.value)} className="form-input" /></FormField>
+          <FormField label="Your phone"><input type="tel" value={form.agentPhone} onChange={e => update('agentPhone', formatUsPhone(e.target.value))} className="form-input" maxLength={14} /></FormField>
           <FormField label="Twilio number"><input type="tel" value={form.twilioNumber} onChange={e => update('twilioNumber', e.target.value)} className="form-input" /></FormField>
           <FormField label="Email signature (auto-appended to every outbound email)">
             <textarea
@@ -6849,6 +7218,71 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
   );
 }
 
+// Unified lead activity timeline — merges activities + messages into one
+// chronological feed with iconFor() styling matching the global activity view.
+function LeadActivityTimeline({ lead }) {
+  const events = useMemo(() => {
+    const out = [];
+    for (const a of (lead.activities || [])) {
+      out.push({
+        id: `a_${a.id}`,
+        type: a.type || 'activity',
+        message: a.message,
+        timestamp: a.timestamp,
+      });
+    }
+    for (const m of (lead.messages || [])) {
+      if (m.internal) continue;
+      out.push({
+        id: `m_${m.id}`,
+        type: m.direction === 'inbound' ? 'message-in' : 'message-out',
+        message: `${m.channel === 'sms' ? 'SMS' : 'Email'} ${m.direction === 'inbound' ? 'received' : 'sent'}${m.automated ? ' (auto)' : ''}: ${(m.body || '').slice(0, 100)}${(m.body || '').length > 100 ? '…' : ''}`,
+        timestamp: m.timestamp,
+      });
+    }
+    return out.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  }, [lead]);
+
+  const iconFor = (type) => {
+    if (type === 'message-in') return { icon: MessageSquare, color: 'text-amber-600 bg-amber-50' };
+    if (type === 'message-out') return { icon: Send, color: 'text-blue-600 bg-blue-50' };
+    if (type === 'lead-created') return { icon: Sparkles, color: 'text-emerald-600 bg-emerald-50' };
+    if (type?.startsWith('stage-')) return { icon: Activity, color: 'text-violet-600 bg-violet-50' };
+    if (type?.includes('tour-')) return { icon: CalendarDays, color: 'text-blue-600 bg-blue-50' };
+    if (type?.includes('task')) return { icon: CheckCircle2, color: 'text-slate-600 bg-slate-100' };
+    if (type?.includes('submission')) return { icon: FileCheck, color: 'text-violet-600 bg-violet-50' };
+    if (type?.includes('curated')) return { icon: Star, color: 'text-amber-600 bg-amber-50' };
+    if (type?.includes('message-sent')) return { icon: Send, color: 'text-blue-600 bg-blue-50' };
+    return { icon: Activity, color: 'text-slate-600 bg-slate-100' };
+  };
+
+  if (events.length === 0) {
+    return <EmptyState icon={Activity} title="No activity yet" desc="Messages, stage changes, and tasks will appear here as they happen." />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {events.map((e) => {
+        const { icon: Icon, color } = iconFor(e.type);
+        return (
+          <div key={e.id} className="flex gap-3">
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${color}`}>
+              <Icon className="w-3.5 h-3.5" />
+            </div>
+            <div className="flex-1 min-w-0 pt-0.5">
+              <div className="text-sm text-slate-900">{e.message}</div>
+              <div className="text-xs text-slate-400 mt-0.5">
+                {new Date(e.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                {' · '}{timeAgo(e.timestamp)}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Lead actions menu — archive, mark lost, delete. Dropdown overflow menu.
 function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
   const [open, setOpen] = useState(false);
@@ -7089,25 +7523,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
 
           {tab === 'messages' && <MessagesTab lead={lead} onCompose={onCompose} />}
 
-          {tab === 'activity' && (
-            <div>
-              {(lead.activities || []).length === 0 ? (
-                <EmptyState icon={Activity} title="No activity yet" />
-              ) : (
-                <div className="space-y-3">
-                  {[...(lead.activities || [])].reverse().map(a => (
-                    <div key={a.id} className="flex gap-3">
-                      <ActivityIcon type={a.type} />
-                      <div className="flex-1 min-w-0 pt-0.5">
-                        <div className="text-sm text-slate-900">{a.message}</div>
-                        <div className="text-xs text-slate-400 mt-0.5">{new Date(a.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          {tab === 'activity' && <LeadActivityTimeline lead={lead} />}
         </div>
       </div>
     </div>
@@ -8615,10 +9031,12 @@ function SettingsSection({
     <div className="space-y-5">
       <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
         {[
-          { k: 'agent',      label: 'Agent & automation' },
-          { k: 'templates',  label: 'Templates' },
-          { k: 'analytics',  label: 'Analytics' },
-          { k: 'blast',      label: 'Bulk SMS' },
+          { k: 'agent',         label: 'Agent & automation' },
+          { k: 'templates',     label: 'Templates' },
+          { k: 'analytics',     label: 'Analytics' },
+          { k: 'activity',      label: 'Activity feed' },
+          { k: 'integrations',  label: 'Integrations' },
+          { k: 'blast',         label: 'Bulk SMS' },
         ].map(t => (
           <button
             key={t.k}
@@ -8653,6 +9071,8 @@ function SettingsSection({
         />
       )}
       {tab === 'analytics' && <AnalyticsView leads={leads} />}
+      {tab === 'activity' && <ActivityFeedView leads={leads} />}
+      {tab === 'integrations' && <IntegrationsView />}
       {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
     </div>
   );
@@ -8662,6 +9082,237 @@ function SettingsSection({
 // ANALYTICS — conversion funnel, time-in-stage, source attribution.
 // Pure derived metrics from the leads array; no extra fetches.
 // ============================================================
+// ============================================================
+// INTEGRATIONS — health check for every external service. Pings /api/health
+// which probes Supabase, Twilio, Resend, Anthropic, and reports sending mode.
+// ============================================================
+function IntegrationsView() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData(await res.json());
+    } catch (e) {
+      setErr(e.message);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const services = [
+    { key: 'supabase',     name: 'Supabase',      desc: 'Database, auth, realtime',           docs: 'https://supabase.com/dashboard' },
+    { key: 'twilio',       name: 'Twilio',        desc: 'SMS delivery + inbound webhook',      docs: 'https://console.twilio.com' },
+    { key: 'resend',       name: 'Resend',        desc: 'Transactional email delivery',        docs: 'https://resend.com/dashboard' },
+    { key: 'anthropic',    name: 'Anthropic Claude', desc: 'AI suggested replies + tour prep', docs: 'https://console.anthropic.com' },
+    { key: 'sending_mode', name: 'Sending mode',  desc: 'ENABLE_REAL_SENDING env flag',         docs: null },
+    { key: 'vercel_cron',  name: 'Vercel Cron',   desc: 'Scheduled background jobs',           docs: 'https://vercel.com/dashboard' },
+  ];
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">Integrations</h2>
+          <p className="text-sm text-slate-500">Live status of every external service that powers Rentals Philly.</p>
+        </div>
+        <Button size="sm" onClick={load} disabled={loading} icon={Activity}>
+          {loading ? 'Checking…' : 'Re-check'}
+        </Button>
+      </div>
+
+      {err && (
+        <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-sm text-red-800">
+          Couldn&apos;t load health check: {err}
+        </div>
+      )}
+
+      <Card className="divide-y divide-slate-100 overflow-hidden">
+        {services.map((s) => {
+          const check = data?.[s.key];
+          const status = check?.ok ? 'ok' : check ? 'fail' : 'unknown';
+          const dotColor = status === 'ok' ? 'bg-emerald-500' : status === 'fail' ? 'bg-red-500' : 'bg-slate-300';
+          return (
+            <div key={s.key} className="flex items-start gap-3 p-4">
+              <div className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${dotColor} ${status === 'ok' ? 'animate-pulse' : ''}`} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="font-semibold text-slate-900 text-sm">{s.name}</div>
+                  {check && (
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                      check.ok ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'
+                    }`}>
+                      {check.label}
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">{s.desc}</div>
+                {check?.detail && (
+                  <div className="text-xs text-slate-600 mt-1.5 font-mono bg-slate-50 rounded px-2 py-1">
+                    {check.detail}
+                  </div>
+                )}
+              </div>
+              {s.docs && (
+                <a href={s.docs} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-slate-700 shrink-0 mt-1">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+          );
+        })}
+      </Card>
+
+      <div className="text-xs text-slate-500 leading-relaxed bg-slate-50 border border-slate-200 rounded-xl p-4">
+        <strong className="text-slate-900">Sending mode:</strong> when the badge reads <span className="font-mono font-semibold text-amber-700">SIMULATION</span>,
+        nothing is actually being delivered — Twilio + Resend run as no-ops so you can build safely.
+        To go live, set <span className="font-mono">ENABLE_REAL_SENDING=true</span> in Vercel and redeploy.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ACTIVITY FEED — chronological view of every event across all leads.
+// Pulled from each lead's activities + messages + tour status changes.
+// ============================================================
+function ActivityFeedView({ leads }) {
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+
+  // Build a flat activity stream from leads + messages.
+  const allEvents = useMemo(() => {
+    const out = [];
+    for (const lead of leads) {
+      // Lead activities (stage changes, tasks, etc.)
+      for (const a of (lead.activities || [])) {
+        out.push({
+          id: `${lead.id}_a_${a.id}`,
+          leadId: lead.id,
+          leadName: lead.fullName,
+          type: a.type || 'activity',
+          message: a.message,
+          timestamp: a.timestamp,
+          source: 'activity',
+        });
+      }
+      // Messages (skip internal notes)
+      for (const m of (lead.messages || [])) {
+        if (m.internal) continue;
+        out.push({
+          id: `${lead.id}_m_${m.id}`,
+          leadId: lead.id,
+          leadName: lead.fullName,
+          type: m.direction === 'inbound' ? 'message-in' : 'message-out',
+          message: `${m.channel === 'sms' ? 'SMS' : 'Email'} ${m.direction === 'inbound' ? 'received' : 'sent'}: ${(m.body || '').slice(0, 80)}${(m.body || '').length > 80 ? '…' : ''}`,
+          timestamp: m.timestamp,
+          source: m.channel,
+          automated: !!m.automated,
+        });
+      }
+    }
+    return out.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  }, [leads]);
+
+  const filtered = useMemo(() => {
+    let out = allEvents;
+    if (filter === 'messages') out = out.filter((e) => e.type === 'message-in' || e.type === 'message-out');
+    else if (filter === 'inbound') out = out.filter((e) => e.type === 'message-in');
+    else if (filter === 'stages') out = out.filter((e) => (e.type || '').startsWith('stage-'));
+    else if (filter === 'tasks') out = out.filter((e) => (e.type || '').includes('task'));
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      out = out.filter((e) =>
+        (e.leadName || '').toLowerCase().includes(q) ||
+        (e.message || '').toLowerCase().includes(q)
+      );
+    }
+    return out.slice(0, 300);
+  }, [allEvents, filter, search]);
+
+  const iconFor = (type) => {
+    if (type === 'message-in') return { icon: MessageSquare, color: 'text-amber-600 bg-amber-50' };
+    if (type === 'message-out') return { icon: Send, color: 'text-blue-600 bg-blue-50' };
+    if (type === 'lead-created') return { icon: Sparkles, color: 'text-emerald-600 bg-emerald-50' };
+    if (type?.startsWith('stage-')) return { icon: Activity, color: 'text-violet-600 bg-violet-50' };
+    if (type?.includes('tour-')) return { icon: CalendarDays, color: 'text-blue-600 bg-blue-50' };
+    if (type?.includes('task')) return { icon: CheckCircle2, color: 'text-slate-600 bg-slate-100' };
+    if (type?.includes('submission')) return { icon: FileCheck, color: 'text-violet-600 bg-violet-50' };
+    if (type?.includes('curated')) return { icon: Star, color: 'text-amber-600 bg-amber-50' };
+    return { icon: Activity, color: 'text-slate-600 bg-slate-100' };
+  };
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="flex flex-wrap gap-2 items-center">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by lead name or content…"
+            className="w-full pl-9 pr-3 py-1.5 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400"
+          />
+        </div>
+        {[
+          { k: 'all',      label: 'All' },
+          { k: 'messages', label: 'Messages' },
+          { k: 'inbound',  label: 'Inbound only' },
+          { k: 'stages',   label: 'Stage changes' },
+          { k: 'tasks',    label: 'Tasks' },
+        ].map((f) => (
+          <button
+            key={f.k}
+            onClick={() => setFilter(f.k)}
+            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+              filter === f.k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={Activity} title="No matching activity" desc="Try a different filter or search term." />
+      ) : (
+        <Card className="overflow-hidden divide-y divide-slate-100">
+          {filtered.map((e) => {
+            const { icon: Icon, color } = iconFor(e.type);
+            return (
+              <div key={e.id} className="flex items-start gap-3 p-3 hover:bg-slate-50">
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${color}`}>
+                  <Icon className="w-3.5 h-3.5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-900">
+                    <span className="font-semibold">{e.leadName}</span>
+                    <span className="text-slate-500"> · {e.message}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    {timeAgo(e.timestamp)}{e.automated ? ' · auto' : ''}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {allEvents.length > 300 && (
+            <div className="p-3 text-center text-xs text-slate-400 italic">
+              Showing 300 most recent · {allEvents.length} total events
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
 function AnalyticsView({ leads }) {
   const stats = useMemo(() => {
     const total = leads.length;
@@ -8945,6 +9596,13 @@ function TemplatesEditor({ settings, saveSettings, showToast, focusBucket, onCle
         onChange={(next) => setForm({ ...form, quickReplyTemplates: next })}
         onSave={save}
       />
+
+      {/* SYSTEM MESSAGES — tour reminders, scheduling-link SMS, etc. */}
+      <SystemTemplatesEditor
+        templates={form.systemTemplates || DEFAULT_AGENT_SETTINGS.systemTemplates}
+        onChange={(next) => setForm({ ...form, systemTemplates: next })}
+        onSave={save}
+      />
       <style>{`.form-input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid rgb(226 232 240); border-radius: 0.5rem; font-size: 0.875rem; outline: none; transition: border-color 0.15s; } .form-input:focus { border-color: rgb(100 116 139); }`}</style>
     </div>
   );
@@ -8954,6 +9612,67 @@ function TemplatesEditor({ settings, saveSettings, showToast, focusBucket, onCle
 // QUICK REPLY EDITOR — manage the templates that appear in the inbox composer.
 // CRUD: rename, edit body, change channel, delete, reorder, add new.
 // ============================================================
+// System message templates editor — for cron-fired SMS and automatic flows.
+// Each row is a single textarea + helper text about the placeholders.
+const SYSTEM_TEMPLATE_FIELDS = [
+  { key: 'reminder24h',         label: '24-hour tour reminder (SMS)', desc: 'Sent 24 hours before each scheduled tour. Placeholders: {tourTime}.' },
+  { key: 'reminder1h',          label: '1-hour tour reminder (SMS)',  desc: 'Sent ~1 hour before each tour. Placeholders: {tourTime}.' },
+  { key: 'schedulingLinkSms',   label: 'Scheduling-link SMS',          desc: 'Sent when you click "Send scheduling link" on a lead. Placeholders: {firstName}, {portalUrl}.' },
+  { key: 'schedulingLinkEmail', label: 'Scheduling-link email body',   desc: 'Email version of the scheduling link. Placeholders: {firstName}, {portalUrl}, {agentName}.' },
+  { key: 'curatedConfirmSms',   label: 'Curated picks confirmation (SMS)', desc: "Auto-sent when a lead submits their property picks. Placeholders: {addressCount}." },
+];
+
+function SystemTemplatesEditor({ templates, onChange, onSave }) {
+  const update = (key, value) => onChange({ ...templates, [key]: value });
+  const resetField = (key) => {
+    const defaults = DEFAULT_AGENT_SETTINGS.systemTemplates;
+    onChange({ ...templates, [key]: defaults[key] || '' });
+  };
+
+  return (
+    <Card className="p-5 space-y-4 max-w-3xl">
+      <SectionHeader icon={Bot}>System messages</SectionHeader>
+      <div className="text-sm text-slate-600 leading-relaxed">
+        These are messages sent automatically by background jobs — tour reminders, scheduling links, and confirmations. Customize the wording without redeploying.
+      </div>
+
+      {SYSTEM_TEMPLATE_FIELDS.map((f) => {
+        const value = templates[f.key] || '';
+        const segments = Math.max(1, Math.ceil(value.length / 160));
+        const isShort = f.key !== 'schedulingLinkEmail';
+        return (
+          <div key={f.key} className="border-t border-slate-100 pt-4 first:border-t-0 first:pt-0">
+            <div className="flex items-start justify-between mb-1.5 gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-sm text-slate-900">{f.label}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{f.desc}</div>
+              </div>
+              <button onClick={() => resetField(f.key)} className="text-[10px] text-slate-500 hover:text-slate-900 underline shrink-0">
+                Reset
+              </button>
+            </div>
+            <textarea
+              value={value}
+              onChange={(e) => update(f.key, e.target.value)}
+              rows={isShort ? 3 : 6}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400 resize-y font-mono"
+            />
+            {isShort && (
+              <div className="text-[10px] text-slate-400 mt-1 text-right">
+                {value.length} chars · {segments} segment{segments !== 1 ? 's' : ''}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="flex justify-end pt-2 border-t border-slate-100">
+        <Button size="md" onClick={onSave}>Save system messages</Button>
+      </div>
+    </Card>
+  );
+}
+
 function QuickReplyEditor({ templates, onChange, onSave }) {
   const [expandedId, setExpandedId] = useState(null);
 

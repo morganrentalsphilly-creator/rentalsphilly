@@ -21,8 +21,9 @@ export default function PrivacyPage() {
       <p className="mb-6">
         Rentals Philly (&ldquo;we,&rdquo; &ldquo;us&rdquo;) is operated by Morgan Page, an
         independent real estate professional based in Philadelphia, Pennsylvania. This
-        policy explains what we collect when you use rentalsphilly.com, what we do with it,
-        and your choices.
+        policy explains what we collect when you use our website at
+        rentalsphilly.vercel.app (the &ldquo;Site&rdquo;), what we do with it, and your
+        choices.
       </p>
 
       <h2 className="text-xl font-semibold text-slate-900 mt-10 mb-3">What we collect</h2>
@@ -49,30 +50,48 @@ export default function PrivacyPage() {
 
       <h2 className="text-xl font-semibold text-slate-900 mt-10 mb-3">SMS / text-message program</h2>
       <p className="mb-3">
-        By submitting your phone number on our intake form or by replying to one of our
-        messages, you agree to receive SMS text messages from Rentals Philly relating to
-        rental listings, showing confirmations, and appointment reminders. Consent is not a
-        condition of any service.
+        <strong>Program name:</strong> Rentals Philly SMS<br />
+        <strong>Program description:</strong> When you submit our intake form on
+        rentalsphilly.vercel.app and provide your mobile phone number, you opt in to
+        receive recurring SMS text messages from Rentals Philly about rental listings
+        matching your criteria, showing confirmations, appointment reminders, and replies
+        to your own messages.
+      </p>
+      <p className="mb-3">
+        <strong>Consent is not a condition of any purchase.</strong> You do not have to
+        receive SMS to receive service from us — you can choose to communicate by email
+        instead.
       </p>
       <ul className="list-disc pl-6 mb-3 space-y-1">
-        <li><strong>Message frequency varies</strong> based on your activity. A typical lead receives 5–10 messages over the search-to-lease window.</li>
+        <li><strong>Message frequency varies</strong> based on your activity. A typical lead receives 5–10 messages over the search-to-lease window (about 2–8 weeks).</li>
         <li><strong>Message and data rates may apply</strong> per your mobile carrier.</li>
-        <li><strong>Reply STOP</strong> at any time to opt out. You will receive a confirmation message and we will not contact you by SMS again until you reply START.</li>
-        <li><strong>Reply HELP</strong> to receive help or contact information.</li>
+        <li><strong>To opt out, reply STOP</strong> to any of our messages. You will receive one confirmation message and we will not contact you by SMS again unless you reply START.</li>
+        <li><strong>For help, reply HELP</strong> or email morganrentalsphilly@gmail.com.</li>
+        <li>Supported carriers include AT&amp;T, T-Mobile, Verizon, Sprint, Boost, Cricket, MetroPCS, U.S. Cellular, Virgin Mobile, and most other US carriers. Carriers are not liable for delayed or undelivered messages.</li>
+      </ul>
+      <p className="mb-3">
+        <strong>Example messages you may receive:</strong>
+      </p>
+      <ul className="list-disc pl-6 mb-3 space-y-1 text-sm bg-slate-50 border border-slate-200 rounded-lg p-4">
+        <li>&ldquo;Rentals Philly: Got it Alex — I&apos;m hand-picking rentals that fit you. Expect a personalized link with photos within a few hours.&rdquo;</li>
+        <li>&ldquo;Rentals Philly: Your hand-picked rentals are ready. View photos &amp; request tours: [link]&rdquo;</li>
+        <li>&ldquo;Reminder: your showing is tomorrow at 5:00 PM. Reply if you need to reschedule.&rdquo;</li>
       </ul>
       <p className="mb-6">
-        We do not share your phone number or SMS opt-in status with third parties for their
-        own marketing. Carriers may apply their own privacy policies to messages traversing
-        their networks.
+        <strong>We do not share your phone number, SMS opt-in status, or consent
+        information with any third party or affiliate for their own marketing purposes.</strong>{' '}
+        Mobile information is used solely to operate this SMS program. Carriers may apply
+        their own privacy policies to messages traversing their networks.
       </p>
 
       <h2 className="text-xl font-semibold text-slate-900 mt-10 mb-3">Who we share with</h2>
       <p className="mb-6">
         We use a small set of service providers to operate the site: Supabase (database
         and authentication), Twilio (SMS delivery), Resend (email delivery), Vercel
-        (hosting), and BrightMLS (listing data feed). Your information is only shared with
-        these providers to the extent necessary for them to provide their service. We do
-        not sell or rent your information.
+        (hosting), and licensed real estate listing data feeds. Your information is only
+        shared with these providers to the extent necessary for them to provide their
+        service. <strong>We do not sell or rent your information, and we never share it
+        with third parties for their own marketing.</strong>
       </p>
       <p className="mb-6">
         If you ultimately apply for a rental, your application and screening information

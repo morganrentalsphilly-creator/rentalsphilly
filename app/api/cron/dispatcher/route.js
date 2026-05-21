@@ -31,12 +31,27 @@ function authorized(request) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Pull system templates from settings — fall back to hardcoded defaults
+// if the row is missing or the field is empty (so a partial settings save
+// doesn't break reminders).
+const DEFAULT_SYSTEM_TEMPLATES = {
+  reminder24h: `Reminder: your showing is tomorrow at {tourTime}. Reply if you need to reschedule.`,
+  reminder1h: `Heads up — your showing is in about an hour ({tourTime}). See you soon!`,
+};
+function fillTpl(tpl, vars) {
+  return String(tpl || '').replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? `{${k}}`);
+}
+
 async function runReminders(db) {
   const now = new Date();
   const in23h45m = new Date(now.getTime() + (24 * 60 - 15) * 60 * 1000);
   const in24h15m = new Date(now.getTime() + (24 * 60 + 15) * 60 * 1000);
   const in45m    = new Date(now.getTime() + 45 * 60 * 1000);
   const in75m    = new Date(now.getTime() + 75 * 60 * 1000);
+
+  // Load agent-editable reminder templates (Settings → Templates).
+  const { data: settings } = await db.from('settings').select('system_templates').eq('id', 1).single();
+  const tpls = { ...DEFAULT_SYSTEM_TEMPLATES, ...(settings?.system_templates || {}) };
 
   // 24-hour reminders
   // Tour rows have separate `date` (yyyy-mm-dd) and `time` columns based on
@@ -65,11 +80,11 @@ async function runReminders(db) {
     const tasks = [];
     if (startsAt >= in23h45m && startsAt <= in24h15m && !reminders.day_before) {
       tasks.push({ flag: 'day_before', kind: 'reminder_24hr',
-        body: `Reminder: your showing is tomorrow at ${tour.time}. Reply if you need to reschedule.` });
+        body: fillTpl(tpls.reminder24h, { tourTime: tour.time }) });
     }
     if (startsAt >= in45m && startsAt <= in75m && !reminders.hour_before) {
       tasks.push({ flag: 'hour_before', kind: 'reminder_1hr',
-        body: `Heads up — your showing is in about an hour (${tour.time}). See you soon!` });
+        body: fillTpl(tpls.reminder1h, { tourTime: tour.time }) });
     }
 
     for (const t of tasks) {
