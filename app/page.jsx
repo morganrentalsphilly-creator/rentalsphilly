@@ -9083,29 +9083,48 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
               <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
             </div>
           </div>
+          {/* Compact status rail. Critical warnings get their own loud pills;
+              everything else (bucket / screening / app / submissions) folds
+              into a single muted "progress" chip to keep the header short
+              even on a phone. Move-in date lives in the Lead details grid. */}
           <div className="flex items-center gap-2 flex-wrap">
             <StageDropdown lead={lead} updateLead={updateLead} showToast={showToast} />
-            <Pill tone="neutral">{lead.bucket}</Pill>
-            {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out of SMS</Pill>}
-            {lead.screening?.status === 'completed' && <Pill tone="accent" icon={Shield}>Screened</Pill>}
-            {lead.application && <Pill tone="positive" icon={FileCheck}>App on file</Pill>}
-            {submissionCount > 0 && <Pill tone="info">{submissionCount} {submissionCount === 1 ? 'submission' : 'submissions'}</Pill>}
+            {/* Loud warnings — these change behavior, so they stay prominent */}
+            {lead.opted_out && <Pill tone="danger" icon={Shield}>Opted out</Pill>}
             {isLeadSnoozed(lead) && (
               <Pill tone="warning" icon={Bell}>
-                Snoozed until {new Date(lead.raw.snoozed_until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                Snoozed → {new Date(lead.raw.snoozed_until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               </Pill>
             )}
             {lead.raw?.automation_paused && (
-              <Pill tone="warning" icon={Bot}>
-                Auto-nudges paused
-              </Pill>
+              <Pill tone="warning" icon={Bot}>Paused</Pill>
             )}
-            {(lead.tags || []).map((t) => (
+            {/* One muted chip for classification + pipeline progress */}
+            {(() => {
+              const parts = [lead.bucket];
+              if (lead.screening?.status === 'completed') parts.push('Screened');
+              if (lead.application) parts.push('App on file');
+              if (submissionCount > 0) parts.push(`${submissionCount} sub${submissionCount === 1 ? '' : 's'}`);
+              return (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium text-slate-600 bg-slate-100">
+                  {parts.join(' · ')}
+                </span>
+              );
+            })()}
+            {/* Tags — first 2 visible, rest collapse to +N */}
+            {(lead.tags || []).slice(0, 2).map((t) => (
               <span key={t} className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${tagTone(t)}`}>
                 {t}
               </span>
             ))}
-            <span className="text-xs text-slate-500">Move {fmtDate(lead.moveInDate)}</span>
+            {(lead.tags || []).length > 2 && (
+              <span
+                className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border border-slate-200 bg-slate-50 text-slate-600"
+                title={(lead.tags || []).slice(2).join(', ')}
+              >
+                +{lead.tags.length - 2}
+              </span>
+            )}
             <Button
               size="sm"
               icon={MessageSquare}
