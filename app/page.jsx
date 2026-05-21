@@ -8876,6 +8876,8 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
 // Unified lead activity timeline — merges activities + messages into one
 // chronological feed with iconFor() styling matching the global activity view.
 function LeadActivityTimeline({ lead }) {
+  const firstName = (lead.fullName || '').split(' ')[0] || 'They';
+
   const events = useMemo(() => {
     const out = [];
     for (const a of (lead.activities || [])) {
@@ -8888,15 +8890,53 @@ function LeadActivityTimeline({ lead }) {
     }
     for (const m of (lead.messages || [])) {
       if (m.internal) continue;
+      const channel = m.channel === 'sms' ? 'SMS' : 'Email';
+      const who = m.direction === 'inbound' ? firstName : 'Me';
+      const auto = m.automated ? ' (auto)' : '';
+      const body = (m.body || '').replace(/\s+/g, ' ').trim();
+      const preview = body.length > 110 ? `${body.slice(0, 110)}…` : body;
       out.push({
         id: `m_${m.id}`,
         type: m.direction === 'inbound' ? 'message-in' : 'message-out',
-        message: `${m.channel === 'sms' ? 'SMS' : 'Email'} ${m.direction === 'inbound' ? 'received' : 'sent'}${m.automated ? ' (auto)' : ''}: ${(m.body || '').slice(0, 100)}${(m.body || '').length > 100 ? '…' : ''}`,
+        message: `${channel}${auto} · ${who}: "${preview}"`,
         timestamp: m.timestamp,
       });
     }
     return out.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  }, [lead]);
+  }, [lead, firstName]);
+
+  // Group events by day so a long timeline collapses into scannable date buckets.
+  // The header is "Today" / "Yesterday" / "Mon Jul 14" depending on recency.
+  const groups = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today.getTime() - 86400000);
+    const dayKey = (ts) => {
+      const d = new Date(ts);
+      d.setHours(0, 0, 0, 0);
+      return d.toISOString().slice(0, 10);
+    };
+    const dayLabel = (ts) => {
+      const d = new Date(ts);
+      d.setHours(0, 0, 0, 0);
+      if (d.getTime() === today.getTime()) return 'Today';
+      if (d.getTime() === yesterday.getTime()) return 'Yesterday';
+      const sameYear = d.getFullYear() === today.getFullYear();
+      return d.toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        ...(sameYear ? {} : { year: 'numeric' }),
+      });
+    };
+    const map = new Map();
+    for (const e of events) {
+      const k = dayKey(e.timestamp);
+      if (!map.has(k)) map.set(k, { label: dayLabel(e.timestamp), events: [] });
+      map.get(k).events.push(e);
+    }
+    return Array.from(map.values());
+  }, [events]);
 
   const iconFor = (type) => {
     if (type === 'message-in') return { icon: MessageSquare, color: 'text-amber-600 bg-amber-50' };
@@ -8916,24 +8956,34 @@ function LeadActivityTimeline({ lead }) {
   }
 
   return (
-    <div className="space-y-3">
-      {events.map((e) => {
-        const { icon: Icon, color } = iconFor(e.type);
-        return (
-          <div key={e.id} className="flex gap-3">
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${color}`}>
-              <Icon className="w-3.5 h-3.5" />
-            </div>
-            <div className="flex-1 min-w-0 pt-0.5">
-              <div className="text-sm text-slate-900">{e.message}</div>
-              <div className="text-xs text-slate-400 mt-0.5">
-                {new Date(e.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                {' · '}{timeAgo(e.timestamp)}
-              </div>
+    <div className="space-y-5">
+      {groups.map((group) => (
+        <div key={group.label} className="space-y-2">
+          <div className="sticky top-0 bg-white z-10 -mx-1 px-1 py-1 border-b border-slate-100">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              {group.label}
+              <span className="ml-2 text-slate-400 font-normal normal-case tracking-normal">
+                {group.events.length} event{group.events.length === 1 ? '' : 's'}
+              </span>
             </div>
           </div>
-        );
-      })}
+          {group.events.map((e) => {
+            const { icon: Icon, color } = iconFor(e.type);
+            const time = new Date(e.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            return (
+              <div key={e.id} className="flex gap-3">
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${color}`}>
+                  <Icon className="w-3.5 h-3.5" />
+                </div>
+                <div className="flex-1 min-w-0 pt-0.5">
+                  <div className="text-sm text-slate-900 leading-snug">{e.message}</div>
+                  <div className="text-[11px] text-slate-400 mt-0.5 tabular-nums">{time}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
