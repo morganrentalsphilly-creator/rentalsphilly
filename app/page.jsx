@@ -894,6 +894,36 @@ function leadScore(lead) {
   return { score: s, label };
 }
 
+// Cadence days: how often we should touch a lead at each stage. Tuned for
+// rental volume — fast at the top of funnel, slower late stage.
+const STAGE_CADENCE_DAYS = {
+  new: 0,             // touched immediately by welcome flow
+  matched: 3,         // bumped at 3d if no engagement
+  'tour-requested': 1, // bumped daily until tour booked
+  'tour-booked': 0,    // nothing to nudge; tour reminders fire
+  'post-tour': 2,     // post-tour follow-up
+  applied: 3,         // chase landlord follow-up
+  leased: 0,          // closed; no touches
+  paid: 0,            // closed; no touches
+  lost: 0,            // closed; no touches
+  archived: 0,        // closed; no touches
+};
+
+// Returns { lastTouchAt, daysSinceTouch, cadenceDays, isDue }.
+// "Last touch" = last OUTBOUND message (we did something) OR createdAt.
+// "Is due" = daysSinceTouch >= cadence for the stage (and cadence > 0).
+function leadTouchState(lead) {
+  const msgs = (lead.messages || []).filter((m) => !m.internal && m.direction === 'outbound');
+  const lastTouch = msgs[msgs.length - 1];
+  const lastTouchAt = lastTouch
+    ? new Date(lastTouch.timestamp).getTime()
+    : new Date(lead.createdAt || Date.now()).getTime();
+  const daysSinceTouch = Math.floor((Date.now() - lastTouchAt) / 86400000);
+  const cadenceDays = STAGE_CADENCE_DAYS[lead.stage] ?? 0;
+  const isDue = cadenceDays > 0 && daysSinceTouch >= cadenceDays;
+  return { lastTouchAt, daysSinceTouch, cadenceDays, isDue };
+}
+
 // True when the lead is snoozed and the snooze hasn't expired yet. Used to
 // hide leads from Today + Pipeline + Needs Attention so they don't clutter.
 function isLeadSnoozed(lead) {
@@ -4545,6 +4575,133 @@ function SetupChecklist({ settings, setSubview }) {
   );
 }
 
+// Next Best Action: AI recommends a single concrete move for this lead.
+// Renders as a tappable button right next to the AI summary card. Tapping
+// the suggested message routes to the compose modal pre-filled, so it's
+// a one-tap execute.
+function NextBestActionCard({ lead, onCompose, showToast }) {
+  const lastMsg = (lead.messages || []).filter((m) => !m.internal).slice(-1)[0];
+  const cacheKey = `${lead.id}::${lastMsg?.id || 'no-msgs'}::${lead.stage || 'new'}`;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [dismissed, setDismissed] = useState(false);
+  const cacheRef = useRef({});
+
+  const load = async (force = false) => {
+    if (!force && cacheRef.current[cacheKey]) {
+      setData(cacheRef.current[cacheKey]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/ai/next-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId: lead.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setError(json.error || 'failed');
+      } else {
+        cacheRef.current[cacheKey] = json;
+        setData(json);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    setData(null); setError(null); setDismissed(false);
+    if (cacheRef.current[cacheKey]) {
+      setData(cacheRef.current[cacheKey]);
+      return;
+    }
+    load(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
+
+  if (dismissed) return null;
+
+  const execute = () => {
+    if (!data?.action) return;
+    const t = data.action.type;
+    if (t === 'send-sms') {
+      onCompose({ kind: 'sms-custom', prefill: data.suggestedMessage || '' });
+    } else if (t === 'send-email') {
+      onCompose({ kind: 'email-custom', prefill: data.suggestedMessage || '' });
+    } else {
+      // For non-message actions, scroll the user to the right panel by hint.
+      const hint = t === 'send-curated-link' ? 'Open the curated link panel below to send the BrightMLS link.'
+        : t === 'send-scheduling-link' ? 'Open the scheduling link panel below to enable time picks.'
+        : t === 'request-application' ? 'Use the Submit Application button on this lead.'
+        : t === 'mark-stage' ? 'Use the stage dropdown at the top to advance.'
+        : t === 'mark-lost' ? 'Use the actions menu (▾) to mark this lead lost.'
+        : 'Waiting — cron will handle the next cadence touch.';
+      showToast(hint);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl p-4 border-2" style={{ borderColor: 'var(--brand-gold)', background: 'linear-gradient(180deg, rgba(181,142,84,0.08), white)' }}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="inline-flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--brand-gold)' }} />
+          <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--brand-gold)' }}>
+            Next best action
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={() => load(true)} disabled={loading} className="text-[10px] text-slate-500 hover:text-slate-900 px-2 py-0.5 rounded">
+            ↻ Refresh
+          </button>
+          <button onClick={() => setDismissed(true)} className="text-slate-400 hover:text-slate-700">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="text-xs text-slate-500 italic flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--brand-gold)' }} />
+          Thinking…
+        </div>
+      ) : error ? (
+        <div className="text-xs text-red-600">
+          Couldn&apos;t recommend: {error}.{' '}
+          <button onClick={() => load(true)} className="underline">Retry</button>
+        </div>
+      ) : data?.action ? (
+        <>
+          <div className="text-sm text-slate-800 mb-2 leading-relaxed">{data.reason}</div>
+          {data.suggestedMessage && (
+            <div className="text-xs text-slate-700 bg-white border border-slate-200 rounded-lg p-2.5 mb-3 whitespace-pre-wrap font-mono">
+              {data.suggestedMessage}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={execute}
+              disabled={data.action.type === 'wait'}
+              className="px-4 py-2 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+            >
+              <Check className="w-3 h-3" /> {data.action.label || 'Do it'}
+            </button>
+            {data.action.type === 'wait' && (
+              <span className="text-[10px] text-slate-500 italic">Waiting — no manual action needed.</span>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="text-xs text-slate-500 italic">No recommendation right now.</div>
+      )}
+    </div>
+  );
+}
+
 // AI status summary that surfaces at the top of the Lead Detail overview.
 // Auto-loads on open + caches per (leadId × last-message-id) so re-opens
 // don't burn API calls. Tiny gold-tinted card, dismissible per session.
@@ -4718,6 +4875,56 @@ function TourPrepBriefing({ leadId, tourId }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Cadence Due card — surfaces leads where the per-stage touch interval has
+// elapsed since the last outbound message. Helps Morgan keep deals warm
+// without manually tracking who he's reached out to.
+function CadenceDueCard({ leads, onSelectLead }) {
+  const due = useMemo(() => {
+    return leads
+      .filter((l) => !isLeadSnoozed(l))
+      .map((l) => ({ lead: l, touch: leadTouchState(l) }))
+      .filter(({ touch }) => touch.isDue)
+      .sort((a, b) => b.touch.daysSinceTouch - a.touch.daysSinceTouch)
+      .slice(0, 8);
+  }, [leads]);
+
+  if (due.length === 0) return null;
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Clock className="w-4 h-4" style={{ color: 'var(--brand-gold)' }} />
+        <div className="text-sm font-semibold text-slate-900">Ready for next touch</div>
+        <div className="text-[10px] text-slate-500">{due.length} flagged</div>
+      </div>
+      <div className="space-y-1.5">
+        {due.map(({ lead, touch }) => {
+          const stageInfo = PIPELINE_STAGES.find((s) => s.id === (lead.stage || 'new'));
+          return (
+            <button
+              key={lead.id}
+              onClick={() => onSelectLead(lead.id)}
+              className="w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-slate-50"
+            >
+              <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 shrink-0">
+                {stageInfo?.label || lead.stage}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-slate-900 truncate">{lead.fullName}</div>
+                <div className="text-[11px] text-slate-500 truncate">
+                  Last touched <span className="text-slate-700">{touch.daysSinceTouch}d ago</span>
+                  {' · '}cadence: every {touch.cadenceDays}d
+                </div>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+            </button>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 
@@ -4981,6 +5188,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* NEEDS ATTENTION — stuck + cold leads */}
       <NeedsAttentionCard leads={leads} onSelectLead={onSelectLead} />
+
+      {/* CADENCE DUE — leads hitting their per-stage touch interval */}
+      <CadenceDueCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* ACTIONS */}
       {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
@@ -5423,7 +5633,15 @@ function AdminCRM({ leads, addLead, updateLead, saveLeads, slots, openSlot, clos
         />
       )}
 
-      {selectedLead && <LeadDetailCRM lead={selectedLead} onClose={() => setSelectedLeadId(null)} updateLead={updateLead} onCompose={(template) => setComposeModal({ lead: selectedLead, template })} showToast={showToast} onOpenScreening={() => setScreeningModal({ lead: selectedLead })} onOpenSubmit={() => setSubmitModal({ lead: selectedLead })} onOpenFollowUp={(submissionId) => setFollowUpModal({ lead: selectedLead, submissionId })} settings={settings} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} updateSubmissionStatus={updateSubmissionStatus} />}
+      {selectedLead && <LeadDetailCRM lead={selectedLead} onClose={() => setSelectedLeadId(null)} updateLead={updateLead} onCompose={(arg) => {
+        // Accept either onCompose('sms-custom') (legacy string) or
+        // onCompose({ kind, prefill }) from NextBestActionCard.
+        if (typeof arg === 'string') {
+          setComposeModal({ lead: selectedLead, template: arg });
+        } else if (arg && typeof arg === 'object') {
+          setComposeModal({ lead: selectedLead, template: arg.kind || 'sms-custom', prefill: arg.prefill || '' });
+        }
+      }} showToast={showToast} onOpenScreening={() => setScreeningModal({ lead: selectedLead })} onOpenSubmit={() => setSubmitModal({ lead: selectedLead })} onOpenFollowUp={(submissionId) => setFollowUpModal({ lead: selectedLead, submissionId })} settings={settings} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} updateSubmissionStatus={updateSubmissionStatus} />}
 
       {screeningModal && <ScreeningPasteModal lead={screeningModal.lead} onClose={() => setScreeningModal(null)} onSave={async (reportInput) => { await saveScreeningReport(screeningModal.lead.id, reportInput); setScreeningModal(null); }} settings={settings} />}
 
@@ -7402,6 +7620,7 @@ function CommissionSummary({ leads }) {
 //   - auto-creates relevant follow-up tasks (see stageDefaultTasks)
 function StageDropdown({ lead, updateLead, showToast }) {
   const [open, setOpen] = useState(false);
+  const [closeModal, setCloseModal] = useState(null); // { stageId } when entering leased/lost
   const currentStage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
   const toneClass = {
     neutral:  'bg-slate-100 text-slate-700 border-slate-200',
@@ -7412,22 +7631,46 @@ function StageDropdown({ lead, updateLead, showToast }) {
     accent:   'bg-violet-50 text-violet-700 border-violet-200',
   }[currentStage.tone] || 'bg-slate-100 text-slate-700 border-slate-200';
 
-  const setStage = async (newStageId) => {
-    setOpen(false);
+  const applyStageChange = async (newStageId, closeData) => {
     if (newStageId === lead.stage) return;
     const firstName = (lead.fullName || '').split(' ')[0] || 'lead';
     const newTasks = stageDefaultTasks(newStageId, lead, firstName);
-    await updateLead(lead.id, {
+    const closeNote = closeData?.reason ? ` (${closeData.reason})` : '';
+    const updates = {
       stage: newStageId,
       activities: [...(lead.activities || []), {
         id: `a_${Date.now()}`,
         type: 'stage-change',
         timestamp: new Date().toISOString(),
-        message: `Stage → ${PIPELINE_STAGES.find(s => s.id === newStageId)?.label || newStageId}`,
+        message: `Stage → ${PIPELINE_STAGES.find(s => s.id === newStageId)?.label || newStageId}${closeNote}`,
       }],
       ...(newTasks.length > 0 ? { tasks: [...(lead.tasks || []), ...newTasks] } : {}),
-    });
+    };
+    if (closeData) {
+      updates.raw = { ...(lead.raw || {}), close_data: { ...closeData, recorded_at: new Date().toISOString() } };
+      // If leased, also seed commission amount if provided.
+      if (newStageId === 'leased' && closeData.commissionAmount) {
+        updates.commission = {
+          ...(lead.commission || {}),
+          amount: closeData.commissionAmount,
+          lease_signed_at: new Date().toISOString(),
+        };
+        updates.raw.leased_at = new Date().toISOString();
+      }
+    }
+    await updateLead(lead.id, updates);
     showToast(`Stage → ${PIPELINE_STAGES.find(s => s.id === newStageId)?.label}${newTasks.length > 0 ? ` · ${newTasks.length} task${newTasks.length === 1 ? '' : 's'} added` : ''}`);
+  };
+
+  const setStage = async (newStageId) => {
+    setOpen(false);
+    if (newStageId === lead.stage) return;
+    // Intercept leased / lost to capture close data first.
+    if (newStageId === 'leased' || newStageId === 'lost') {
+      setCloseModal({ stageId: newStageId });
+      return;
+    }
+    await applyStageChange(newStageId);
   };
 
   return (
@@ -7458,6 +7701,117 @@ function StageDropdown({ lead, updateLead, showToast }) {
           </div>
         </>
       )}
+      {closeModal && (
+        <CloseStageModal
+          stageId={closeModal.stageId}
+          onClose={() => setCloseModal(null)}
+          onConfirm={async (data) => {
+            await applyStageChange(closeModal.stageId, data);
+            setCloseModal(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal that pops when marking a lead as 'leased' or 'lost' to capture the
+// reason / details. Improves analytics + helps Morgan see patterns in
+// what's converting vs. what's failing.
+function CloseStageModal({ stageId, onClose, onConfirm }) {
+  const isLost = stageId === 'lost';
+  const lostReasons = ['Bad timing / not ready', 'Budget mismatch', 'Location mismatch', 'Ghosted us', 'Picked another agent', 'Found a place themselves', 'Credit / qualification issue', 'Other'];
+  const [reason, setReason] = useState(isLost ? lostReasons[0] : '');
+  const [reasonOther, setReasonOther] = useState('');
+  const [commissionAmount, setCommissionAmount] = useState('');
+  const [leaseMonths, setLeaseMonths] = useState(12);
+  const [moveInDate, setMoveInDate] = useState('');
+  const [notes, setNotes] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    setSubmitting(true);
+    const finalReason = isLost && reason === 'Other' && reasonOther.trim() ? reasonOther.trim() : reason;
+    const payload = isLost
+      ? { kind: 'lost', reason: finalReason, notes: notes.trim() }
+      : {
+          kind: 'leased',
+          commissionAmount: commissionAmount ? Number(commissionAmount) : null,
+          leaseMonths,
+          moveInDate: moveInDate || null,
+          notes: notes.trim(),
+        };
+    try {
+      await onConfirm(payload);
+    } catch (err) {
+      alert(`Couldn't save: ${err.message}`);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
+      <div className="bg-white w-full md:max-w-md md:rounded-2xl rounded-t-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <div className="font-semibold text-slate-900">
+              {isLost ? 'Mark as Lost' : 'Mark as Leased 🎉'}
+            </div>
+            <div className="text-xs text-slate-500">Capture the details so we can learn from this</div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {isLost ? (
+            <>
+              <FormField label="Why did this lead go cold? *">
+                <select value={reason} onChange={(e) => setReason(e.target.value)} className="form-input">
+                  {lostReasons.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </FormField>
+              {reason === 'Other' && (
+                <FormField label="Specify">
+                  <input value={reasonOther} onChange={(e) => setReasonOther(e.target.value)} className="form-input" placeholder="Tell us what happened" autoFocus />
+                </FormField>
+              )}
+            </>
+          ) : (
+            <>
+              <FormField label="Commission amount ($)">
+                <input type="number" value={commissionAmount} onChange={(e) => setCommissionAmount(e.target.value)} className="form-input" placeholder="2500" inputMode="numeric" />
+              </FormField>
+              <div className="grid grid-cols-2 gap-3">
+                <FormField label="Lease length (months)">
+                  <select value={leaseMonths} onChange={(e) => setLeaseMonths(Number(e.target.value))} className="form-input">
+                    {[6, 9, 12, 13, 14, 15, 18, 24].map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </FormField>
+                <FormField label="Move-in date">
+                  <input type="date" value={moveInDate} onChange={(e) => setMoveInDate(e.target.value)} className="form-input" />
+                </FormField>
+              </div>
+            </>
+          )}
+          <FormField label="Notes (optional)">
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-slate-400 resize-none" placeholder="Anything specific worth remembering" />
+          </FormField>
+        </div>
+
+        <div className="px-5 py-3.5 border-t border-slate-200 flex items-center gap-2">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-full bg-slate-100 text-slate-700 font-medium text-sm hover:bg-slate-200">Cancel</button>
+          <button
+            onClick={submit}
+            disabled={submitting || (isLost && reason === 'Other' && !reasonOther.trim())}
+            className={`flex-1 px-5 py-2.5 rounded-full font-semibold text-sm text-white disabled:opacity-30 disabled:cursor-not-allowed ${
+              isLost ? 'bg-slate-900 hover:bg-slate-800' : ''
+            }`}
+            style={isLost ? undefined : { backgroundColor: 'var(--brand-gold)' }}
+          >
+            {submitting ? 'Saving…' : (isLost ? 'Mark lost' : 'Mark leased')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -8130,6 +8484,8 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
             <div className="space-y-5">
               {/* AI status briefing — instant context when reopening a lead */}
               <LeadSummaryCard lead={lead} />
+              {/* AI Next Best Action — one concrete recommended move */}
+              <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} />
               {/* Phase 1: send curated BrightMLS portal link. */}
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
@@ -8646,6 +9002,18 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                         <div className="text-[10px] text-slate-400 mb-1">Move {fmtDate(lead.moveInDate)}</div>
                       )}
                       <div className="text-[11px] text-slate-600 line-clamp-1">{lastActivityLabel(lead)}</div>
+                      {(() => {
+                        const t = leadTouchState(lead);
+                        if (t.cadenceDays === 0) return null;
+                        const className = t.isDue
+                          ? 'text-[10px] mt-0.5 font-semibold' : 'text-[10px] mt-0.5 text-slate-400';
+                        const style = t.isDue ? { color: 'var(--brand-gold)' } : undefined;
+                        return (
+                          <div className={className} style={style}>
+                            Last touch {t.daysSinceTouch}d ago{t.isDue ? ' · DUE' : ''}
+                          </div>
+                        );
+                      })()}
                       {lead.commission?.amount && (
                         <div className="mt-1.5 text-[10px] font-semibold text-emerald-700">
                           {fmtCurrency(Number(lead.commission.amount))}
@@ -11797,7 +12165,7 @@ function ScreeningTab({ lead, onOpenScreening, settings }) {
   );
 }
 
-function ComposeModal({ lead, template, onClose, onSend }) {
+function ComposeModal({ lead, template, prefill, onClose, onSend }) {
   const tpl = MESSAGE_TEMPLATES[template] || MESSAGE_TEMPLATES.custom;
   const firstName = lead.fullName.split(' ')[0];
   const fill = (str) => str.replace(/{firstName}/g, firstName).replace(/{areas}/g, lead.areas || 'your area');
@@ -11805,7 +12173,9 @@ function ComposeModal({ lead, template, onClose, onSend }) {
   const defaultChannel = template?.startsWith('email') ? 'email' : 'sms';
   const [channel, setChannel] = useState(defaultChannel);
   const [subject, setSubject] = useState(fill(tpl.subject));
-  const [body, setBody] = useState(fill(tpl.body));
+  // If a prefill was provided (e.g. from Next Best Action AI suggestion),
+  // use it as the body instead of the template's stock body.
+  const [body, setBody] = useState(prefill ? String(prefill) : fill(tpl.body));
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
