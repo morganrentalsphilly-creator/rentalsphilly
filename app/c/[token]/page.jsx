@@ -2,7 +2,7 @@
 
 // Public lead-facing curated page — TWO-PHASE workflow on a single URL.
 //
-// Phase 1 (initial): "Open BrightMLS portal → tell us which properties you like."
+// Phase 1 (initial): "Open the portal → tell us which properties you like."
 // Phase awaiting-scheduling: "We got your picks — your agent is reviewing availability."
 // Phase 2 (agent activated time picker): "Pick your tour times."
 // Phase 3 (done): "All set."

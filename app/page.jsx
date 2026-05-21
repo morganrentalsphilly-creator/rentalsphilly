@@ -514,7 +514,7 @@ const downloadIcsForTour = (tour) => {
     `Lead: ${leadName}`,
     leadPhone ? `Phone: ${leadPhone}` : null,
     addresses ? `Stops: ${addresses}` : null,
-    'Rentals Philly · Skale Real Estate',
+    'Rentals Philly',
   ].filter(Boolean).join('\\n');
   const ics = [
     'BEGIN:VCALENDAR',
@@ -1882,12 +1882,12 @@ export default function App() {
         auto: true,
       });
     } else {
-      // Moving-soon leads: agent needs to curate a BrightMLS portal link.
+      // Moving-soon leads: agent needs to curate an MLS portal link.
       // Show as today's task so it stays top-of-mind on the dashboard.
       tasks.push({
         id: `t_${Date.now()}_curate`,
         lead_id: id,
-        title: `Curate BrightMLS portal link for ${firstName}`,
+        title: `Curate portal link for ${firstName}`,
         due_date: new Date().toISOString().split('T')[0],
         status: 'pending',
         priority: 'high',
@@ -3512,7 +3512,7 @@ function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, 
     e?.stopPropagation();
     const url = portalUrlFor(l);
     if (!url) {
-      window.alert('No BrightMLS portal configured yet. Ask your agent.');
+      window.alert('Photos aren\'t configured for this listing yet. Ask your agent.');
       return;
     }
     // Some Matrix portal URLs accept &Display=... or &MLSNumber= for deep
@@ -3548,7 +3548,7 @@ function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, 
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400">
                       <Building2 className="w-8 h-8" />
-                      <span className="text-xs">Photos in BrightMLS portal</span>
+                      <span className="text-xs">Tap to view photos</span>
                     </div>
                   )}
                   {/* Photo button overlays the image */}
@@ -3637,7 +3637,7 @@ function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, 
             />
             <div className="border-t border-slate-200 bg-slate-50 px-5 py-3 flex items-center justify-between shrink-0">
               <div className="text-xs text-slate-500">
-                Photos hosted by BrightMLS.
+                Photos hosted by the listing portal.
                 {photoModal.listing.mls ? ` Search MLS# ${photoModal.listing.mls} if you don't see this listing.` : ''}
               </div>
               <Button
@@ -4700,7 +4700,7 @@ function NextBestActionCard({ lead, onCompose, showToast }) {
       onCompose({ kind: 'email-custom', prefill: data.suggestedMessage || '' });
     } else {
       // For non-message actions, scroll the user to the right panel by hint.
-      const hint = t === 'send-curated-link' ? 'Open the curated link panel below to send the BrightMLS link.'
+      const hint = t === 'send-curated-link' ? 'Open the curated link panel below to send the portal link.'
         : t === 'send-scheduling-link' ? 'Open the scheduling link panel below to enable time picks.'
         : t === 'request-application' ? 'Use the Submit Application button on this lead.'
         : t === 'mark-stage' ? 'Use the stage dropdown at the top to advance.'
@@ -7817,7 +7817,7 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 // ============================================================
 // Curated-link panel — the agent's primary action for a new lead.
 // Two inputs:
-//   1. BrightMLS portal URL (lead sees this in iframe to browse photos)
+//   1. MLS portal URL (lead sees this in iframe to browse photos)
 //   2. Addresses — one per line (lead checks the ones they want to tour)
 // On send: app SMSes + emails the lead a branded /c/[token] page.
 // Commission tracking panel — shows only after the lead has reached `applied`
@@ -8335,7 +8335,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
   const onSend = async () => {
     const cleanUrl = url.trim();
     if (!cleanUrl || !/^https?:\/\//.test(cleanUrl)) {
-      showToast('Paste a valid BrightMLS portal URL first');
+      showToast('Paste a valid portal URL first');
       return;
     }
     setBusy(true);
@@ -8422,25 +8422,25 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
             {alreadySent ? 'Update curated link' : 'Send curated link'}
           </div>
           <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-            Just paste the BrightMLS portal URL. Lead gets a branded page that opens
-            the portal for photos and lets them pick addresses + times to tour.
+            Just paste your portal URL. Lead gets a branded page that opens the
+            portal for photos and lets them pick addresses + times to tour.
           </div>
         </div>
       </div>
 
       <div>
         <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
-          BrightMLS portal URL
+          Portal URL
         </label>
         <input
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
+          placeholder="https://..."
           className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-500 font-mono"
         />
         <div className="text-[11px] text-slate-500 mt-1.5">
-          BrightMLS Matrix → run your search → <strong>Share → Send to client</strong> → copy URL → paste here.
+          In your MLS portal: run a search → <strong>Share → Send to client</strong> → copy the URL → paste here.
         </div>
       </div>
 
@@ -9164,7 +9164,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
               <LeadSummaryCard lead={lead} />
               {/* AI Next Best Action — one concrete recommended move */}
               <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} />
-              {/* Phase 1: send curated BrightMLS portal link. */}
+              {/* Phase 1: send curated portal link. */}
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
               <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
@@ -11064,9 +11064,9 @@ function HelpView() {
     {
       title: 'Workflows',
       items: [
-        { label: 'New lead via web', desc: 'Public intake form → SMS opt-in → bucketed → welcome SMS + email auto-sent → "Curate BrightMLS link" task created.' },
+        { label: 'New lead via web', desc: 'Public intake form → SMS opt-in → bucketed → welcome SMS + email auto-sent → "Curate portal link" task created.' },
         { label: 'Add a lead manually', desc: '"+ Add lead" button in admin header. Walk-ins, referrals, phone leads. Fires welcome flow.' },
-        { label: 'Send curated link', desc: 'Open the lead → Overview → Curated link panel → paste BrightMLS URL → click Send. Lead gets SMS + email.' },
+        { label: 'Send curated link', desc: 'Open the lead → Overview → Curated link panel → paste your MLS portal URL → click Send. Lead gets SMS + email.' },
         { label: 'Send scheduling link', desc: "After lead picks properties, scroll to Scheduling link panel → click Send to enable time picks." },
         { label: 'Reschedule a tour', desc: 'Lead taps the link in their 24h reminder → picks a new time → done. No agent action needed.' },
         { label: 'Mark stage close', desc: 'Use the stage dropdown at top of lead detail. Lost / Leased open a modal to capture reason + commission.' },
@@ -12204,7 +12204,7 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
           </div>
 
           {filtered.length === 0 ? (
-            <EmptyState icon={Building2} title={properties.length === 0 ? 'No properties yet' : 'No matches'} desc={properties.length === 0 ? 'Import a CSV from BrightMLS or add a property manually.' : 'Try a different filter or search term.'} />
+            <EmptyState icon={Building2} title={properties.length === 0 ? 'No properties yet' : 'No matches'} desc={properties.length === 0 ? 'Import a CSV from your MLS or add a property manually.' : 'Try a different filter or search term.'} />
           ) : (
             <Card className="overflow-hidden">
               {filtered.map((p, i) => (
@@ -12236,7 +12236,7 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
         <div className="space-y-4">
           <Card className="p-5">
             <div className="text-sm text-slate-700 mb-3">
-              Upload a CSV exported from BrightMLS. Auto-maps standard RESO column names
+              Upload a CSV exported from your MLS. Auto-maps standard RESO column names
               (ListingId, ListPrice, BedroomsTotal, etc.). Existing properties with the same
               MLS# are updated; new ones are inserted. Old properties stay (use status filter to archive).
             </div>
@@ -12307,21 +12307,21 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
         <div className="space-y-5">
           <Card className="p-5 space-y-3">
             <div>
-              <div className="text-sm font-semibold text-slate-900 mb-1">BrightMLS portal URLs (for photos)</div>
+              <div className="text-sm font-semibold text-slate-900 mb-1">MLS portal URLs (for photos)</div>
               <div className="text-xs text-slate-500 leading-relaxed">
-                Paste one or more <strong>Matrix Public Portal</strong> URLs from BrightMLS.
-                When a lead clicks &ldquo;View photos&rdquo; on a matched listing, your app
-                opens this portal in a modal. The first URL is used for now —
-                multi-portal smart routing comes in a later release.
+                Paste one or more public portal URLs from your MLS. When a lead clicks
+                &ldquo;View photos&rdquo; on a matched listing, your app opens this portal
+                in a modal. The first URL is used for now — multi-portal smart routing
+                comes in a later release.
                 <br />
-                <span className="text-slate-400">To get one: BrightMLS Matrix → run your search → Share → &ldquo;Send to client&rdquo; → copy the link.</span>
+                <span className="text-slate-400">To get one: in your MLS portal run a search → Share → &ldquo;Send to client&rdquo; → copy the link.</span>
               </div>
             </div>
             <textarea
               value={portalText}
               onChange={(e) => setPortalText(e.target.value)}
               rows={4}
-              placeholder="https://matrix.brightmls.com/Matrix/Public/Portal.aspx?ID=..."
+              placeholder="https://..."
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 resize-none"
             />
             <div className="flex justify-end">
@@ -12335,7 +12335,7 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
               <div className="text-xs text-slate-500">
                 One brokerage name per line. Listings from these brokerages are hidden from
                 all leads. Match is case-insensitive but otherwise exact — paste the exact name
-                as it appears in BrightMLS&apos;s &ldquo;List Office Name&rdquo; field.
+                as it appears in your MLS&apos;s &ldquo;List Office Name&rdquo; field.
               </div>
             </div>
             <textarea

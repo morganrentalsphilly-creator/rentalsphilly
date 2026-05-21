@@ -27,7 +27,7 @@ export default function TermsPage() {
         Rentals Philly is operated by Morgan Page, an independent real estate professional
         licensed in Pennsylvania. The site helps prospective tenants find rentals in the
         Philadelphia area and request property showings. Listings and availability are
-        sourced from third-party feeds (including BrightMLS) and from agents and property
+        sourced from third-party MLS feeds and from agents and property
         managers. We make a reasonable effort to keep information current, but cannot
         guarantee accuracy of price, availability, or property features.
       </p>

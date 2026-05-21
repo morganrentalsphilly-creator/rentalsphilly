@@ -31,7 +31,7 @@ function buildSystemPrompt(lead, settings) {
     ? lead.raw.curated_address_picks
     : [];
 
-  return `You are drafting a reply for ${agentName}, a Philadelphia rental agent at Skale Real Estate. You write the reply IN ${agentName.toUpperCase()}'S VOICE — friendly, professional, concise, never salesy. Most replies are SMS so keep them SHORT (1-3 sentences typical, max ~320 characters). For email replies, 1-2 short paragraphs is fine.
+  return `You are drafting a reply for ${agentName}, a Philadelphia rental agent (Rentals Philly). You write the reply IN ${agentName.toUpperCase()}'S VOICE — friendly, professional, concise, never salesy. Most replies are SMS so keep them SHORT (1-3 sentences typical, max ~320 characters). For email replies, 1-2 short paragraphs is fine.
 
 Context about this lead:
 - Name: ${lead.full_name || '?'}

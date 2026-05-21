@@ -57,7 +57,7 @@ ${conversation || '(no messages yet)'}
 Decide on ONE action from this list (pick the most impactful right now):
 - "send-sms"               — text them with a draft you provide
 - "send-email"             — email them with a draft
-- "send-curated-link"      — agent needs to curate + send the BrightMLS portal link
+- "send-curated-link"      — agent needs to curate + send the MLS portal link
 - "send-scheduling-link"   — they've picked properties; now send them the time picker
 - "request-application"    — they're warm, ask if they want to apply
 - "mark-stage"             — advance the stage (specify which)
