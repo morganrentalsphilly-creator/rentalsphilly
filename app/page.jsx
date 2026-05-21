@@ -5039,6 +5039,290 @@ function NeedsAttentionCard({ leads, onSelectLead }) {
   );
 }
 
+// Focus Now — single ranked queue of the highest-priority items across all
+// surfaces. The "one screen to act from" so Morgan doesn't have to scan 6
+// cards to figure out what to do next. Tap any row → opens that lead.
+//
+// Ranking (lower priority number = more urgent):
+//   1  inbound reply pending > 2h
+//   2  tour starting within 4 hours
+//   3  overdue task (any priority)
+//   4  inbound reply pending (any time today)
+//   5  tour later today
+//   6  high-priority task due today
+//   7  new lead (last 24h) with no curated link sent
+//   8  tour-requested without scheduling link sent
+//   9  task due today (normal priority)
+//   10 stuck / cold leads
+//   11 cadence-due touches
+//
+// We cap at 10 items so the queue stays scannable.
+function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubview }) {
+  const items = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
+    const out = [];
+
+    // 1. Replies pending — most urgent first
+    for (const lead of leads) {
+      if (isLeadSnoozed(lead)) continue;
+      const msgs = (lead.messages || []).filter((m) => !m.internal);
+      const last = msgs[msgs.length - 1];
+      if (!last || last.direction !== 'inbound') continue;
+      const ageMs = now - new Date(last.timestamp).getTime();
+      const ageHrs = ageMs / 3600000;
+      out.push({
+        id: `reply-${lead.id}`,
+        leadId: lead.id,
+        priority: ageHrs >= 2 ? 1 : 4,
+        kind: 'reply',
+        leadName: lead.fullName,
+        action: 'Reply to text',
+        subtitle: `"${(last.body || '').slice(0, 60)}${last.body?.length > 60 ? '…' : ''}"`,
+        meta: timeAgo(last.timestamp),
+        tone: ageHrs >= 2 ? 'red' : 'amber',
+        icon: MessageSquare,
+      });
+    }
+
+    // 2 + 5. Tours today, split by how soon
+    for (const lead of leads) {
+      for (const tour of (lead.tours || [])) {
+        if (tour.date !== todayStr || tour.status === 'cancelled') continue;
+        // Parse tour time → minutes from now
+        const [h, m] = (tour.time || '12:00').match(/\d+/g)?.map(Number) || [12, 0];
+        const tourDate = new Date(`${tour.date}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`);
+        const hoursAway = (tourDate.getTime() - now) / 3600000;
+        if (hoursAway < -1) continue; // already past (1h grace)
+        const soon = hoursAway >= 0 && hoursAway <= 4;
+        out.push({
+          id: `tour-${tour.id}`,
+          leadId: lead.id,
+          priority: soon ? 2 : 5,
+          kind: 'tour',
+          leadName: lead.fullName,
+          action: soon ? `Tour at ${tour.time}` : `Tour today ${tour.time}`,
+          subtitle: (tour.listings || []).map((l) => l.address).filter(Boolean).join(' · ') || 'No listings set',
+          meta: hoursAway >= 0 ? `in ${Math.round(hoursAway)}h` : 'in progress',
+          tone: 'emerald',
+          icon: Calendar,
+        });
+      }
+    }
+
+    // 3 + 6 + 9. Tasks
+    for (const task of overdueTasks) {
+      const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+      if (!lead) continue;
+      out.push({
+        id: `task-${task.id}`,
+        leadId: lead.id,
+        priority: 3,
+        kind: 'task',
+        leadName: lead.fullName,
+        action: task.title,
+        subtitle: `Overdue${task.priority === 'high' ? ' · HIGH' : ''}`,
+        meta: 'overdue',
+        tone: 'red',
+        icon: AlertTriangle,
+      });
+    }
+    for (const task of todayTasks) {
+      const lead = leads.find((l) => (l.tasks || []).some((t) => t.id === task.id));
+      if (!lead) continue;
+      out.push({
+        id: `task-${task.id}`,
+        leadId: lead.id,
+        priority: task.priority === 'high' ? 6 : 9,
+        kind: 'task',
+        leadName: lead.fullName,
+        action: task.title,
+        subtitle: `Due today${task.priority === 'high' ? ' · HIGH' : ''}`,
+        meta: 'today',
+        tone: task.priority === 'high' ? 'amber' : 'slate',
+        icon: CheckCircle2,
+      });
+    }
+
+    // 7. New leads, no curated link sent yet
+    for (const lead of leads) {
+      if (isLeadSnoozed(lead)) continue;
+      if (lead.stage !== 'new') continue;
+      if (lead.curatedLinkSentAt) continue;
+      const ageHrs = (now - new Date(lead.createdAt || now).getTime()) / 3600000;
+      if (ageHrs > 48) continue; // older than 2d → falls into cadence/stuck
+      out.push({
+        id: `new-${lead.id}`,
+        leadId: lead.id,
+        priority: 7,
+        kind: 'new-lead',
+        leadName: lead.fullName,
+        action: 'Send curated link',
+        subtitle: `New lead · ${Math.round(ageHrs)}h ago`,
+        meta: 'curate',
+        tone: 'gold',
+        icon: Sparkles,
+      });
+    }
+
+    // 8. Tour-requested without scheduling link
+    for (const lead of leads) {
+      if (isLeadSnoozed(lead)) continue;
+      if (lead.stage !== 'tour-requested') continue;
+      out.push({
+        id: `sched-${lead.id}`,
+        leadId: lead.id,
+        priority: 8,
+        kind: 'tour-requested',
+        leadName: lead.fullName,
+        action: 'Send scheduling link',
+        subtitle: 'Tour requested',
+        meta: 'schedule',
+        tone: 'blue',
+        icon: Calendar,
+      });
+    }
+
+    // 10. Stuck / cold leads
+    for (const lead of leads) {
+      if (isLeadSnoozed(lead)) continue;
+      const health = leadHealth(lead);
+      if (health.status !== 'stuck' && health.status !== 'cold') continue;
+      out.push({
+        id: `stuck-${lead.id}`,
+        leadId: lead.id,
+        priority: 10,
+        kind: 'stuck',
+        leadName: lead.fullName,
+        action: 'Re-engage',
+        subtitle: `${health.label} · ${health.days}d quiet`,
+        meta: `${health.days}d`,
+        tone: health.tone === 'red' ? 'red' : 'amber',
+        icon: AlertTriangle,
+      });
+    }
+
+    // 11. Cadence-due
+    for (const lead of leads) {
+      if (isLeadSnoozed(lead)) continue;
+      const touch = leadTouchState(lead);
+      if (!touch.isDue) continue;
+      // Skip if already covered above
+      if (out.find((i) => i.leadId === lead.id)) continue;
+      out.push({
+        id: `cadence-${lead.id}`,
+        leadId: lead.id,
+        priority: 11,
+        kind: 'cadence',
+        leadName: lead.fullName,
+        action: 'Time for next touch',
+        subtitle: `Last touched ${touch.daysSinceTouch}d ago · cadence ${touch.cadenceDays}d`,
+        meta: `${touch.daysSinceTouch}d`,
+        tone: 'slate',
+        icon: Clock,
+      });
+    }
+
+    // Dedupe by leadId per kind: keep highest-priority entry per (leadId, kind)
+    // and limit total to one per lead so the same person doesn't show 3x.
+    const byLead = new Map();
+    out.sort((a, b) => a.priority - b.priority);
+    for (const item of out) {
+      if (!byLead.has(item.leadId)) {
+        byLead.set(item.leadId, item);
+      }
+    }
+    return Array.from(byLead.values()).slice(0, 10);
+  }, [leads, overdueTasks, todayTasks]);
+
+  // Today's outbound activity count — gives a sense of progress.
+  const handledToday = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    let count = 0;
+    for (const lead of leads) {
+      for (const msg of (lead.messages || [])) {
+        if (msg.direction === 'outbound' && (msg.timestamp || '').startsWith(todayStr)) count++;
+      }
+    }
+    return count;
+  }, [leads]);
+
+  if (items.length === 0) {
+    return (
+      <Card className="p-5 text-center bg-gradient-to-br from-emerald-50 to-white border-emerald-200">
+        <Sparkles className="w-7 h-7 mx-auto mb-2 text-emerald-600" />
+        <div className="text-base font-semibold text-slate-900 mb-0.5">Focus zero</div>
+        <div className="text-xs text-slate-500">
+          Nothing urgent on the board.
+          {handledToday > 0 && ` ${handledToday} touch${handledToday === 1 ? '' : 'es'} sent today.`}
+        </div>
+      </Card>
+    );
+  }
+
+  const TONE = {
+    red: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: 'text-red-600' },
+    amber: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700', icon: 'text-amber-600' },
+    gold: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-800', icon: 'text-amber-700' },
+    blue: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: 'text-blue-600' },
+    emerald: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700', icon: 'text-emerald-600' },
+    slate: { bg: 'bg-white', border: 'border-slate-200', text: 'text-slate-700', icon: 'text-slate-500' },
+  };
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-full bg-slate-900 flex items-center justify-center">
+            <Sparkles className="w-3.5 h-3.5 text-white" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Focus now</div>
+            <div className="text-[11px] text-slate-500">{items.length} action{items.length === 1 ? '' : 's'} ranked by urgency</div>
+          </div>
+        </div>
+        {handledToday > 0 && (
+          <div className="text-[11px] text-slate-500 inline-flex items-center gap-1.5 bg-slate-100 px-2.5 py-1 rounded-full">
+            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+            <span className="tabular-nums font-medium text-slate-700">{handledToday}</span> sent today
+          </div>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {items.map((item, idx) => {
+          const tone = TONE[item.tone] || TONE.slate;
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              onClick={() => onSelectLead(item.leadId)}
+              className={`w-full text-left flex items-start gap-3 p-2.5 rounded-lg border ${tone.bg} ${tone.border} hover:brightness-95 active:scale-[0.99] transition`}
+            >
+              <div className="flex flex-col items-center gap-0.5 shrink-0 pt-0.5">
+                <div className="text-[10px] font-bold tabular-nums text-slate-400 leading-none">{idx + 1}</div>
+                <Icon className={`w-4 h-4 ${tone.icon}`} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="text-sm font-semibold text-slate-900 truncate">{item.leadName}</div>
+                  <div className={`text-[10px] font-semibold uppercase tracking-wider ${tone.text}`}>
+                    {item.action}
+                  </div>
+                </div>
+                <div className="text-[11px] text-slate-500 truncate">{item.subtitle}</div>
+              </div>
+              <div className="shrink-0 flex flex-col items-end gap-0.5">
+                <div className="text-[10px] text-slate-400 tabular-nums">{item.meta}</div>
+                <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, onSelectLead, updateLead, showToast, setSubview, settings }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
@@ -5139,6 +5423,15 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* Setup checklist — only renders while there's outstanding setup */}
       <SetupChecklist settings={settings} setSubview={setSubview} />
+
+      {/* FOCUS NOW — the single source-of-truth ranked queue */}
+      <FocusNowCard
+        leads={leads}
+        overdueTasks={overdueTasks}
+        todayTasks={todayTasks}
+        onSelectLead={onSelectLead}
+        setSubview={setSubview}
+      />
 
       {/* Touch tracker — daily + weekly outbound activity counter */}
       <TouchTrackerCard leads={leads} />
