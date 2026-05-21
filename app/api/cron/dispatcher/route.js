@@ -35,8 +35,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // if the row is missing or the field is empty (so a partial settings save
 // doesn't break reminders).
 const DEFAULT_SYSTEM_TEMPLATES = {
-  reminder24h: `Reminder: your showing is tomorrow at {tourTime}. Reply if you need to reschedule.`,
-  reminder1h: `Heads up — your showing is in about an hour ({tourTime}). See you soon!`,
+  reminder24h: `Rentals Philly: Reminder, {firstName} — your showing is tomorrow at {tourTime}. Need to reschedule? Tap {rescheduleUrl}. Reply STOP to opt out.`,
+  reminder1h: `Rentals Philly: Heads up {firstName} — your showing is in about an hour ({tourTime}). See you soon!`,
 };
 function fillTpl(tpl, vars) {
   return String(tpl || '').replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? `{${k}}`);
@@ -71,6 +71,22 @@ async function runReminders(db) {
     return { sent: 0, errors: 1 };
   }
 
+  // Build a lookup of lead → (firstName, curated_token) so we can substitute
+  // those tokens into reminder bodies (for personalization + reschedule URLs).
+  const leadIds = (tours || []).map((t) => t.lead_id).filter(Boolean);
+  let leadById = {};
+  if (leadIds.length > 0) {
+    const { data: leads } = await db
+      .from('leads')
+      .select('id, full_name, raw')
+      .in('id', leadIds);
+    leadById = Object.fromEntries((leads || []).map((l) => [l.id, l]));
+  }
+
+  // Build the public app URL once (used in reschedule links).
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ||
+                 (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://rentalsphilly.vercel.app');
+
   let sent = 0;
   let errors = 0;
   for (const tour of (tours || [])) {
@@ -79,15 +95,36 @@ async function runReminders(db) {
     const startsAt = parseTourStartsAt(tour.date, tour.time);
     if (!startsAt) continue;
 
+    // Resolve substitution vars per tour
+    const lead = leadById[tour.lead_id];
+    const firstName = ((lead?.full_name || '').split(' ')[0]) || 'there';
+    const leadToken = lead?.raw?.curated_token || '';
+    const rescheduleUrl = leadToken ? `${appUrl}/c/${leadToken}?reschedule=${tour.id}` : '';
+    const tourDate = (() => {
+      try {
+        return new Date(tour.date + 'T12:00:00').toLocaleDateString('en-US', {
+          weekday: 'short', month: 'short', day: 'numeric',
+        });
+      } catch { return tour.date; }
+    })();
+    const vars = {
+      firstName,
+      tourTime: tour.time,
+      tourDate,
+      tourId: tour.id,
+      leadToken,
+      rescheduleUrl,
+    };
+
     const reminders = tour.reminders_sent || {};
     const tasks = [];
     if (startsAt >= in23h45m && startsAt <= in24h15m && !reminders.day_before) {
       tasks.push({ flag: 'day_before', kind: 'reminder_24hr',
-        body: fillTpl(tpls.reminder24h, { tourTime: tour.time }) });
+        body: fillTpl(tpls.reminder24h, vars) });
     }
     if (startsAt >= in45m && startsAt <= in75m && !reminders.hour_before) {
       tasks.push({ flag: 'hour_before', kind: 'reminder_1hr',
-        body: fillTpl(tpls.reminder1h, { tourTime: tour.time }) });
+        body: fillTpl(tpls.reminder1h, vars) });
     }
 
     for (const t of tasks) {

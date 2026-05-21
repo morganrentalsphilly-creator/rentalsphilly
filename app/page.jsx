@@ -187,10 +187,11 @@ const DEFAULT_AGENT_SETTINGS = {
   //   {firstName}     lead's first name
   //   {tourTime}      tour time string (e.g. "5:00 PM")
   //   {tourDate}      "Tue, May 19"
-  //   {portalUrl}     curated link URL
+  //   {portalUrl}      curated link URL (per-lead curated page)
+  //   {rescheduleUrl}  one-tap reschedule URL (per-tour) — added in 24h/1h reminders
   systemTemplates: {
-    reminder24h: `Reminder: your showing is tomorrow at {tourTime}. Reply if you need to reschedule.`,
-    reminder1h: `Heads up — your showing is in about an hour ({tourTime}). See you soon!`,
+    reminder24h: `Rentals Philly: Reminder, {firstName} — your showing is tomorrow at {tourTime}. Need to reschedule? Tap {rescheduleUrl}. Reply STOP to opt out.`,
+    reminder1h: `Rentals Philly: Heads up {firstName} — your showing is in about an hour ({tourTime}). See you soon!`,
     schedulingLinkSms: `Rentals Philly: I checked availability — tap to pick your tour times: {portalUrl}`,
     schedulingLinkEmail: `Hi {firstName},\n\nI checked availability on the properties you picked. Pick your tour times here:\n\n{portalUrl}\n\n— {agentName}`,
     curatedConfirmSms: `Rentals Philly: Got your picks ({addressCount}). I'll review availability and send you a scheduling link with open times shortly.`,
@@ -1899,19 +1900,47 @@ export default function App() {
       console.error('[app] Failed to create lead in Supabase', e);
     }
 
+    // ---- AI-drafted personalized welcome (optional) ----
+    // If automation.aiWelcome is on (default true) AND ANTHROPIC_API_KEY is
+    // configured, swap the static bucket template for a personalized draft
+    // that references the lead's actual criteria. Falls back silently to the
+    // static template on any error.
+    let finalSms = welcomeSmsBody;
+    let finalEmailSubject = welcomeEmailSubject;
+    let finalEmailBody = welcomeEmailBody;
+    if (settings.automation?.aiWelcome !== false) {
+      try {
+        const aiRes = await fetch('/api/ai/welcome-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leadId: id }),
+        });
+        const aiData = await aiRes.json();
+        if (aiRes.ok && aiData.ok && aiData.sms && aiData.email) {
+          finalSms = aiData.sms;
+          finalEmailSubject = aiData.emailSubject || finalEmailSubject;
+          // Prepend "Hi {firstName}" + append the agent signature so the AI
+          // body slots cleanly between the two.
+          finalEmailBody = `Hi ${firstName},\n\n${aiData.email}\n\n— ${agentDisplay}`;
+        }
+      } catch (err) {
+        console.warn('[ai-welcome] draft failed, using bucket template', err?.message);
+      }
+    }
+
     // Fire welcome email + SMS through the server wrappers. Each wrapper
     // inserts its own messages row with delivery_status tracking.
     const emailResult = await sendEmail({
       leadId: id,
-      subject: welcomeEmailSubject,
-      body: welcomeEmailBody,
+      subject: finalEmailSubject,
+      body: finalEmailBody,
       kind: 'welcome',
       idempotencyKey: `welcome-email-${id}`,
       automated: true,
     });
     const smsResult = await sendSMS({
       leadId: id,
-      body: welcomeSmsBody,
+      body: finalSms,
       kind: 'welcome',
       idempotencyKey: `welcome-${id}`,
       automated: true,
@@ -6537,6 +6566,13 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
           editLabel="Edit message templates →"
         />
         <AutomationRow
+          name="AI-personalize welcome messages"
+          desc="Instead of the static bucket template, ask Claude to draft a welcome SMS + email referencing the lead's specific criteria (their neighborhood, budget, move-in timing). Falls back to the template if AI is unavailable. Adds about 1-2 seconds to lead creation."
+          value={form.automation?.aiWelcome !== false}
+          onChange={(v) => updateAutomation('aiWelcome', v)}
+          disabled={form.automation?.enabled === false || form.automation?.welcomeMessages === false}
+        />
+        <AutomationRow
           name="Tour reminders"
           desc="Automatically text the lead a reminder 24 hours and 1 hour before each scheduled tour. Runs server-side every minute, so reminders fire on time even if you're not in the app."
           value={form.automation?.tourReminders !== false}
@@ -10445,8 +10481,8 @@ function TemplatesEditor({ settings, saveSettings, showToast, focusBucket, onCle
 // System message templates editor — for cron-fired SMS and automatic flows.
 // Each row is a single textarea + helper text about the placeholders.
 const SYSTEM_TEMPLATE_FIELDS = [
-  { key: 'reminder24h',         label: '24-hour tour reminder (SMS)', desc: 'Sent 24 hours before each scheduled tour. Placeholders: {tourTime}.' },
-  { key: 'reminder1h',          label: '1-hour tour reminder (SMS)',  desc: 'Sent ~1 hour before each tour. Placeholders: {tourTime}.' },
+  { key: 'reminder24h',         label: '24-hour tour reminder (SMS)', desc: 'Sent 24 hours before each scheduled tour. Placeholders: {firstName}, {tourTime}, {tourDate}, {rescheduleUrl}, {tourId}, {leadToken}.' },
+  { key: 'reminder1h',          label: '1-hour tour reminder (SMS)',  desc: 'Sent ~1 hour before each tour. Placeholders: {firstName}, {tourTime}, {tourDate}, {rescheduleUrl}.' },
   { key: 'schedulingLinkSms',   label: 'Scheduling-link SMS',          desc: 'Sent when you click "Send scheduling link" on a lead. Placeholders: {firstName}, {portalUrl}.' },
   { key: 'schedulingLinkEmail', label: 'Scheduling-link email body',   desc: 'Email version of the scheduling link. Placeholders: {firstName}, {portalUrl}, {agentName}.' },
   { key: 'curatedConfirmSms',   label: 'Curated picks confirmation (SMS)', desc: "Auto-sent when a lead submits their property picks. Placeholders: {addressCount}." },
