@@ -4488,6 +4488,71 @@ function NotificationPrompt() {
   );
 }
 
+// Touch tracker — counts outbound messages (your manual touches, not automated
+// system messages) over the last 24h and 7 days. Visible counter motivates
+// consistency — the agents who close the most also touch the most.
+function TouchTrackerCard({ leads }) {
+  const stats = useMemo(() => {
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    let today = 0, week = 0, totalWeek = 0;
+    const uniqueLeadsTouched = new Set();
+    for (const lead of leads) {
+      for (const m of (lead.messages || [])) {
+        if (m.internal) continue;
+        if (m.direction !== 'outbound') continue;
+        if (m.automated) continue;
+        const age = now - new Date(m.timestamp).getTime();
+        if (age <= day) today++;
+        if (age <= 7 * day) {
+          week++;
+          uniqueLeadsTouched.add(lead.id);
+        }
+      }
+      // Also count automated touches separately so we can show "+N system"
+      for (const m of (lead.messages || [])) {
+        if (m.internal || m.direction !== 'outbound' || !m.automated) continue;
+        const age = now - new Date(m.timestamp).getTime();
+        if (age <= 7 * day) totalWeek++;
+      }
+    }
+    return { today, week, totalWeek, uniqueLeadsTouched: uniqueLeadsTouched.size };
+  }, [leads]);
+
+  if (stats.week === 0 && stats.totalWeek === 0) return null;
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="inline-flex items-center gap-2">
+          <Send className="w-3.5 h-3.5 text-slate-400" />
+          <div className="text-xs uppercase tracking-wider font-bold text-slate-500">Your touches</div>
+        </div>
+        <div className="flex items-center gap-6 flex-wrap">
+          <div>
+            <div className="text-xl font-bold text-slate-900 tabular-nums leading-none">{stats.today}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">last 24h</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold text-slate-900 tabular-nums leading-none">{stats.week}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">last 7 days</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold text-slate-900 tabular-nums leading-none">{stats.uniqueLeadsTouched}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">leads reached</div>
+          </div>
+          {stats.totalWeek > 0 && (
+            <div className="border-l border-slate-200 pl-6">
+              <div className="text-base font-semibold text-slate-500 tabular-nums leading-none">+{stats.totalWeek}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">automated</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 // Setup checklist — shows on Today view while critical settings are missing.
 // Dismisses itself once everything's filled in. Auto-detects from settings.
 function SetupChecklist({ settings, setSubview }) {
@@ -5074,6 +5139,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* Setup checklist — only renders while there's outstanding setup */}
       <SetupChecklist settings={settings} setSubview={setSubview} />
+
+      {/* Touch tracker — daily + weekly outbound activity counter */}
+      <TouchTrackerCard leads={leads} />
 
       {/* Browser notification opt-in prompt — only if not yet decided */}
       <NotificationPrompt />
@@ -6080,6 +6148,7 @@ function ActivityIcon({ type }) {
 function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], allTasks, updateLead, showToast }) {
   const [bucketFilter, setBucketFilter] = useState('all');
   const [stageFilter, setStageFilter] = useState('active');  // 'active' = not leased/lost/archived
+  const [hotOnly, setHotOnly] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [bulkBody, setBulkBody] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -6101,6 +6170,11 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
     const matchSearch = !q ||
       (l.fullName || '').toLowerCase().includes(q) ||
       (l.email || '').toLowerCase().includes(q);
+    if (hotOnly) {
+      const sc = leadScore(l);
+      const h = leadHealth(l);
+      if (sc.label !== 'A' && h.status !== 'hot') return false;
+    }
     return matchBucket && matchStage && matchSearch;
   });
 
@@ -6154,6 +6228,14 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
         {['all', 'GCMS', 'GCM75+', 'BCMS', 'BC75+'].map(k => (
           <button key={k} onClick={() => setBucketFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${bucketFilter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{k === 'all' ? 'All' : k}</button>
         ))}
+        <button
+          onClick={() => setHotOnly(!hotOnly)}
+          className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors border-2 ${
+            hotOnly ? 'bg-amber-100 text-amber-900 border-amber-400' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+          }`}
+        >
+          🔥 Hot only{hotOnly ? ' ✓' : ''}
+        </button>
         {leads.length > 0 && (
           <>
             <button
@@ -8763,6 +8845,7 @@ function MessagesTab({ lead, onCompose }) {
 // ============================================================
 function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
   const [showWon, setShowWon] = useState(false);
+  const [hotOnly, setHotOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverStage, setDragOverStage] = useState(null);
@@ -8847,6 +8930,12 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
 
   // Search filter applied to lead names + emails + phones.
   const matchesSearch = (lead) => {
+    if (hotOnly) {
+      const sc = leadScore(lead);
+      const h = leadHealth(lead);
+      // "Hot" = top-tier score (A) OR engaged health flag
+      if (sc.label !== 'A' && h.status !== 'hot') return false;
+    }
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return (
@@ -8899,6 +8988,16 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
             className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 bg-white"
           />
         </div>
+        <button
+          onClick={() => setHotOnly(!hotOnly)}
+          className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors border-2 ${
+            hotOnly
+              ? 'bg-amber-100 text-amber-900 border-amber-400'
+              : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+          }`}
+        >
+          🔥 Hot only{hotOnly ? ' ✓' : ''}
+        </button>
         <label className="text-xs text-slate-600 inline-flex items-center gap-1.5 cursor-pointer">
           <input type="checkbox" checked={showWon} onChange={(e) => setShowWon(e.target.checked)} className="rounded" />
           Show Won / Lost

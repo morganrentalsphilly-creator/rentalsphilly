@@ -361,6 +361,68 @@ async function runStageNudges(db) {
   return { sent, errors };
 }
 
+// Tour-outcome prompt creator. ~75 minutes after a scheduled tour's end time,
+// if the agent hasn't marked an outcome (status still scheduled / requested /
+// booked / confirmed), create a one-tap task: "Mark outcome of tour at X".
+// Idempotent — uses tour.id in the task ID prefix so we don't double-create.
+async function runTourOutcomePrompts(db) {
+  const now = new Date();
+  // Look at tours from the last 2 days (covers anything we may have missed).
+  const since = new Date(now.getTime() - 2 * 86400000).toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  const { data: tours, error } = await db
+    .from('tours')
+    .select('id, lead_id, date, time, status, listings')
+    .gte('date', since)
+    .lte('date', today);
+  if (error) {
+    console.error('[cron tour-outcome] query failed', error);
+    return { created: 0, errors: 1 };
+  }
+
+  let created = 0;
+  let errors = 0;
+  for (const tour of (tours || [])) {
+    // Skip closed states — already actioned.
+    if (['cancelled', 'completed', 'showed', 'no-show'].includes(tour.status)) continue;
+    if (!tour.lead_id) continue;
+    const startsAt = parseTourStartsAt(tour.date, tour.time);
+    if (!startsAt) continue;
+    // Trigger 75 minutes after tour start (which is ~15 min after a typical 60-min tour ends).
+    const triggerAt = startsAt.getTime() + 75 * 60 * 1000;
+    if (now.getTime() < triggerAt) continue;
+    // Idempotency: did we already create a prompt task for this tour?
+    const taskId = `t_${tour.id}_outcome`;
+    const { data: existing } = await db.from('tasks').select('id').eq('id', taskId).maybeSingle();
+    if (existing) continue;
+    const firstAddr = (tour.listings || []).map((l) => l.address).filter(Boolean)[0] || 'the property';
+    try {
+      await db.from('tasks').insert({
+        id: taskId,
+        lead_id: tour.lead_id,
+        title: `Mark outcome of tour at ${firstAddr}`,
+        due_date: today,
+        status: 'pending',
+        priority: 'high',
+        auto: true,
+        flags: ['tour-outcome'],
+        related_tour_id: tour.id,
+      });
+      await db.from('activities').insert({
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        lead_id: tour.lead_id,
+        type: 'tour-outcome-prompted',
+        message: `Auto-task created: mark outcome of tour at ${firstAddr}`,
+      });
+      created++;
+    } catch (err) {
+      console.error('[cron tour-outcome] insert failed', { tourId: tour.id, err: err.message });
+      errors++;
+    }
+  }
+  return { created, errors };
+}
+
 export async function GET(request) {
   if (!authorized(request)) {
     return new NextResponse('Unauthorized', { status: 401 });
@@ -369,8 +431,9 @@ export async function GET(request) {
   const reminders = await runReminders(db);
   const blast = await runBlastDrain(db);
   const nudges = await runStageNudges(db);
-  console.log('[cron] dispatcher tick', { reminders, blast, nudges });
-  return NextResponse.json({ ok: true, reminders, blast, nudges });
+  const tourOutcomes = await runTourOutcomePrompts(db);
+  console.log('[cron] dispatcher tick', { reminders, blast, nudges, tourOutcomes });
+  return NextResponse.json({ ok: true, reminders, blast, nudges, tourOutcomes });
 }
 
 // Allow POST too so it's easy to test from curl with a bearer header.
