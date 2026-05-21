@@ -9472,6 +9472,18 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
   const [search, setSearch] = useState('');
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverStage, setDragOverStage] = useState(null);
+  const columnsRef = useRef(null);
+  const stageRefs = useRef({});
+
+  // Tap a chip to scroll the kanban horizontally to that column. Works on
+  // any viewport; on mobile (snap-scroll) it locks the column to view.
+  const scrollToStage = (stageId) => {
+    const el = stageRefs.current[stageId];
+    if (el && columnsRef.current) {
+      const left = el.offsetLeft - 8; // -8px breathing room
+      columnsRef.current.scrollTo({ left, behavior: 'smooth' });
+    }
+  };
 
   // Drag-and-drop handlers. Drag a lead card onto a new stage column to move it.
   const onDragStart = (e, leadId) => {
@@ -9641,15 +9653,40 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
         />
       )}
 
-      {/* Kanban columns */}
-      {leads.length > 0 && <div className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1">
+      {/* Stage chip rail — scrolls horizontally on mobile; tap a chip to jump
+          to that column. Saves the user from blindly swiping through 8 stages. */}
+      {leads.length > 0 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-thin">
+          {visibleStages.map((stage) => {
+            const all = byStage[stage.id] || [];
+            const filtered = all.filter(matchesSearch);
+            return (
+              <button
+                key={stage.id}
+                onClick={() => scrollToStage(stage.id)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-[11px] font-semibold border inline-flex items-center gap-1.5 ${toneClass(stage.tone)} hover:opacity-80`}
+              >
+                {stage.label}
+                <span className="tabular-nums bg-white/60 rounded-full px-1.5 py-0.5 text-[10px]">{filtered.length}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Kanban columns — snap-scroll on mobile so each column locks to view */}
+      {leads.length > 0 && <div
+        ref={columnsRef}
+        className="flex gap-3 overflow-x-auto pb-3 -mx-1 px-1 snap-x snap-mandatory md:snap-none"
+      >
         {visibleStages.map((stage) => {
           const all = byStage[stage.id] || [];
           const filtered = all.filter(matchesSearch);
           return (
             <div
               key={stage.id}
-              className="flex-shrink-0 w-72 flex flex-col"
+              ref={(el) => { if (el) stageRefs.current[stage.id] = el; }}
+              className="flex-shrink-0 w-[88vw] sm:w-72 flex flex-col snap-start"
               onDragOver={(e) => onDragOver(e, stage.id)}
               onDrop={(e) => onDrop(e, stage.id)}
               onDragLeave={() => setDragOverStage(null)}
