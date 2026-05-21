@@ -67,6 +67,31 @@ export async function GET(request) {
     // Find the next anniversary date. Days remaining = 365 - (daysSinceMoveIn % 365).
     const daysToNextAnniversary = 365 - (daysSinceMoveIn % 365);
 
+    // ---- POST-LEASE REVIEW + REFERRAL ASK ----
+    // Fire ~7 days after move-in (lead is settling in, happy). Once per lead.
+    // Asks for a Google review and a referral. Stage doesn't matter — leased
+    // or paid both qualify. Skipped if move-in is in the future.
+    if (daysSinceMoveIn >= 7 && daysSinceMoveIn <= 21 && !history.post_lease_review) {
+      const body = `Hi ${firstName} — Morgan from Rentals Philly. Hope move-in is going smoothly! If you have 30 seconds, a quick Google review of how it went would mean a lot. And if you know anyone hunting for a rental in Philly, send 'em my way — I'll take great care of them. Reply STOP to opt out.`;
+      try {
+        const result = await sendSms({
+          leadId: lead.id, body, kind: 'post_lease_review',
+          idempotencyKey: `post-lease-review-${lead.id}`,
+        });
+        if (result.ok) {
+          sent++;
+          log.push({ id: lead.id, kind: 'post-lease-review' });
+          await db.from('leads').update({
+            raw: {
+              ...(lead.raw || {}),
+              retention_history: { ...history, post_lease_review: new Date().toISOString() },
+            },
+          }).eq('id', lead.id);
+        } else { errors++; }
+      } catch (err) { errors++; console.error('[retention post-lease]', err); }
+      continue;
+    }
+
     // RENEWAL NUDGE: fire when we're within 30-35 days of an upcoming
     // anniversary (i.e. ~11 months in to current year). Once per year.
     if (daysSinceMoveIn > 0 && daysToNextAnniversary >= 30 && daysToNextAnniversary <= 35) {

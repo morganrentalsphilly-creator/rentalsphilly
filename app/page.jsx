@@ -9157,6 +9157,9 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   const [composerSubject, setComposerSubject] = useState('');
   const [sending, setSending] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  // Mobile-only: tracks whether the user is "in" a thread (full-screen view)
+  // or browsing the thread list. Ignored on desktop where both panes show.
+  const [mobileViewingThread, setMobileViewingThread] = useState(false);
   // AI suggestion cache — keyed by lead.id + last inbound message id so we don't
   // re-burn the API on every render. Values: { suggestion, loading, error }.
   const [aiSuggestions, setAiSuggestions] = useState({});
@@ -9422,8 +9425,8 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
         <EmptyState icon={Inbox} title="No conversations yet" desc="Messages will appear here as they come in." />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] lg:grid-cols-[280px_1fr_280px] gap-3 h-[calc(100vh-300px)] min-h-[500px]">
-          {/* LEFT: thread list */}
-          <Card className="p-0 overflow-hidden flex flex-col">
+          {/* LEFT: thread list — hidden on mobile when a thread is being viewed */}
+          <Card className={`p-0 overflow-hidden flex flex-col ${mobileViewingThread ? 'hidden md:flex' : 'flex'}`}>
             <div className="p-3 border-b border-slate-100 space-y-2">
               <div className="relative">
                 <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -9460,7 +9463,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                 const preview = (t.last.body || '').replace(/\n+/g, ' ').slice(0, 60);
                 return (
                   <button key={t.lead.id}
-                    onClick={() => setSelectedThreadId(t.lead.id)}
+                    onClick={() => { setSelectedThreadId(t.lead.id); setMobileViewingThread(true); }}
                     className={`w-full text-left p-3 transition-colors block ${
                       isActive ? 'bg-slate-100' : 'hover:bg-slate-50'
                     }`}>
@@ -9482,18 +9485,26 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
             </div>
           </Card>
 
-          {/* CENTER: active conversation */}
+          {/* CENTER: active conversation — hidden on mobile when browsing list */}
           {activeThread ? (
-            <Card className="p-0 overflow-hidden flex flex-col">
-              <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-3">
-                <button onClick={() => onSelectLead(activeThread.lead.id)} className="font-semibold text-sm text-slate-900 hover:underline">
+            <Card className={`p-0 overflow-hidden flex flex-col ${mobileViewingThread ? 'flex' : 'hidden md:flex'}`}>
+              <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+                {/* Mobile-only back arrow to return to the thread list */}
+                <button
+                  onClick={() => setMobileViewingThread(false)}
+                  className="md:hidden w-9 h-9 -ml-1 rounded-full hover:bg-slate-100 flex items-center justify-center shrink-0"
+                  aria-label="Back to thread list"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <button onClick={() => onSelectLead(activeThread.lead.id)} className="font-semibold text-sm text-slate-900 hover:underline truncate">
                   {activeThread.lead.fullName}
                 </button>
                 <Pill tone="info">{activeThread.lead.stage}</Pill>
                 {activeThread.lead.opted_out && <Pill tone="danger">Opted out</Pill>}
                 <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
                   {activeThread.lead.phone && <span className="hidden md:inline">{activeThread.lead.phone}</span>}
-                  <button onClick={() => onSelectLead(activeThread.lead.id)} className="text-xs text-slate-500 hover:text-slate-900 underline">
+                  <button onClick={() => onSelectLead(activeThread.lead.id)} className="text-xs text-slate-500 hover:text-slate-900 underline whitespace-nowrap">
                     Open lead
                   </button>
                 </div>
@@ -9662,7 +9673,9 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
               </div>
             </Card>
           ) : (
-            <Card className="p-8 flex items-center justify-center text-slate-400 text-sm">
+            // Empty-state placeholder — only render on desktop where both panes
+            // are visible. On mobile, the thread list takes the whole screen.
+            <Card className="hidden md:flex p-8 items-center justify-center text-slate-400 text-sm">
               Select a conversation
             </Card>
           )}

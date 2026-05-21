@@ -122,9 +122,101 @@ export async function GET(request) {
 
   const weekLabel = `Week of ${new Date(thisWeekStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(now - DAY_MS).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
 
+  // ---- AI coach: get 2-3 actionable observations on this week's performance ----
+  // Pulls the same stats + a sense of cadence (avg reply time, touched leads,
+  // stuck-deal count) and asks Claude for short focused coaching.
+  let coachNotes = null;
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      // Compute supporting context the AI will reference.
+      const stuckCount = leads.filter((l) => {
+        const stage = l.stage;
+        if (['leased', 'paid', 'lost', 'archived'].includes(stage)) return false;
+        // Use last activity to detect "stuck"
+        const created = new Date(l.created_at).getTime();
+        const lastChange = (l.raw?.last_stage_change_at) ? new Date(l.raw.last_stage_change_at).getTime() : created;
+        return now - lastChange > 7 * DAY_MS;
+      }).length;
+      const conversionRate = newLeadsThis.length > 0
+        ? Math.round((leasedThis.length / newLeadsThis.length) * 100)
+        : null;
+
+      const prompt = `You are a real estate sales coach reviewing one week of a Philly rental agent's activity. Give 2-3 SHORT, SPECIFIC, actionable observations.
+
+This week's numbers:
+- New leads: ${newLeadsThis.length} (prior week: ${newLeadsPrior.length})
+- Tours scheduled: ${toursThis.length} (prior: ${toursPrior.length})
+- Tours completed: ${toursShowedThis.length} (prior: ${toursShowedPrior.length})
+- Leases signed: ${leasedThis.length} (prior: ${leasedPrior.length})
+- Commission booked: $${commissionThis} (prior: $${commissionPrior})
+- Currently stuck in pipeline >7d: ${stuckCount}
+${conversionRate !== null ? `- Lead→lease conversion this week: ${conversionRate}%` : ''}
+
+Format your response as a JSON array of 2-3 objects, each shaped:
+{ "headline": "...", "body": "...", "tone": "good" | "watch" | "act" }
+- headline: short bold takeaway (4-8 words)
+- body: 1-2 sentence specific observation + recommended action
+- tone: "good" if it's a win to keep doing, "watch" if it's a trend to monitor, "act" if there's a concrete next step
+
+Output ONLY the JSON array, no commentary, no code fences. Be specific and direct, not generic.`;
+
+      const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 500,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (apiRes.ok) {
+        const apiData = await apiRes.json();
+        const raw = (apiData?.content || [])
+          .filter((c) => c.type === 'text')
+          .map((c) => c.text)
+          .join('\n')
+          .trim();
+        const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+        try {
+          const arr = JSON.parse(cleaned);
+          if (Array.isArray(arr) && arr.length > 0) coachNotes = arr;
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[weekly recap] coach AI failed', err?.message);
+    }
+  }
+
+  const toneStyles = {
+    good:  { bg: '#ecfdf5', border: '#10b981', label: 'WIN',   labelColor: '#047857' },
+    watch: { bg: '#fffbeb', border: '#f59e0b', label: 'WATCH', labelColor: '#b45309' },
+    act:   { bg: '#fef2f2', border: '#ef4444', label: 'ACT',   labelColor: '#b91c1c' },
+  };
+  const coachHtml = coachNotes && coachNotes.length > 0 ? `
+    <div style="margin:0 0 22px;">
+      <p style="margin:0 0 10px;font-size:15px;color:#1c1f2a;font-weight:700;">📋 Coach&rsquo;s notes</p>
+      ${coachNotes.map((note) => {
+        const t = toneStyles[note.tone] || toneStyles.watch;
+        return `
+          <div style="margin-bottom:8px;padding:12px 14px;background:${t.bg};border-left:3px solid ${t.border};border-radius:8px;">
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;color:${t.labelColor};margin-bottom:3px;">${t.label}</div>
+            <div style="font-size:14px;font-weight:600;color:#1c1f2a;margin-bottom:3px;">${(note.headline || '').replace(/</g, '&lt;')}</div>
+            <div style="font-size:13px;color:#475569;line-height:1.5;">${(note.body || '').replace(/</g, '&lt;')}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  ` : '';
+
   const body = `
     <p style="margin:0 0 14px;font-size:17px;color:#1c1f2a;font-weight:600;">Your week in numbers</p>
     <p style="margin:0 0 18px;color:#64748b;font-size:13px;">${weekLabel}</p>
+    ${coachHtml}
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
       ${rowsHtml}
     </table>
