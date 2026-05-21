@@ -1,13 +1,11 @@
-// Annual retention / referral cron.
+// Referral cron — past-client touchpoints focused on referrals (not renewals).
 //
-// Two annual touchpoints for past clients:
-//   1. ~11 months post-move-in: lease-renewal nudge. Most Philly leases are
-//      12 months, so we hit them ~30 days before to lock in renewal commission
-//      (or capture them as a fresh search if they're moving).
-//   2. ~12 months post-lease-signed (anniversary): a thank-you + referral ask.
+// Touchpoints:
+//   1. 7-21 days post-move-in: thank-you + Google review + referral ask.
+//   2. ~12 months post-move-in (anniversary): friendly check-in + referral ask.
 //      Past clients are the strongest referral source.
 //
-// Idempotency: each lead's raw.retention_history tracks which year+kind we've
+// Idempotency: each lead's raw.retention_history tracks which kind we've
 // already sent so we don't double-send if the cron fires twice in a day.
 //
 // Schedule via Vercel cron (add to vercel.json).
@@ -55,6 +53,7 @@ export async function GET(request) {
     if (sent >= SEND_CAP) break;
     if (!lead.phone) continue;
     if (!lead.move_in_date) continue;
+    if (lead.raw?.automation_paused) continue;
 
     const moveIn = new Date(lead.move_in_date + 'T00:00:00');
     if (Number.isNaN(moveIn.getTime())) continue;
@@ -90,32 +89,6 @@ export async function GET(request) {
         } else { errors++; }
       } catch (err) { errors++; console.error('[retention post-lease]', err); }
       continue;
-    }
-
-    // RENEWAL NUDGE: fire when we're within 30-35 days of an upcoming
-    // anniversary (i.e. ~11 months in to current year). Once per year.
-    if (daysSinceMoveIn > 0 && daysToNextAnniversary >= 30 && daysToNextAnniversary <= 35) {
-      const renewalKey = `renewal-y${yearsSinceMoveIn + 1}`; // for the UPCOMING anniversary year
-      if (!history[renewalKey]) {
-        const body = `Hi ${firstName} — Morgan from Rentals Philly. Your lease anniversary is coming up. Planning to renew, or thinking about a move? Either way I can help — reply and I'll loop in your landlord or send fresh listings.`;
-        try {
-          const result = await sendSms({
-            leadId: lead.id, body, kind: 'retention_renewal',
-            idempotencyKey: `${renewalKey}-${lead.id}`,
-          });
-          if (result.ok) {
-            sent++;
-            log.push({ id: lead.id, kind: 'renewal', year: yearsSinceMoveIn + 1 });
-            await db.from('leads').update({
-              raw: {
-                ...(lead.raw || {}),
-                retention_history: { ...history, [renewalKey]: new Date().toISOString() },
-              },
-            }).eq('id', lead.id);
-          } else { errors++; }
-        } catch (err) { errors++; console.error('[retention renewal]', err); }
-        continue;
-      }
     }
 
     // ANNIVERSARY THANK-YOU / REFERRAL ASK: fire on the anniversary itself

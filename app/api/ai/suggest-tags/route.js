@@ -22,7 +22,6 @@ const ALLOWED_TAGS = [
   'Pet owner',
   'Investor',
   'Referral source',
-  'Renewal candidate',
   'Self-employed',
   'Student',
   'Out-of-state',

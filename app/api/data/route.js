@@ -184,15 +184,31 @@ export async function POST(request) {
         if (error) throw error;
         return NextResponse.json({ settings: data });
       }
-      case 'upload_application': {
-        const { leadId, filename, base64 } = body;
+      case 'upload_application':
+      case 'upload_document': {
+        const { leadId, filename, base64, contentType } = body;
         const db = supabaseAdmin();
         // Strip the data URL prefix if present
         const cleanBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
         const buffer = Buffer.from(cleanBase64, 'base64');
+        // Infer content type from extension if not provided. Reasonable
+        // defaults for what tenants typically send.
+        const ext = (filename || '').toLowerCase().split('.').pop();
+        const inferred = {
+          pdf: 'application/pdf',
+          png: 'image/png',
+          jpg: 'image/jpeg', jpeg: 'image/jpeg',
+          heic: 'image/heic',
+          webp: 'image/webp',
+          docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          doc: 'application/msword',
+          xls: 'application/vnd.ms-excel',
+          xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          txt: 'text/plain',
+        }[ext] || 'application/octet-stream';
         const path = `${leadId}/${Date.now()}_${filename}`;
         const { error } = await db.storage.from('applications').upload(path, buffer, {
-          contentType: 'application/pdf',
+          contentType: contentType || inferred,
           upsert: false,
         });
         if (error) throw error;
@@ -202,6 +218,13 @@ export async function POST(request) {
           .createSignedUrl(path, 60 * 60 * 24 * 365);
         if (urlError) throw urlError;
         return NextResponse.json({ path, url: signed.signedUrl });
+      }
+      case 'delete_document': {
+        const { path } = body;
+        const db = supabaseAdmin();
+        const { error } = await db.storage.from('applications').remove([path]);
+        if (error) throw error;
+        return NextResponse.json({ ok: true });
       }
 
       case 'delete_application': {

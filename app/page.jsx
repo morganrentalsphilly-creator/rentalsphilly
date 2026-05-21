@@ -4993,75 +4993,6 @@ function CadenceDueCard({ leads, onSelectLead }) {
   );
 }
 
-// Upcoming Renewals card — past clients (leased / paid) approaching the
-// 12-month mark of their move-in date. Surfaces in the 30-60 day window
-// before the anniversary so Morgan can manually reach out before the
-// retention cron auto-fires (manual touch closes more renewals).
-function UpcomingRenewalsCard({ leads, onSelectLead }) {
-  const renewals = useMemo(() => {
-    const now = Date.now();
-    return leads
-      .filter((l) => l.stage === 'leased' || l.stage === 'paid')
-      .map((l) => {
-        if (!l.moveInDate) return null;
-        const moveIn = new Date(l.moveInDate + 'T00:00:00').getTime();
-        const daysSinceMoveIn = Math.floor((now - moveIn) / 86400000);
-        if (daysSinceMoveIn < 0) return null; // future move
-        // Find the days remaining to the NEXT 12-month anniversary
-        const daysToAnniversary = 365 - (daysSinceMoveIn % 365);
-        if (daysToAnniversary > 60) return null;          // too far out
-        if (daysToAnniversary <= 0) return null;          // already passed
-        const yearsCompleted = Math.floor(daysSinceMoveIn / 365);
-        return { lead: l, daysToAnniversary, yearsCompleted };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.daysToAnniversary - b.daysToAnniversary)
-      .slice(0, 6);
-  }, [leads]);
-
-  if (renewals.length === 0) return null;
-
-  return (
-    <Card className="p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <Award className="w-4 h-4 text-emerald-600" />
-        <div className="text-sm font-semibold text-slate-900">Upcoming renewals</div>
-        <div className="text-[10px] text-slate-500">{renewals.length} in next 60d</div>
-      </div>
-      <div className="space-y-1.5">
-        {renewals.map(({ lead, daysToAnniversary, yearsCompleted }) => {
-          const isHot = daysToAnniversary <= 35; // cron auto-fires at 30-35; earlier = manual edge
-          return (
-            <button
-              key={lead.id}
-              onClick={() => onSelectLead(lead.id)}
-              className={`w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg ${
-                isHot ? 'bg-emerald-50 hover:bg-emerald-100' : 'hover:bg-slate-50'
-              }`}
-            >
-              <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${
-                isHot ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
-              }`}>
-                {daysToAnniversary}d
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-slate-900 truncate">{lead.fullName}</div>
-                <div className="text-[11px] text-slate-500 truncate">
-                  Renews after {yearsCompleted + 1}y · {(lead.raw?.curated_address_picks || []).slice(0, 1).join('') || 'Past client'}
-                </div>
-              </div>
-              <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-            </button>
-          );
-        })}
-      </div>
-      <div className="text-[10px] text-slate-500 italic mt-2">
-        Cron auto-fires renewal SMS at 30-35 days out. Hit them sooner for higher renewal rate.
-      </div>
-    </Card>
-  );
-}
-
 // Needs Attention card — surface stuck + cold leads on Today so they don't
 // drift. Uses leadHealth() to flag, sorts by days-in-stage descending.
 function NeedsAttentionCard({ leads, onSelectLead }) {
@@ -5328,9 +5259,6 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* CADENCE DUE — leads hitting their per-stage touch interval */}
       <CadenceDueCard leads={leads} onSelectLead={onSelectLead} />
-
-      {/* UPCOMING RENEWALS — past clients approaching their anniversary */}
-      <UpcomingRenewalsCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* ACTIONS */}
       {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
@@ -8250,12 +8178,199 @@ const TAG_PRESETS = [
   { label: 'Pet owner', tone: 'bg-emerald-100 text-emerald-800 border-emerald-300' },
   { label: 'Investor', tone: 'bg-blue-100 text-blue-800 border-blue-300' },
   { label: 'Referral source', tone: 'bg-pink-100 text-pink-800 border-pink-300' },
-  { label: 'Renewal candidate', tone: 'bg-teal-100 text-teal-800 border-teal-300' },
 ];
 
 function tagTone(label) {
   const preset = TAG_PRESETS.find((t) => t.label.toLowerCase() === (label || '').toLowerCase());
   return preset?.tone || 'bg-slate-100 text-slate-700 border-slate-300';
+}
+
+// Lead documents — drag-and-drop file upload area on the lead detail.
+// Used for application PDFs, ID scans, pay stubs, screening reports, etc.
+// Documents are stored in Supabase storage; metadata lives on lead.raw.documents.
+const MAX_DOC_SIZE = 10 * 1024 * 1024; // 10MB per file
+const DOC_KIND_OPTIONS = ['Application', 'ID / passport', 'Pay stub', 'Screening', 'Lease', 'Other'];
+
+function LeadDocumentsPanel({ lead, updateLead, showToast }) {
+  const docs = Array.isArray(lead.raw?.documents) ? lead.raw.documents : [];
+  const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const upload = async (files, defaultKind = 'Other') => {
+    setUploading(true);
+    const fileList = Array.from(files);
+    const next = [...docs];
+    for (const file of fileList) {
+      if (file.size > MAX_DOC_SIZE) {
+        showToast(`${file.name} is over 10MB — skipped`);
+        continue;
+      }
+      try {
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        const res = await fetch('/api/data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'upload_document',
+            leadId: lead.id,
+            filename: file.name,
+            base64,
+            contentType: file.type || 'application/octet-stream',
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.path) {
+          showToast(`Couldn't upload ${file.name}`);
+          continue;
+        }
+        next.push({
+          id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          filename: file.name,
+          size: file.size,
+          kind: defaultKind,
+          contentType: file.type,
+          path: data.path,
+          url: data.url,
+          uploadedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error('[doc upload]', err);
+        showToast(`Upload failed: ${err.message}`);
+      }
+    }
+    await updateLead(lead.id, {
+      raw: { ...(lead.raw || {}), documents: next },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: 'document-uploaded',
+        timestamp: new Date().toISOString(),
+        message: `Uploaded ${fileList.length} document${fileList.length === 1 ? '' : 's'}`,
+      }],
+    });
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeDoc = async (doc) => {
+    if (!confirm(`Delete "${doc.filename}"? This is permanent.`)) return;
+    try {
+      await fetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_document', path: doc.path }),
+      });
+    } catch (err) {
+      console.warn('[doc delete] storage delete failed', err?.message);
+    }
+    const next = docs.filter((d) => d.id !== doc.id);
+    await updateLead(lead.id, { raw: { ...(lead.raw || {}), documents: next } });
+    showToast('Document deleted');
+  };
+
+  const updateDocKind = async (docId, newKind) => {
+    const next = docs.map((d) => (d.id === docId ? { ...d, kind: newKind } : d));
+    await updateLead(lead.id, { raw: { ...(lead.raw || {}), documents: next } });
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (uploading) return;
+    if (e.dataTransfer?.files?.length > 0) upload(e.dataTransfer.files);
+  };
+
+  const fmtSize = (b) => {
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  };
+  const docIcon = (kind) => {
+    if (kind === 'Application') return FileCheck;
+    if (kind === 'ID / passport') return Shield;
+    if (kind === 'Pay stub') return DollarSign;
+    if (kind === 'Screening') return Shield;
+    if (kind === 'Lease') return FileText;
+    return File;
+  };
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <SectionHeader icon={Upload}>Documents</SectionHeader>
+        {uploading && <span className="text-[10px] text-slate-400 italic">Uploading…</span>}
+      </div>
+      {docs.length === 0 ? (
+        <div className="text-xs text-slate-500">
+          Drag application PDFs, ID scans, pay stubs, or screening reports here. Stored privately — only you can see them.
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {docs.map((d) => {
+            const Icon = docIcon(d.kind);
+            return (
+              <div key={d.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200">
+                <Icon className="w-4 h-4 text-slate-500 shrink-0" />
+                <a
+                  href={d.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 min-w-0 text-sm font-medium text-slate-900 truncate hover:underline"
+                  title={d.filename}
+                >
+                  {d.filename}
+                </a>
+                <select
+                  value={d.kind}
+                  onChange={(e) => updateDocKind(d.id, e.target.value)}
+                  className="text-[10px] border border-slate-200 rounded px-1.5 py-0.5 bg-white focus:outline-none focus:border-slate-400"
+                >
+                  {DOC_KIND_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <span className="text-[10px] text-slate-500 shrink-0">{fmtSize(d.size || 0)}</span>
+                <button
+                  onClick={() => removeDoc(d)}
+                  className="text-slate-400 hover:text-red-600 shrink-0 p-1"
+                  title="Delete"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <label
+        onDragEnter={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`block border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${
+          dragOver ? 'border-amber-400 bg-amber-50' : 'border-slate-200 hover:border-slate-300'
+        }`}
+        style={dragOver ? { borderColor: 'var(--brand-gold)' } : undefined}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".pdf,.png,.jpg,.jpeg,.heic,.webp,.docx,.doc,.txt"
+          onChange={(e) => { if (e.target.files?.length > 0) upload(e.target.files); }}
+          className="hidden"
+        />
+        <Upload className="w-5 h-5 mx-auto mb-1.5 text-slate-400" />
+        <div className="text-sm font-medium text-slate-700">
+          {dragOver ? 'Drop to upload' : 'Drag files here or tap to select'}
+        </div>
+        <div className="text-[10px] text-slate-400 mt-1">PDF, image, or DOCX · 10 MB max each</div>
+      </label>
+    </Card>
+  );
 }
 
 function NotesAndTagsPanel({ lead, updateLead, showToast }) {
@@ -8506,6 +8621,21 @@ function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
   const isArchived = lead.stage === 'archived';
   const snoozedUntil = lead.raw?.snoozed_until;
   const isSnoozed = snoozedUntil && new Date(snoozedUntil) > new Date();
+  const isAutomationPaused = !!lead.raw?.automation_paused;
+
+  const toggleAutomation = async () => {
+    await updateLead(lead.id, {
+      raw: { ...(lead.raw || {}), automation_paused: !isAutomationPaused },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: isAutomationPaused ? 'automation-resumed' : 'automation-paused',
+        timestamp: new Date().toISOString(),
+        message: isAutomationPaused ? 'Auto-nudges resumed for this lead' : 'Auto-nudges paused for this lead',
+      }],
+    });
+    showToast(isAutomationPaused ? 'Auto-nudges resumed' : 'Auto-nudges paused');
+    setOpen(false);
+  };
 
   const setStage = async (newStage, label) => {
     await updateLead(lead.id, {
@@ -8598,6 +8728,12 @@ function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
               </div>
             )}
             <div className="border-t border-slate-100 my-1" />
+            <button onClick={toggleAutomation} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+              <Bot className={`w-3.5 h-3.5 ${isAutomationPaused ? 'text-amber-500' : 'text-slate-400'}`} />
+              {isAutomationPaused ? 'Resume auto-nudges' : 'Pause auto-nudges'}
+              {isAutomationPaused && <span className="text-[10px] text-amber-600 ml-auto">paused</span>}
+            </button>
+            <div className="border-t border-slate-100 my-1" />
             {!isArchived && (
               <button onClick={() => setStage('archived', 'Archived')} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
                 <Inbox className="w-3.5 h-3.5 text-slate-400" /> Archive lead
@@ -8660,6 +8796,11 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
                 Snoozed until {new Date(lead.raw.snoozed_until).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               </Pill>
             )}
+            {lead.raw?.automation_paused && (
+              <Pill tone="warning" icon={Bot}>
+                Auto-nudges paused
+              </Pill>
+            )}
             {(lead.tags || []).map((t) => (
               <span key={t} className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${tagTone(t)}`}>
                 {t}
@@ -8714,6 +8855,9 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
 
               {/* Notes + tags + source — private agent context */}
               <NotesAndTagsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+
+              {/* Lead documents (apps, IDs, pay stubs) — drag-and-drop */}
+              <LeadDocumentsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
               <div>
                 <SectionHeader>Lead details</SectionHeader>

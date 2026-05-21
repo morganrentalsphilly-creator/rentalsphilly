@@ -97,6 +97,8 @@ async function runReminders(db) {
 
     // Resolve substitution vars per tour
     const lead = leadById[tour.lead_id];
+    // Skip reminders for leads with per-lead automation paused.
+    if (lead?.raw?.automation_paused) continue;
     const firstName = ((lead?.full_name || '').split(' ')[0]) || 'there';
     const leadToken = lead?.raw?.curated_token || '';
     const rescheduleUrl = leadToken ? `${appUrl}/c/${leadToken}?reschedule=${tour.id}` : '';
@@ -322,6 +324,10 @@ async function runStageNudges(db) {
 
     for (const lead of (candidates || [])) {
       if (sent >= SEND_CAP) break;
+      // Skip leads with per-lead automation paused OR active snooze.
+      if (lead.raw?.automation_paused) continue;
+      const snoozeUntil = lead.raw?.snoozed_until;
+      if (snoozeUntil && new Date(snoozeUntil) > new Date()) continue;
       // Check stuck time — use latest of stage entry hints we have.
       const stageEnteredAt = new Date(
         lead.raw?.curated_link_sent_at ||
