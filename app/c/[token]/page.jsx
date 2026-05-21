@@ -151,16 +151,47 @@ export default function CuratedPage() {
 
   if (loadError) {
     return (
-      <main className="min-h-screen flex items-center justify-center px-6 text-center bg-slate-50">
-        <div>
-          <div className="text-2xl font-semibold text-slate-900 mb-2">Link not found</div>
-          <div className="text-slate-500">This link may have expired. Reach out to your agent for a fresh one.</div>
+      <main className="min-h-screen flex items-center justify-center px-6 bg-slate-50">
+        <div className="max-w-md w-full text-center">
+          <div className="text-[10px] font-bold uppercase tracking-[0.18em] mb-4" style={{ color: 'var(--brand-gold)' }}>
+            Rentals Philly
+          </div>
+          <div className="w-14 h-14 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-5">
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+          </div>
+          <h1 className="text-2xl font-semibold text-slate-900 mb-2">Link not found</h1>
+          <p className="text-slate-600 text-sm mb-6 leading-relaxed">
+            This link may have expired or been replaced. If you&apos;re looking for your personalized rentals page, your agent will send a fresh one — or you can start a new search.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2 justify-center">
+            <a
+              href="/"
+              className="px-5 py-3 rounded-full text-white font-medium"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+            >
+              Start a new search
+            </a>
+            <a
+              href="mailto:morganrentalsphilly@gmail.com"
+              className="px-5 py-3 rounded-full bg-slate-100 text-slate-900 font-medium hover:bg-slate-200"
+            >
+              Email Morgan
+            </a>
+          </div>
         </div>
       </main>
     );
   }
   if (!data) {
-    return <main className="min-h-screen flex items-center justify-center text-slate-400 text-sm bg-slate-50">Loading…</main>;
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-3 text-slate-400 text-sm bg-slate-50">
+        <div className="w-6 h-6 border-2 border-slate-200 border-t-slate-700 rounded-full animate-spin" />
+        Loading…
+      </main>
+    );
   }
 
   const firstName = data.firstName || 'there';

@@ -2189,7 +2189,7 @@ export default function App() {
             <div className="h-64 bg-slate-100 rounded-2xl" />
           </div>
         ) : (
-          <AdminCRM leads={leads} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
+          <AdminCRM leads={leads} addLead={addLead} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
         )
       )}
     </div>
@@ -4149,6 +4149,143 @@ function AdminUnauthorized({ email }) {
 }
 
 // ============================================================
+// ADD LEAD MODAL — manual lead creation for in-person meetings, referrals,
+// phone calls, etc. Streamlined version of the intake form (single screen,
+// no consent disclosure since the agent is entering it, no progress bar).
+// ============================================================
+function AddLeadModal({ onClose, onCreate }) {
+  const [data, setData] = useState({
+    fullName: '', email: '', phone: '',
+    moveInDate: '', budgetMin: '1500', budgetMax: '2500',
+    beds: '1', baths: '1', areas: '',
+    employed: 'Yes', creditScore: '700-749', tourType: 'in-person',
+    source: 'Referral',
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const update = (k, v) => setData((d) => ({ ...d, [k]: v }));
+
+  const isValid =
+    data.fullName.trim().length > 1 &&
+    /.+@.+\..+/.test(data.email) &&
+    data.phone.replace(/\D/g, '').length >= 10 &&
+    !!data.moveInDate &&
+    !!data.budgetMin && !!data.budgetMax;
+
+  const submit = async () => {
+    if (!isValid || submitting) return;
+    setSubmitting(true);
+    try {
+      await onCreate(data);
+    } catch (err) {
+      console.error('[add lead]', err);
+      alert(`Couldn't add lead: ${err.message}`);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
+      <div className="bg-white w-full md:max-w-lg md:rounded-2xl rounded-t-2xl max-h-[95vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <div className="font-semibold text-slate-900">Add lead manually</div>
+            <div className="text-xs text-slate-500">Referral, walk-in, or phone inquiry</div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <FormField label="Full name *">
+              <input value={data.fullName} onChange={(e) => update('fullName', e.target.value)} className="form-input" placeholder="Alex Morgan" autoFocus />
+            </FormField>
+            <FormField label="Source">
+              <select value={data.source} onChange={(e) => update('source', e.target.value)} className="form-input">
+                {['Referral', 'Walked in', 'Phone call', 'Instagram', 'Facebook', 'Google', 'Zillow', 'Apartments.com', 'Other'].map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Email *">
+              <input type="email" value={data.email} onChange={(e) => update('email', e.target.value)} className="form-input" placeholder="alex@example.com" inputMode="email" autoCapitalize="off" />
+            </FormField>
+            <FormField label="Phone *">
+              <input type="tel" value={data.phone} onChange={(e) => update('phone', formatUsPhone(e.target.value))} className="form-input" placeholder="(215) 555-0123" maxLength={14} inputMode="tel" />
+            </FormField>
+            <FormField label="Move-in date *">
+              <input type="date" value={data.moveInDate} onChange={(e) => update('moveInDate', e.target.value)} className="form-input" min={new Date().toISOString().slice(0, 10)} />
+            </FormField>
+            <FormField label="Tour type">
+              <select value={data.tourType} onChange={(e) => update('tourType', e.target.value)} className="form-input">
+                <option value="in-person">In-person</option>
+                <option value="virtual">Virtual</option>
+              </select>
+            </FormField>
+            <FormField label="Budget min *">
+              <input type="number" value={data.budgetMin} onChange={(e) => update('budgetMin', e.target.value)} className="form-input" placeholder="1500" inputMode="numeric" />
+            </FormField>
+            <FormField label="Budget max *">
+              <input type="number" value={data.budgetMax} onChange={(e) => update('budgetMax', e.target.value)} className="form-input" placeholder="2500" inputMode="numeric" />
+            </FormField>
+            <FormField label="Beds (min)">
+              <select value={data.beds} onChange={(e) => update('beds', e.target.value)} className="form-input">
+                {[{ v: '0', l: 'Studio' }, { v: '1', l: '1+' }, { v: '2', l: '2+' }, { v: '3', l: '3+' }, { v: '4', l: '4+' }].map((o) => (
+                  <option key={o.v} value={o.v}>{o.l}</option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Baths (min)">
+              <select value={data.baths} onChange={(e) => update('baths', e.target.value)} className="form-input">
+                {['1', '1.5', '2', '2.5', '3'].map((b) => <option key={b} value={b}>{b}+</option>)}
+              </select>
+            </FormField>
+            <FormField label="Employed?">
+              <select value={data.employed} onChange={(e) => update('employed', e.target.value)} className="form-input">
+                <option>Yes</option>
+                <option>No</option>
+              </select>
+            </FormField>
+            <FormField label="Credit range">
+              <select value={data.creditScore} onChange={(e) => update('creditScore', e.target.value)} className="form-input">
+                {['Below 600', '600-649', '650-699', '700-749', '750+'].map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </FormField>
+          </div>
+          <FormField label="Preferred neighborhoods (optional)">
+            <input value={data.areas} onChange={(e) => update('areas', e.target.value)} className="form-input" placeholder="Fishtown, Fairmount" />
+          </FormField>
+
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600 leading-relaxed">
+            <strong className="text-slate-900">Heads up:</strong> creating a lead here fires the welcome SMS + email automatically. Only do this with their consent (e.g. they verbally agreed at a meeting or referral). For consent records, the SMS opt-in source will be marked as &ldquo;agent_entry&rdquo;.
+          </div>
+        </div>
+
+        <div className="px-5 py-3.5 border-t border-slate-200 flex items-center gap-2">
+          <button onClick={onClose} className="px-4 py-2.5 rounded-full bg-slate-100 text-slate-700 font-medium text-sm hover:bg-slate-200">
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!isValid || submitting}
+            className="flex-1 px-5 py-2.5 rounded-full text-white font-semibold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed"
+            style={{ backgroundColor: 'var(--brand-gold)' }}
+          >
+            {submitting ? (
+              <>
+                <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Creating…
+              </>
+            ) : (
+              <>Create lead &amp; send welcome</>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // GLOBAL SEARCH — autocomplete jumper for leads + tours + recent messages.
 // ============================================================
 function GlobalSearch({ search, setSearch, leads, onSelectLead, onSelectTour }) {
@@ -5050,11 +5187,12 @@ function KeyboardShortcutHelp({ onClose }) {
   );
 }
 
-function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
+function AdminCRM({ leads, addLead, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
   const [submitModal, setSubmitModal] = useState(null);
   const [followUpModal, setFollowUpModal] = useState(null);
+  const [addLeadModal, setAddLeadModal] = useState(false);
   const [search, setSearch] = useState('');
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
 
@@ -5173,6 +5311,14 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
             onSelectLead={(id) => { setSelectedLeadId(id); setSearch(''); }}
             onSelectTour={(leadId) => { setSelectedLeadId(leadId); setSearch(''); }}
           />
+          <button
+            onClick={() => setAddLeadModal(true)}
+            className="px-3 py-2 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5 transition-colors hover:opacity-90"
+            style={{ backgroundColor: 'var(--brand-gold)' }}
+            title="Add a lead manually (referral, walk-in, etc.)"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add lead
+          </button>
           {sessionEmail && (
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <span className="hidden sm:inline">{sessionEmail}</span>
@@ -5286,6 +5432,18 @@ function AdminCRM({ leads, updateLead, saveLeads, slots, openSlot, closeSlot, wa
       {followUpModal && <LogFollowUpModal lead={followUpModal.lead} submissionId={followUpModal.submissionId} onClose={() => setFollowUpModal(null)} onLog={async (note) => { await logSubmissionFollowUp(followUpModal.lead.id, followUpModal.submissionId, note); setFollowUpModal(null); }} />}
 
       {showShortcutHelp && <KeyboardShortcutHelp onClose={() => setShowShortcutHelp(false)} />}
+
+      {addLeadModal && (
+        <AddLeadModal
+          onClose={() => setAddLeadModal(false)}
+          onCreate={async (leadData) => {
+            const created = await addLead(leadData);
+            setAddLeadModal(false);
+            if (created?.id) setSelectedLeadId(created.id);
+            showToast(`${leadData.fullName} added`);
+          }}
+        />
+      )}
 
       {composeModal && <ComposeModal {...composeModal} onClose={() => setComposeModal(null)} onSend={async (msg) => {
         const lead = composeModal.lead;
