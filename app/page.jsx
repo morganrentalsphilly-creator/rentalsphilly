@@ -4993,6 +4993,75 @@ function CadenceDueCard({ leads, onSelectLead }) {
   );
 }
 
+// Upcoming Renewals card — past clients (leased / paid) approaching the
+// 12-month mark of their move-in date. Surfaces in the 30-60 day window
+// before the anniversary so Morgan can manually reach out before the
+// retention cron auto-fires (manual touch closes more renewals).
+function UpcomingRenewalsCard({ leads, onSelectLead }) {
+  const renewals = useMemo(() => {
+    const now = Date.now();
+    return leads
+      .filter((l) => l.stage === 'leased' || l.stage === 'paid')
+      .map((l) => {
+        if (!l.moveInDate) return null;
+        const moveIn = new Date(l.moveInDate + 'T00:00:00').getTime();
+        const daysSinceMoveIn = Math.floor((now - moveIn) / 86400000);
+        if (daysSinceMoveIn < 0) return null; // future move
+        // Find the days remaining to the NEXT 12-month anniversary
+        const daysToAnniversary = 365 - (daysSinceMoveIn % 365);
+        if (daysToAnniversary > 60) return null;          // too far out
+        if (daysToAnniversary <= 0) return null;          // already passed
+        const yearsCompleted = Math.floor(daysSinceMoveIn / 365);
+        return { lead: l, daysToAnniversary, yearsCompleted };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.daysToAnniversary - b.daysToAnniversary)
+      .slice(0, 6);
+  }, [leads]);
+
+  if (renewals.length === 0) return null;
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Award className="w-4 h-4 text-emerald-600" />
+        <div className="text-sm font-semibold text-slate-900">Upcoming renewals</div>
+        <div className="text-[10px] text-slate-500">{renewals.length} in next 60d</div>
+      </div>
+      <div className="space-y-1.5">
+        {renewals.map(({ lead, daysToAnniversary, yearsCompleted }) => {
+          const isHot = daysToAnniversary <= 35; // cron auto-fires at 30-35; earlier = manual edge
+          return (
+            <button
+              key={lead.id}
+              onClick={() => onSelectLead(lead.id)}
+              className={`w-full text-left flex items-center gap-3 px-2 py-2 rounded-lg ${
+                isHot ? 'bg-emerald-50 hover:bg-emerald-100' : 'hover:bg-slate-50'
+              }`}
+            >
+              <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${
+                isHot ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-700'
+              }`}>
+                {daysToAnniversary}d
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-slate-900 truncate">{lead.fullName}</div>
+                <div className="text-[11px] text-slate-500 truncate">
+                  Renews after {yearsCompleted + 1}y · {(lead.raw?.curated_address_picks || []).slice(0, 1).join('') || 'Past client'}
+                </div>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+            </button>
+          );
+        })}
+      </div>
+      <div className="text-[10px] text-slate-500 italic mt-2">
+        Cron auto-fires renewal SMS at 30-35 days out. Hit them sooner for higher renewal rate.
+      </div>
+    </Card>
+  );
+}
+
 // Needs Attention card — surface stuck + cold leads on Today so they don't
 // drift. Uses leadHealth() to flag, sorts by days-in-stage descending.
 function NeedsAttentionCard({ leads, onSelectLead }) {
@@ -5259,6 +5328,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* CADENCE DUE — leads hitting their per-stage touch interval */}
       <CadenceDueCard leads={leads} onSelectLead={onSelectLead} />
+
+      {/* UPCOMING RENEWALS — past clients approaching their anniversary */}
+      <UpcomingRenewalsCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* ACTIONS */}
       {(newLeadsNoCurate.length > 0 || tourRequested.length > 0 || needsReply.length > 0) && (
@@ -8191,9 +8263,51 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
   const [tagDraft, setTagDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // AI tag suggestions — fetched once per lead per session, cached
+  const [aiSuggested, setAiSuggested] = useState(null); // [{ tag, applied }]
+  const [aiLoading, setAiLoading] = useState(false);
+  const aiCacheRef = useRef({});
   const tags = Array.isArray(lead.tags) ? lead.tags : [];
 
   useEffect(() => { setNotes(lead.notes || ''); }, [lead.id]);
+
+  // Auto-fetch AI tag suggestions on mount (and when lead changes).
+  // Only fires if there's some conversation context to analyze.
+  useEffect(() => {
+    if (aiCacheRef.current[lead.id]) {
+      setAiSuggested(aiCacheRef.current[lead.id]);
+      return;
+    }
+    const msgCount = (lead.messages || []).filter((m) => !m.internal).length;
+    if (msgCount < 2 && !lead.areas && !lead.raw?.notes) {
+      // Not enough context to suggest meaningful tags yet
+      setAiSuggested([]);
+      return;
+    }
+    setAiLoading(true);
+    fetch('/api/ai/suggest-tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leadId: lead.id }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.ok && Array.isArray(data.tags)) {
+          // Filter out tags already applied
+          const existing = new Set(tags.map((t) => t.toLowerCase()));
+          const fresh = data.tags
+            .filter((t) => !existing.has(String(t).toLowerCase()))
+            .map((t) => ({ tag: t }));
+          aiCacheRef.current[lead.id] = fresh;
+          setAiSuggested(fresh);
+        } else {
+          setAiSuggested([]);
+        }
+      })
+      .catch(() => setAiSuggested([]))
+      .finally(() => setAiLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead.id]);
 
   // Debounced auto-save: 800ms after last keystroke.
   useEffect(() => {
@@ -8245,6 +8359,29 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
             </span>
           ))}
           {tags.length === 0 && <span className="text-xs italic text-slate-400 mr-1">No tags yet</span>}
+          {/* AI suggested tags — one-click apply, dismissible per tag */}
+          {aiSuggested && aiSuggested.length > 0 && aiSuggested.map((s) => (
+            <button
+              key={s.tag}
+              onClick={() => {
+                addTag(s.tag);
+                setAiSuggested((prev) => prev.filter((x) => x.tag !== s.tag));
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium border-2 border-dashed hover:bg-amber-50 transition-colors"
+              style={{ borderColor: 'var(--brand-gold)', color: 'var(--brand-gold)' }}
+              title="AI suggested — click to apply"
+            >
+              <Sparkles className="w-2.5 h-2.5" />
+              {s.tag}
+              <Plus className="w-2.5 h-2.5" />
+            </button>
+          ))}
+          {aiLoading && (
+            <span className="text-[10px] italic text-slate-400 inline-flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--brand-gold)' }} />
+              AI suggesting…
+            </span>
+          )}
           <div className="relative">
             <button
               onClick={() => setPickerOpen(!pickerOpen)}
@@ -10360,6 +10497,7 @@ function SettingsSection({
           { k: 'analytics',     label: 'Analytics' },
           { k: 'activity',      label: 'Activity feed' },
           { k: 'integrations',  label: 'Integrations' },
+          { k: 'help',          label: 'Help' },
           { k: 'blast',         label: 'Bulk SMS' },
         ].map(t => (
           <button
@@ -10397,6 +10535,7 @@ function SettingsSection({
       {tab === 'analytics' && <AnalyticsView leads={leads} />}
       {tab === 'activity' && <ActivityFeedView leads={leads} />}
       {tab === 'integrations' && <IntegrationsView />}
+      {tab === 'help' && <HelpView />}
       {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
     </div>
   );
@@ -10406,6 +10545,113 @@ function SettingsSection({
 // ANALYTICS — conversion funnel, time-in-stage, source attribution.
 // Pure derived metrics from the leads array; no extra fetches.
 // ============================================================
+// ============================================================
+// HELP / DOCS — reference material for Morgan so he doesn't have to dig.
+// Covers shortcuts, AI features, common workflows, deployment.
+// ============================================================
+function HelpView() {
+  const sections = [
+    {
+      title: 'Keyboard shortcuts',
+      items: [
+        { label: '/', desc: 'Focus the global search bar' },
+        { label: 'g t', desc: 'Go to Today' },
+        { label: 'g i', desc: 'Go to Inbox' },
+        { label: 'g p', desc: 'Go to Pipeline' },
+        { label: 'g l', desc: 'Go to Leads' },
+        { label: 'g c', desc: 'Go to Tours (Calendar)' },
+        { label: 'g s', desc: 'Go to Settings' },
+        { label: '⌘+Enter', desc: 'Send message in inbox composer' },
+        { label: 'Esc', desc: 'Close drawer or overlay' },
+        { label: '?', desc: 'Toggle keyboard shortcut help' },
+      ],
+    },
+    {
+      title: 'Composer slash commands',
+      items: [
+        { label: '/portal', desc: "Insert the lead's curated portal link" },
+        { label: '/tour', desc: 'Insert a tour-confirmation snippet (with date + time)' },
+        { label: '/sched', desc: 'Insert scheduling link' },
+        { label: '/hi', desc: "Greet the lead with their first name" },
+        { label: '/sig', desc: 'Insert your email signature' },
+        { label: '/template', desc: 'Open the full template picker' },
+        { label: '/{custom}', desc: 'Any user-defined template shows as a slash command' },
+      ],
+    },
+    {
+      title: 'How AI features work',
+      items: [
+        { label: 'AI Summary', desc: "On every lead's Overview, a 2-3 sentence status briefing. Auto-loads, cached per (lead × last message). ↻ Refresh to regenerate." },
+        { label: 'Next Best Action', desc: 'Recommends ONE concrete next move per lead with a pre-drafted SMS. One-tap execute pre-fills the compose modal.' },
+        { label: 'Suggested replies', desc: "When a thread's last message is inbound, AI drafts a reply above the composer. Use, regenerate, or dismiss." },
+        { label: 'Auto-tag suggestions', desc: "Dashed gold chips next to your tags = AI suggestions. Tap to apply, or just ignore." },
+        { label: 'Welcome message personalization', desc: 'New leads get AI-drafted welcome SMS + email referencing their actual criteria. Toggle in Settings → Automation.' },
+        { label: 'Tour-prep briefing', desc: 'On Today, each tour has a collapsible "AI tour-prep" panel. Tap to load context before the showing.' },
+        { label: 'Weekly coach', desc: 'Sunday weekly recap email includes 2-3 short observations + recommended actions.' },
+      ],
+    },
+    {
+      title: 'Lead scoring + cadence',
+      items: [
+        { label: 'A / B / C / D', desc: 'A 0-100 composite score combining bucket, stage progression, engagement, freshness, and health. A ≥70, B ≥50, C ≥30.' },
+        { label: 'Health flags', desc: '"Engaged" (multiple recent replies), "Stuck" (>7d in stage waiting on lead), "Cold" (no activity 14d+), "New" (<24h old).' },
+        { label: 'Cadence intervals', desc: 'Per-stage touch cadence: matched=3d, tour-requested=1d, post-tour=2d, applied=3d. Today shows "Ready for next touch".' },
+        { label: 'Snoozed leads', desc: 'Lead detail ▾ menu → Snooze 1d/3d/7d/14d/30d hides them from Today + Pipeline action surfaces until the date.' },
+      ],
+    },
+    {
+      title: 'Workflows',
+      items: [
+        { label: 'New lead via web', desc: 'Public intake form → SMS opt-in → bucketed → welcome SMS + email auto-sent → "Curate BrightMLS link" task created.' },
+        { label: 'Add a lead manually', desc: '"+ Add lead" button in admin header. Walk-ins, referrals, phone leads. Fires welcome flow.' },
+        { label: 'Send curated link', desc: 'Open the lead → Overview → Curated link panel → paste BrightMLS URL → click Send. Lead gets SMS + email.' },
+        { label: 'Send scheduling link', desc: "After lead picks properties, scroll to Scheduling link panel → click Send to enable time picks." },
+        { label: 'Reschedule a tour', desc: 'Lead taps the link in their 24h reminder → picks a new time → done. No agent action needed.' },
+        { label: 'Mark stage close', desc: 'Use the stage dropdown at top of lead detail. Lost / Leased open a modal to capture reason + commission.' },
+        { label: 'Tour day', desc: '"Print sheet" link on Today opens /tours/today/print. "Route in Maps" opens all stops as one Google Maps trip.' },
+      ],
+    },
+    {
+      title: 'Deployment + maintenance',
+      items: [
+        { label: 'Push code', desc: 'cd ~/Documents/Claude/Projects/Rentals\\ Philly/rentalsphilly && rm -f .git/index.lock && git add -A && git commit -m "..." && git push' },
+        { label: 'Vercel auto-deploys', desc: 'Every push triggers a Vercel build. Watch at vercel.com → your project → Deployments.' },
+        { label: 'Live SMS toggle', desc: 'Vercel → Environment Variables → ENABLE_REAL_SENDING. Set to "true" only after A2P approval.' },
+        { label: 'Test SMS', desc: 'Settings → Agent & Automation → "Send test SMS" card. Confirms Twilio is wired correctly.' },
+        { label: 'Subscribe to calendar', desc: 'Settings → Integrations → Calendar feed → Generate. Paste URL into Apple Calendar / Google Calendar.' },
+        { label: 'Health check', desc: 'Settings → Integrations shows live status of Supabase, Twilio, Resend, Anthropic, and sending mode.' },
+      ],
+    },
+  ];
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900">Help &amp; reference</h2>
+        <p className="text-sm text-slate-500">Everything you need to run Rentals Philly day-to-day.</p>
+      </div>
+      {sections.map((sec) => (
+        <Card key={sec.title} className="p-5 space-y-3">
+          <div className="font-semibold text-slate-900">{sec.title}</div>
+          <div className="divide-y divide-slate-100">
+            {sec.items.map((item) => (
+              <div key={item.label} className="flex items-start gap-3 py-2.5">
+                <span className="inline-block px-2 py-0.5 rounded-md font-mono text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200 shrink-0 whitespace-nowrap">
+                  {item.label}
+                </span>
+                <div className="text-sm text-slate-700 leading-relaxed">{item.desc}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ))}
+      <div className="text-xs text-slate-500 text-center py-4">
+        Need something not covered here? Email <a href="mailto:morganrentalsphilly@gmail.com" className="underline">Morgan</a>.
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // INTEGRATIONS — health check for every external service. Pings /api/health
 // which probes Supabase, Twilio, Resend, Anthropic, and reports sending mode.
