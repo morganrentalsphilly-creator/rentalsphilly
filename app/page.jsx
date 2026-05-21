@@ -770,6 +770,25 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Translate raw AI endpoint error codes into a short, friendly sentence Morgan
+// can actually understand. Each AI surface (lead-summary, next-action, tour-prep,
+// suggest-tags, suggest-reply) returns codes like "claude_api_500", "parse_failed",
+// "ANTHROPIC_API_KEY not set", "lead_not_found". This collapses them into one
+// vocabulary so the error display never looks like a stack trace.
+function friendlyAiError(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (!s) return 'Something went wrong';
+  if (s.includes('anthropic_api_key') || s.includes('api key')) return 'AI key not configured — check Vercel env vars';
+  if (s.includes('429') || s.includes('rate')) return 'Hit AI rate limit — try again in a moment';
+  if (s.includes('claude_api_5') || s.includes('502') || s.includes('503') || s.includes('504')) return 'AI service hiccup — give it another try';
+  if (s.includes('claude_api_4') || s.includes('401') || s.includes('403')) return 'AI rejected the request';
+  if (s.includes('parse')) return 'AI returned something unexpected — try refresh';
+  if (s.includes('lead_not_found')) return 'Lead not found';
+  if (s.includes('missing_lead') || s.includes('missing_leadid') || s.includes('missing_tour')) return 'Missing context — try refresh';
+  if (s.includes('failed to fetch') || s.includes('network')) return 'No internet connection?';
+  return raw; // fallback to original for unknown codes
+}
+
 // Format a US phone number as the user types: "2155551234" → "(215) 555-1234".
 // Accepts any input (digits, parens, dashes, spaces) and normalizes.
 function formatUsPhone(raw) {
@@ -4743,7 +4762,7 @@ function NextBestActionCard({ lead, onCompose, showToast }) {
         </div>
       ) : error ? (
         <div className="text-xs text-red-600">
-          Couldn&apos;t recommend: {error}.{' '}
+          Couldn&apos;t recommend: {friendlyAiError(error)}.{' '}
           <button onClick={() => load(true)} className="underline">Retry</button>
         </div>
       ) : data?.action ? (
@@ -4868,7 +4887,7 @@ function LeadSummaryCard({ lead }) {
         </div>
       ) : error ? (
         <div className="text-xs text-red-600">
-          Couldn&apos;t draft a summary: {error}.{' '}
+          Couldn&apos;t draft a summary: {friendlyAiError(error)}.{' '}
           <button onClick={() => fetchSummary(true)} className="underline">Retry</button>
         </div>
       ) : summary ? (
@@ -4940,7 +4959,7 @@ function TourPrepBriefing({ leadId, tourId }) {
           )}
           {error && (
             <div className="text-red-600">
-              Couldn&apos;t draft briefing: {error}.{' '}
+              Couldn&apos;t draft briefing: {friendlyAiError(error)}.{' '}
               <button onClick={() => { setBriefing(null); load(); }} className="underline">Retry</button>
             </div>
           )}
@@ -10180,7 +10199,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                     </div>
                   ) : aiSlot?.error ? (
                     <div className="text-xs text-red-600">
-                      Couldn&apos;t draft a reply: {aiSlot.error}.{' '}
+                      Couldn&apos;t draft a reply: {friendlyAiError(aiSlot.error)}.{' '}
                       <button onClick={() => fetchSuggestion(true)} className="underline">Retry</button>
                     </div>
                   ) : aiSlot?.suggestion ? (
@@ -13071,7 +13090,7 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
               </button>
             </div>
           )}
-          {aiError && <div className="text-[11px] text-red-600">AI draft failed: {aiError}</div>}
+          {aiError && <div className="text-[11px] text-red-600">AI draft failed: {friendlyAiError(aiError)}</div>}
           {channel === 'email' && (
             <FormField label="Subject"><input value={subject} onChange={e => setSubject(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-slate-400" /></FormField>
           )}
