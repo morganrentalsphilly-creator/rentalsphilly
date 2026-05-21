@@ -5162,6 +5162,18 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
     return Array.from(byLead.values()).slice(0, 10);
   }, [leads, overdueTasks, todayTasks]);
 
+  // 1-9 hotkeys: listen for the global "focus-now:jump" event and open the
+  // Nth row's lead. Lets Morgan blast through the queue without a mouse.
+  useEffect(() => {
+    const onJump = (e) => {
+      const idx = e?.detail?.index;
+      if (typeof idx !== 'number' || idx < 0 || idx >= items.length) return;
+      onSelectLead(items[idx].leadId);
+    };
+    window.addEventListener('focus-now:jump', onJump);
+    return () => window.removeEventListener('focus-now:jump', onJump);
+  }, [items, onSelectLead]);
+
   // Today's outbound activity count — gives a sense of progress.
   const handledToday = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -5205,7 +5217,9 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
           </div>
           <div>
             <div className="text-sm font-semibold text-slate-900">Focus now</div>
-            <div className="text-[11px] text-slate-500">{items.length} action{items.length === 1 ? '' : 's'} ranked by urgency</div>
+            <div className="text-[11px] text-slate-500">
+              {items.length} action{items.length === 1 ? '' : 's'} · press <kbd className="px-1 py-px rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-600">1-9</kbd> to jump
+            </div>
           </div>
         </div>
         {handledToday > 0 && (
@@ -5701,6 +5715,7 @@ function KeyboardShortcutHelp({ onClose }) {
     { keys: ['g', 'l'], label: 'Go to Leads' },
     { keys: ['g', 'c'], label: 'Go to Tours (Calendar)' },
     { keys: ['g', 's'], label: 'Go to Settings' },
+    { keys: ['1-9'],    label: 'Jump to Focus Now row (Today view)' },
     { keys: ['⌘', 'Enter'], label: 'Send message in inbox composer' },
     { keys: ['Esc'],    label: 'Close drawer or overlay' },
     { keys: ['?'],      label: 'Toggle this help' },
@@ -5785,6 +5800,13 @@ function AdminCRM({ leads, addLead, updateLead, saveLeads, slots, openSlot, clos
         pendingG = setTimeout(() => { pendingG = null; }, 800);
         return;
       }
+      // "1"-"9" jumps directly to that row in the Focus Now queue when Today
+      // is the active view. FocusNowCard listens for this custom event.
+      if (/^[1-9]$/.test(e.key)) {
+        // Dispatch; FocusNowCard decides if it's mounted + on the right view.
+        window.dispatchEvent(new CustomEvent('focus-now:jump', { detail: { index: Number(e.key) - 1 } }));
+        return;
+      }
     };
     window.addEventListener('keydown', handler);
     return () => {
@@ -5828,6 +5850,14 @@ function AdminCRM({ leads, addLead, updateLead, saveLeads, slots, openSlot, clos
     }
     return n;
   }, [leads]);
+
+  // Surface pending reply count in the browser tab title so Morgan sees the
+  // queue size from any other tab. "(3) Rentals Philly CRM" feels native.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const base = 'Rentals Philly CRM';
+    document.title = needsReplyBadge > 0 ? `(${needsReplyBadge}) ${base}` : base;
+  }, [needsReplyBadge]);
 
   const metrics = useMemo(() => {
     const total = leads.length;
