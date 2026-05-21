@@ -50,8 +50,11 @@ async function runReminders(db) {
   const in75m    = new Date(now.getTime() + 75 * 60 * 1000);
 
   // Load agent-editable reminder templates (Settings → Templates).
-  const { data: settings } = await db.from('settings').select('system_templates').eq('id', 1).single();
-  const tpls = { ...DEFAULT_SYSTEM_TEMPLATES, ...(settings?.system_templates || {}) };
+  // Accept either camelCase OR snake_case column (the settings table has
+  // both styles historically) so this works regardless.
+  const { data: settings } = await db.from('settings').select('*').eq('id', 1).single();
+  const stored = settings?.systemTemplates || settings?.system_templates || {};
+  const tpls = { ...DEFAULT_SYSTEM_TEMPLATES, ...stored };
 
   // 24-hour reminders
   // Tour rows have separate `date` (yyyy-mm-dd) and `time` columns based on
