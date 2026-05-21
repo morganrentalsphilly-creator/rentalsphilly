@@ -106,9 +106,26 @@ export default function CuratedPage() {
   const [note2, setNote2] = useState('');
   const [submitting2, setSubmitting2] = useState(false);
 
+  // Reschedule mode state. When ?reschedule=TOUR_ID is in the URL we render
+  // a dedicated reschedule UI that overrides the normal phase flow.
+  const [rescheduleTourId, setRescheduleTourId] = useState(null);
+  const [reschedulePick, setReschedulePick] = useState(null); // { date, time }
+  const [rescheduleSubmitting, setRescheduleSubmitting] = useState(false);
+  const [rescheduleDone, setRescheduleDone] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get('reschedule') || params.get('tour');
+    if (t) setRescheduleTourId(t);
+  }, []);
+
   const loadData = () => {
     if (!token) return;
-    fetch(`/api/curated/${token}`)
+    const url = rescheduleTourId
+      ? `/api/curated/${token}?tour=${encodeURIComponent(rescheduleTourId)}`
+      : `/api/curated/${token}`;
+    fetch(url)
       .then((r) => r.ok ? r.json() : Promise.reject(r.statusText))
       .then((d) => {
         setData(d);
@@ -120,7 +137,7 @@ export default function CuratedPage() {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [token, rescheduleTourId]);
 
   const slots = useMemo(
     () => generateSlots(data?.availability, data?.bookedSlots),
@@ -153,6 +170,128 @@ export default function CuratedPage() {
   const selectedAddrs = data.selectedAddresses || [];
 
   // ============================================================
+  // ============================================================
+  // RESCHEDULE MODE — overrides the phase flow when ?reschedule=TOUR is set
+  // ============================================================
+  if (rescheduleTourId && data.rescheduleTour) {
+    const tour = data.rescheduleTour;
+    const tourAddr = (tour.listings || []).map((l) => l.address).filter(Boolean)[0] || 'your tour';
+
+    const submitReschedule = async () => {
+      if (!reschedulePick) {
+        alert('Pick a new time first.');
+        return;
+      }
+      setRescheduleSubmitting(true);
+      try {
+        const res = await fetch(`/api/curated/${token}/reschedule`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tourId: rescheduleTourId,
+            slotDate: reschedulePick.date,
+            slotTime: reschedulePick.time,
+          }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || 'reschedule failed');
+        }
+        setRescheduleDone(true);
+      } catch (e) {
+        alert('Couldn\'t reschedule: ' + e.message);
+      } finally {
+        setRescheduleSubmitting(false);
+      }
+    };
+
+    if (rescheduleDone) {
+      return (
+        <div className="min-h-screen flex flex-col bg-slate-50">
+          <Header firstName={firstName} />
+          <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-12 text-center">
+            <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
+            <h2 className="text-2xl font-semibold text-slate-900 mb-3">Tour rescheduled.</h2>
+            <p className="text-slate-600 leading-relaxed">
+              We&apos;ve moved your tour to <strong>{fmtSlotDate(reschedulePick.date)} at {reschedulePick.time}</strong>.
+              {agentLabel} will confirm with the landlord shortly — watch for a text.
+            </p>
+          </main>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen flex flex-col bg-slate-50">
+        <Header firstName={firstName} />
+        <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-6 pb-28">
+          <div className="rounded-2xl bg-white border border-slate-200 p-5">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Reschedule tour</div>
+            <div className="font-semibold text-slate-900 mb-1">{tourAddr}</div>
+            <div className="text-sm text-slate-600">
+              Currently: <span className="text-slate-900 font-medium">{tour.date} at {tour.time}</span>
+            </div>
+          </div>
+
+          <section>
+            <div className="flex items-center gap-3 mb-3">
+              <StepNum n={1} />
+              <h2 className="text-base font-semibold text-slate-900">Pick a new time</h2>
+            </div>
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto rounded-2xl bg-white border border-slate-200 p-4">
+              {Object.keys(slotsByDate).length === 0 ? (
+                <div className="text-sm italic text-slate-400 text-center py-8">
+                  No open times in the next 14 days. Text {agentLabel} directly to reschedule.
+                </div>
+              ) : Object.entries(slotsByDate).map(([date, daySlots]) => (
+                <div key={date}>
+                  <div className="text-xs font-medium text-slate-700 mb-1.5">{fmtSlotDate(date)}</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {daySlots.map((s) => {
+                      const isOn = reschedulePick?.date === s.date && reschedulePick?.time === s.time;
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => setReschedulePick({ date: s.date, time: s.time })}
+                          className={`px-3 py-2 rounded-full text-xs font-medium border transition-colors ${
+                            isOn
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+                          }`}
+                        >
+                          {s.time}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </main>
+
+        <div className="sticky bottom-0 bg-white border-t border-slate-200 px-5 md:px-8 py-3.5 shadow-[0_-4px_24px_-8px_rgba(0,0,0,0.08)] z-20">
+          <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
+            <div className="text-xs md:text-sm text-slate-600">
+              {reschedulePick
+                ? <>New time: <span className="font-semibold text-slate-900">{fmtSlotDate(reschedulePick.date)} at {reschedulePick.time}</span></>
+                : 'Pick a new time above'}
+            </div>
+            <button
+              onClick={submitReschedule}
+              disabled={rescheduleSubmitting || !reschedulePick}
+              className="px-6 py-2.5 rounded-full text-sm font-semibold text-white disabled:opacity-30 transition-colors"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+            >
+              {rescheduleSubmitting ? 'Sending…' : 'Confirm new time'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // PHASE 1 — pick properties
   // ============================================================
   if (phase === 1) {

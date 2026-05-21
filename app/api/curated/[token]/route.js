@@ -36,12 +36,31 @@ function phaseFor(lead) {
   return 1;                                       // initial — pick properties
 }
 
-export async function GET(_request, ctx) {
+export async function GET(request, ctx) {
   const { token } = (await ctx.params) || ctx.params || {};
   if (!token) return NextResponse.json({ error: 'missing_token' }, { status: 400 });
 
   const lead = await findLeadByToken(token);
   if (!lead) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+
+  // If the client passed ?tour=TOUR_ID we'll surface that tour's current
+  // date/time/listings so the /c/[token] page can render a reschedule UI.
+  let rescheduleTour = null;
+  try {
+    const url = new URL(request.url);
+    const tourId = url.searchParams.get('tour');
+    if (tourId) {
+      const db = supabaseAdmin();
+      const { data: t } = await db
+        .from('tours')
+        .select('id, lead_id, date, time, status, listings')
+        .eq('id', tourId)
+        .single();
+      if (t && t.lead_id === lead.id) {
+        rescheduleTour = t;
+      }
+    }
+  } catch {}
 
   let agentName = null;
   let agentPhone = null;
@@ -86,6 +105,7 @@ export async function GET(_request, ctx) {
       agentPhone,
       availability,
       bookedSlots,
+      rescheduleTour,
     },
     { headers: { 'Cache-Control': 'private, no-store' } }
   );

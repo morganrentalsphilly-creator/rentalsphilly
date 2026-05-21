@@ -2123,7 +2123,7 @@ export default function App() {
       )}
       {view === 'landing' && <Landing onStart={() => setView('intake')} />}
       {view === 'intake' && <IntakeForm onSubmit={async (data) => { const l = await addLead(data); setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'curating' : 'holding'); }} onBack={() => setView('landing')} />}
-      {view === 'curating' && currentLead && <CuratingConfirmed lead={currentLead} agentName={settings.agentName} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
+      {view === 'curating' && currentLead && <CuratingConfirmed lead={currentLead} agentName={settings.agentName} agentPhone={settings.agentPhone} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
       {view === 'listings' && currentLead && <ListingsView lead={currentLead} properties={properties} excludedBrokerages={settings.excluded_brokerages || []} brightPortalUrls={Array.isArray(settings.bright_portal_urls) ? settings.bright_portal_urls : (settings.bright_portal_url ? [settings.bright_portal_url] : [])} onBookTour={(listings) => {
         setCurrentLead({ ...currentLead, _pendingListings: listings });
         if (currentLead.tourType === 'virtual') setView('virtual-request');
@@ -3755,55 +3755,142 @@ function BookingConfirmed({ lead, onDone }) {
 // coming via SMS + email shortly. Replaces the previous "here are 8 matches"
 // screen since real matched listings (with photos) require BrightMLS API
 // access we don't have yet.
-function CuratingConfirmed({ lead, agentName /* unused, onDone */ }) {
+function CuratingConfirmed({ lead, agentName, agentPhone /* unused, onDone */ }) {
   const firstName = (lead.fullName || '').split(' ')[0] || 'there';
   const agentLabel = agentName && agentName !== '[Your name]' ? agentName : 'Your agent';
-  const subline = `${agentLabel} is hand-picking rentals that match your criteria. Expect a personalized link by text and email within a few hours — you'll be able to pick which ones to tour and a time that works.`;
 
   // Pretty bed/bath summary — single value (minimum).
   const bedSummary = lead.beds === '0' ? 'Studio' : lead.beds === '4' ? '4+ bd' : `${lead.beds}+ bd`;
   const bathSummary = lead.baths === '3' ? '3+ ba' : `${lead.baths}+ ba`;
 
+  // Download a vCard so the lead can save Morgan's contact in one tap.
+  const saveContact = () => {
+    const vcard = [
+      'BEGIN:VCARD', 'VERSION:3.0',
+      `FN:${agentName || 'Rentals Philly'}`,
+      `ORG:Rentals Philly`,
+      agentPhone ? `TEL;TYPE=CELL,VOICE:${agentPhone}` : '',
+      'END:VCARD',
+    ].filter(Boolean).join('\r\n');
+    const blob = new Blob([vcard], { type: 'text/vcard' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(agentName || 'rentalsphilly').replace(/\s+/g, '-').toLowerCase()}.vcf`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   return (
-    <div className="max-w-xl mx-auto px-6 md:px-8 py-16">
-      <div className="text-center mb-10">
-        <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6">
-          <CheckCircle2 className="w-6 h-6" strokeWidth={2.5} />
+    <div className="min-h-screen flex flex-col bg-slate-50">
+      <header className="bg-white border-b border-slate-200 px-5 md:px-8 py-4 sticky top-0 z-20">
+        <div className="max-w-2xl mx-auto">
+          <div className="text-[10px] font-bold uppercase tracking-[0.15em]" style={{ color: 'var(--brand-gold)' }}>
+            Rentals Philly
+          </div>
         </div>
-        <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight mb-3">
-          Got it, {firstName}.
-        </h1>
-        <p className="text-slate-600 leading-relaxed max-w-md mx-auto">{subline}</p>
-      </div>
+      </header>
 
-      <Card className="p-5 mb-5">
-        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Your search</div>
-        <div className="grid grid-cols-2 gap-y-3 gap-x-6 text-sm">
-          <div>
-            <div className="text-[11px] text-slate-500 mb-0.5">Move-in</div>
-            <div className="font-medium text-slate-900">{fmtDate(lead.moveInDate)}</div>
+      <main className="flex-1 max-w-2xl w-full mx-auto px-5 md:px-8 py-8 md:py-12 space-y-6">
+        {/* Hero confirmation */}
+        <div className="text-center">
+          <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-5">
+            <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
           </div>
-          <div>
-            <div className="text-[11px] text-slate-500 mb-0.5">Budget</div>
-            <div className="font-medium text-slate-900">${Number(lead.budgetMin || 0).toLocaleString()} – ${Number(lead.budgetMax || 0).toLocaleString()}/mo</div>
+          <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 mb-2">Got it, {firstName}!</h1>
+          <p className="text-slate-600 max-w-md mx-auto leading-relaxed">
+            {agentLabel} is hand-picking rentals that match what you&apos;re looking for.
+            You&apos;ll get a personalized link by <strong>text and email</strong> within a few hours.
+          </p>
+        </div>
+
+        {/* Your search summary card */}
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-100">
+            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Your search</div>
           </div>
-          <div>
-            <div className="text-[11px] text-slate-500 mb-0.5">Size</div>
-            <div className="font-medium text-slate-900">{bedSummary} · {bathSummary}</div>
-          </div>
-          {lead.areas && (
-            <div>
-              <div className="text-[11px] text-slate-500 mb-0.5">Neighborhoods</div>
-              <div className="font-medium text-slate-900 truncate">{lead.areas}</div>
+          <div className="grid grid-cols-2 divide-x divide-slate-100">
+            <div className="p-4">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Move-in</div>
+              <div className="text-sm font-semibold text-slate-900">{fmtDate(lead.moveInDate)}</div>
             </div>
-          )}
+            <div className="p-4">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Budget</div>
+              <div className="text-sm font-semibold text-slate-900">${Number(lead.budgetMin || 0).toLocaleString()}–${Number(lead.budgetMax || 0).toLocaleString()}<span className="text-xs font-normal text-slate-500">/mo</span></div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100">
+            <div className="p-4">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Size</div>
+              <div className="text-sm font-semibold text-slate-900">{bedSummary} · {bathSummary}</div>
+            </div>
+            {lead.areas ? (
+              <div className="p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Neighborhoods</div>
+                <div className="text-sm font-semibold text-slate-900 truncate">{lead.areas}</div>
+              </div>
+            ) : (
+              <div className="p-4">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Tour type</div>
+                <div className="text-sm font-semibold text-slate-900 capitalize">{(lead.tourType || 'in-person').replace('-', ' ')}</div>
+              </div>
+            )}
+          </div>
         </div>
-      </Card>
 
-      <div className="text-center text-xs text-slate-500 mt-6 leading-relaxed">
-        Your link will arrive at <span className="text-slate-700 font-medium">{lead.email}</span><br />
-        and by text to <span className="text-slate-700 font-medium">{lead.phone}</span>.
-      </div>
+        {/* Save agent contact card */}
+        {(agentName || agentPhone) && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 flex items-center gap-4">
+            <div
+              className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-base shrink-0"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+            >
+              {(agentName || 'M').charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-slate-900">{agentName || 'Your agent'}</div>
+              <div className="text-sm text-slate-500">Rentals Philly</div>
+              {agentPhone && <div className="text-xs text-slate-400 mt-0.5">{agentPhone}</div>}
+            </div>
+            <button
+              onClick={saveContact}
+              className="shrink-0 text-xs font-medium px-3 py-2 rounded-full bg-slate-900 text-white hover:bg-slate-800"
+            >
+              Save contact
+            </button>
+          </div>
+        )}
+
+        {/* What happens next */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+          <div className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-4">What happens next</div>
+          <ol className="space-y-3.5 text-sm text-slate-700">
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5" style={{ backgroundColor: 'var(--brand-gold)' }}>1</span>
+              <span>{agentLabel} hand-picks rentals that match your criteria.</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5" style={{ backgroundColor: 'var(--brand-gold)' }}>2</span>
+              <span>You&apos;ll get a personalized link by text and email — usually within a few hours.</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5" style={{ backgroundColor: 'var(--brand-gold)' }}>3</span>
+              <span>Tap the link, browse photos, tell us which ones you&apos;d like to tour.</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5" style={{ backgroundColor: 'var(--brand-gold)' }}>4</span>
+              <span>We confirm tour times by text + send calendar invites. Done.</span>
+            </li>
+          </ol>
+        </div>
+
+        <div className="text-center text-xs text-slate-500 leading-relaxed pb-6">
+          Your link will arrive at <span className="text-slate-700 font-medium">{lead.email}</span><br />
+          and by text to <span className="text-slate-700 font-medium">{lead.phone}</span>.
+        </div>
+      </main>
     </div>
   );
 }
@@ -4289,6 +4376,111 @@ function SetupChecklist({ settings, setSubview }) {
         ))}
       </div>
     </Card>
+  );
+}
+
+// AI status summary that surfaces at the top of the Lead Detail overview.
+// Auto-loads on open + caches per (leadId × last-message-id) so re-opens
+// don't burn API calls. Tiny gold-tinted card, dismissible per session.
+function LeadSummaryCard({ lead }) {
+  const lastMsg = (lead.messages || []).filter((m) => !m.internal).slice(-1)[0];
+  const cacheKey = `${lead.id}::${lastMsg?.id || 'no-msgs'}`;
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [dismissed, setDismissed] = useState(false);
+  // Per-tab cache so flipping between leads doesn't refetch.
+  const cacheRef = useRef({});
+
+  const fetchSummary = async (force = false) => {
+    if (!force && cacheRef.current[cacheKey]) {
+      setSummary(cacheRef.current[cacheKey]);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/ai/lead-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId: lead.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data.error || 'failed');
+      } else {
+        cacheRef.current[cacheKey] = data.summary;
+        setSummary(data.summary);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    setSummary(null);
+    setError(null);
+    setDismissed(false);
+    if (cacheRef.current[cacheKey]) {
+      setSummary(cacheRef.current[cacheKey]);
+      return;
+    }
+    // Only auto-fetch if there's some context to summarize.
+    const hasContext = (lead.messages || []).filter((m) => !m.internal).length > 0 ||
+                       (lead.activities || []).length > 1;
+    if (hasContext) fetchSummary(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
+
+  if (dismissed) return null;
+
+  return (
+    <div
+      className="rounded-2xl p-4 border"
+      style={{ background: 'linear-gradient(180deg, rgba(181,142,84,0.06), transparent)', borderColor: 'rgba(181,142,84,0.3)' }}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <div className="inline-flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5" style={{ color: 'var(--brand-gold)' }} />
+          <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--brand-gold)' }}>
+            AI summary
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => fetchSummary(true)}
+            disabled={loading}
+            className="text-[10px] text-slate-500 hover:text-slate-900 px-2 py-0.5 rounded"
+            title="Regenerate"
+          >
+            ↻ Refresh
+          </button>
+          <button
+            onClick={() => setDismissed(true)}
+            className="text-slate-400 hover:text-slate-700"
+            title="Hide"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="text-xs text-slate-500 italic flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--brand-gold)' }} />
+          Reading the conversation…
+        </div>
+      ) : error ? (
+        <div className="text-xs text-red-600">
+          Couldn&apos;t draft a summary: {error}.{' '}
+          <button onClick={() => fetchSummary(true)} className="underline">Retry</button>
+        </div>
+      ) : summary ? (
+        <div className="text-sm text-slate-700 leading-relaxed">{summary}</div>
+      ) : (
+        <div className="text-xs text-slate-500 italic">No conversation yet to summarize.</div>
+      )}
+    </div>
   );
 }
 
@@ -7742,6 +7934,8 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
         <div className="flex-1 overflow-y-auto p-5">
           {tab === 'overview' && (
             <div className="space-y-5">
+              {/* AI status briefing — instant context when reopening a lead */}
+              <LeadSummaryCard lead={lead} />
               {/* Phase 1: send curated BrightMLS portal link. */}
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
