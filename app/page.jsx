@@ -9251,26 +9251,45 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
               {/* Lead documents (apps, IDs, pay stubs) — drag-and-drop */}
               <LeadDocumentsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
-              <div>
-                <SectionHeader>Lead details</SectionHeader>
-                <div className="grid grid-cols-2 gap-4">
-                  <InfoItem label="Budget" value={`${fmtCurrency(Number(lead.budgetMin))} – ${fmtCurrency(Number(lead.budgetMax))}`} />
-                  <InfoItem
-                    label="Beds / Baths"
-                    value={`${lead.beds === '0' ? 'Studio' : `${lead.beds}+ bd`} · ${lead.baths}+ ba`}
-                  />
-                  <InfoItem label="Areas" value={lead.areas || 'No preference'} />
-                  <InfoItem label="Move-in" value={fmtDate(lead.moveInDate)} />
-                  <InfoItem
-                    label="Tour windows"
-                    value={(lead.tourAvailability || []).length > 0
-                      ? (lead.tourAvailability || []).map(id => TOUR_WINDOWS.find(w => w.id === id)?.label).filter(Boolean).join(', ')
-                      : 'Not specified'}
-                  />
-                  <InfoItem label="Credit (self-reported)" value={lead.creditScore} />
-                  <InfoItem label="Source" value={lead.source || 'Unknown'} />
-                </div>
-              </div>
+              {/* Lead criteria — compact chip strip. Only renders fields that
+                  actually have data, so empty leads don't show "Not specified"
+                  noise. Each chip: muted label + bold value, single line. */}
+              {(() => {
+                const chips = [];
+                if (lead.budgetMin && lead.budgetMax) {
+                  chips.push({ label: 'Budget', value: `${fmtCurrency(Number(lead.budgetMin))}–${fmtCurrency(Number(lead.budgetMax))}/mo` });
+                }
+                if (lead.beds || lead.baths) {
+                  chips.push({
+                    label: 'Beds/baths',
+                    value: `${lead.beds === '0' ? 'Studio' : `${lead.beds}+ bd`}${lead.baths ? ` · ${lead.baths}+ ba` : ''}`,
+                  });
+                }
+                if (lead.areas) chips.push({ label: 'Areas', value: lead.areas });
+                if (lead.moveInDate) chips.push({ label: 'Move-in', value: fmtDate(lead.moveInDate) });
+                if ((lead.tourAvailability || []).length > 0) {
+                  const labels = (lead.tourAvailability || [])
+                    .map((id) => TOUR_WINDOWS.find((w) => w.id === id)?.label)
+                    .filter(Boolean);
+                  if (labels.length) chips.push({ label: 'Tour windows', value: labels.join(', ') });
+                }
+                if (lead.creditScore) chips.push({ label: 'Credit', value: lead.creditScore });
+                if (lead.source && lead.source !== 'Unknown') chips.push({ label: 'Source', value: lead.source });
+                if (chips.length === 0) return null;
+                return (
+                  <Card className="p-4">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Lead criteria</div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {chips.map((c) => (
+                        <div key={c.label} className="text-sm leading-snug">
+                          <span className="text-slate-500">{c.label}: </span>
+                          <span className="text-slate-900 font-medium">{c.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                );
+              })()}
 
               {/* Tours toured — relevant for submissions */}
               {(lead.tours || []).length > 0 && (
