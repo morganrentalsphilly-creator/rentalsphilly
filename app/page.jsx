@@ -3065,15 +3065,19 @@ function IntakeForm({ onSubmit, onBack }) {
         {step === steps.length - 1 ? 'Send to my agent' : 'Continue'}
         <ArrowRight className="w-4 h-4" />
       </button>
-      {/* A2P 10DLC compliance: explicit SMS opt-in disclosure visible on
-          every step. Required for carrier approval. */}
+      {/* A2P 10DLC + CTIA compliance: explicit SMS opt-in disclosure visible
+          on every step. The exact phrases below ("recurring automated text
+          messages", "consent is not a condition of purchase", "Msg & data
+          rates may apply", "Reply HELP/STOP") are what carriers look for. */}
       <div className="mt-4 text-[11px] text-slate-500 leading-relaxed text-center">
-        By tapping &ldquo;{step === steps.length - 1 ? 'Send to my agent' : 'Continue'}&rdquo;, you agree to receive recurring SMS text
-        messages from Rentals Philly at the number provided about rental listings,
-        showing confirmations, and appointment reminders. Consent is not a condition of any
-        purchase. Message frequency varies. Message and data rates may apply.
-        Reply <strong>HELP</strong> for help, <strong>STOP</strong> to cancel.
-        See our <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline">Privacy Policy</a> and{' '}
+        By tapping &ldquo;{step === steps.length - 1 ? 'Send to my agent' : 'Continue'}&rdquo;, you
+        agree to receive <strong>recurring automated</strong> text messages from
+        Rentals Philly at the mobile number you provided, including rental listings,
+        showing confirmations, and appointment reminders, sent via an automatic dialing
+        system. Consent is not a condition of any purchase. Msg frequency varies.
+        Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help,{' '}
+        <strong>STOP</strong> to cancel at any time. See our{' '}
+        <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline">SMS Privacy Policy</a> and{' '}
         <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">Terms</a>.
       </div>
     </div>

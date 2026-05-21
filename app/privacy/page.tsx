@@ -77,11 +77,18 @@ export default function PrivacyPage() {
         <li>&ldquo;Rentals Philly: Your hand-picked rentals are ready. View photos &amp; request tours: [link]&rdquo;</li>
         <li>&ldquo;Reminder: your showing is tomorrow at 5:00 PM. Reply if you need to reschedule.&rdquo;</li>
       </ul>
+      <p className="mb-3">
+        <strong>No mobile information will be shared with third parties or affiliates
+        for marketing or promotional purposes.</strong> All categories of information
+        we collect exclude text messaging originator opt-in data and consent; this
+        information will not be shared with any third parties. Mobile information is
+        used solely to operate this SMS program. Carriers may apply their own privacy
+        policies to messages traversing their networks.
+      </p>
       <p className="mb-6">
-        <strong>We do not share your phone number, SMS opt-in status, or consent
-        information with any third party or affiliate for their own marketing purposes.</strong>{' '}
-        Mobile information is used solely to operate this SMS program. Carriers may apply
-        their own privacy policies to messages traversing their networks.
+        We will not sell, rent, lease, or otherwise transfer your mobile phone number,
+        SMS consent status, or mobile-originator opt-in data to any third party,
+        affiliate, marketer, or advertiser.
       </p>
 
       <h2 className="text-xl font-semibold text-slate-900 mt-10 mb-3">Who we share with</h2>
