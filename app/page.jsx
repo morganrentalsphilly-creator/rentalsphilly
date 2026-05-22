@@ -9291,26 +9291,51 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
                 );
               })()}
 
-              {/* Tours toured — relevant for submissions */}
-              {(lead.tours || []).length > 0 && (
-                <div>
-                  <SectionHeader icon={CalendarDays}>Tours</SectionHeader>
-                  <div className="space-y-2">
-                    {(lead.tours || []).map(t => (
-                      <Card key={t.id} className="p-3">
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs font-medium text-slate-700">{fmtDate(t.date)} · {t.time}</div>
-                          <Pill tone={t.status === 'completed' ? 'positive' : 'info'}>{t.status}</Pill>
-                          {t.tourType === 'virtual' && <Pill icon={Video}>Virtual</Pill>}
-                        </div>
-                        <div className="mt-2 text-xs text-slate-500">
-                          {(t.listings || []).map(l => l.address.split(',')[0]).join(' · ')}
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Tours toured — newest first; upcoming tours highlighted so
+                  the next-up tour is always at the top of the list. */}
+              {(lead.tours || []).length > 0 && (() => {
+                const todayStr = new Date().toISOString().slice(0, 10);
+                const tours = [...(lead.tours || [])].sort((a, b) => {
+                  const d = (b.date || '').localeCompare(a.date || '');
+                  if (d !== 0) return d;
+                  return (b.time || '').localeCompare(a.time || '');
+                });
+                return (
+                  <Card className="p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <CalendarDays className="w-4 h-4 text-slate-500" />
+                      <div className="text-sm font-semibold text-slate-900">Tours</div>
+                      <div className="text-[10px] text-slate-400">{tours.length}</div>
+                    </div>
+                    <div className="space-y-1.5">
+                      {tours.map((t) => {
+                        const isPast = t.date && t.date < todayStr;
+                        const isCancelled = t.status === 'cancelled';
+                        const addresses = (t.listings || []).map((l) => l.address.split(',')[0]).filter(Boolean).join(' · ');
+                        return (
+                          <div
+                            key={t.id}
+                            className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs ${
+                              isCancelled ? 'bg-slate-50 text-slate-400 line-through'
+                              : isPast ? 'bg-slate-50 text-slate-600'
+                              : 'bg-emerald-50 border border-emerald-200 text-emerald-900'
+                            }`}
+                          >
+                            <div className="font-medium tabular-nums shrink-0">{fmtDate(t.date)} · {t.time}</div>
+                            <div className="flex-1 min-w-0 truncate">{addresses || '—'}</div>
+                            {t.tourType === 'virtual' && <Video className="w-3 h-3 shrink-0" />}
+                            <span className={`shrink-0 text-[10px] font-semibold uppercase tracking-wider ${
+                              isCancelled ? '' : isPast ? 'text-slate-500' : 'text-emerald-700'
+                            }`}>
+                              {isCancelled ? 'cancelled' : isPast ? t.status || 'past' : 'upcoming'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Card>
+                );
+              })()}
             </div>
           )}
 
