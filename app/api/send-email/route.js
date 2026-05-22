@@ -11,9 +11,15 @@
 
 import { NextResponse } from 'next/server';
 import { sendEmail } from '@/lib/email.server';
+import { requireAdmin } from '@/lib/auth.server';
 
 export async function POST(request) {
   try {
+    // ADMIN-ONLY. The public intake welcome flow goes through
+    // /api/intake/welcome instead, which is server-side.
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
+
     const payload = await request.json();
     const { leadId, subject, body, kind, idempotencyKey, automated, to } = payload || {};
 

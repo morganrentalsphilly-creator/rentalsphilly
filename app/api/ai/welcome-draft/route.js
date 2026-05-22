@@ -12,6 +12,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { requireAdmin } from '@/lib/auth.server';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 const MAX_TOKENS = 600;
@@ -71,6 +72,11 @@ Constraints:
 
 export async function POST(request) {
   try {
+    // Admin-only. Public intake welcome flow lives at /api/intake/welcome,
+    // which uses the same Claude prompt server-side without an HTTP hop.
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
+
     if (!process.env.ANTHROPIC_API_KEY) {
       return NextResponse.json({ ok: false, error: 'ANTHROPIC_API_KEY not set' }, { status: 500 });
     }

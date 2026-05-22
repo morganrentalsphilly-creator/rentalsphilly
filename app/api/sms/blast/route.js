@@ -22,6 +22,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { requireAdmin } from '@/lib/auth.server';
 
 async function resolveAudience(db, filter) {
   const leadIds = filter?.leadIds;
@@ -46,6 +47,9 @@ async function resolveAudience(db, filter) {
 
 export async function POST(request) {
   try {
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
+
     const { bodyTemplate, filter, dryRun } = await request.json();
     if (!bodyTemplate || typeof bodyTemplate !== 'string') {
       return NextResponse.json({ error: 'bodyTemplate is required' }, { status: 400 });
@@ -113,8 +117,11 @@ export async function POST(request) {
 }
 
 // List blasts for the admin UI.
-export async function GET() {
+export async function GET(request) {
   try {
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
+
     const db = supabaseAdmin();
     const { data, error } = await db
       .from('sms_blasts')

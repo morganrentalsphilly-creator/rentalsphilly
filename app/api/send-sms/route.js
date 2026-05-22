@@ -17,9 +17,16 @@
 
 import { NextResponse } from 'next/server';
 import { sendSms } from '@/lib/sms.server';
+import { requireAdmin } from '@/lib/auth.server';
 
 export async function POST(request) {
   try {
+    // ADMIN-ONLY. The public intake welcome flow goes through
+    // /api/intake/welcome instead, which is server-side and has its own
+    // built-in fresh-lead + idempotency guard.
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
+
     const payload = await request.json();
     const { leadId, body, kind, to, idempotencyKey, automated } = payload || {};
 

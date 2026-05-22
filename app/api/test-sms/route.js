@@ -6,11 +6,15 @@
 // Returns { ok, simulated?, sid?, error? }
 
 import { NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/auth.server';
 
 const DEFAULT_BODY = 'Rentals Philly test message — if you got this, Twilio + A2P 10DLC are wired up correctly. Reply STOP to opt out.';
 
 export async function POST(request) {
   try {
+    const auth = await requireAdmin(request);
+    if (!auth.ok) return auth.response;
+
     const { to, body } = await request.json();
     if (!to) return NextResponse.json({ ok: false, error: 'missing_to' }, { status: 400 });
 

@@ -2,6 +2,7 @@
 
 import { sendEmail, sendSMS } from '@/lib/messaging';
 import { loadAll, loadPublic } from '@/lib/db';
+import { authedFetch } from '@/lib/api';
 import {
   createBrowserSupabase,
   getSession,
@@ -1855,23 +1856,9 @@ export default function App() {
       ? `Possible duplicate of ${dupLead.fullName} (${dupLead.email || dupLead.phone}) — created ${new Date(dupLead.createdAt).toLocaleDateString()}`
       : null;
 
-    // Pick the right template based on the lead's bucket (GCMS / GCM75+ /
-    // BCMS / BC75+). Each bucket has its own SMS + email pair editable in
-    // Settings → Welcome messages.
-    const templates = settings.welcomeMessages || DEFAULT_AGENT_SETTINGS.welcomeMessages;
-    const t = templates[bucket] || templates.GCMS || DEFAULT_AGENT_SETTINGS.welcomeMessages.GCMS;
-    const moveInLabel = lead.moveInDate ? fmtDate(lead.moveInDate) : 'your move date';
-    const agentDisplay = (settings.agentName && settings.agentName !== '[Your name]') ? settings.agentName : 'Morgan';
-    const fill = (s) => String(s || '')
-      .replace(/\{firstName\}/g, firstName)
-      .replace(/\{moveInDate\}/g, moveInLabel)
-      .replace(/\{agentName\}/g, agentDisplay);
-    const welcomeEmailSubject = fill(t.emailSubject);
-    const welcomeEmailBody = fill(t.email);
-    const welcomeSmsBody = fill(t.sms);
-
-    // Welcome email + SMS go through sendEmail / sendSMS wrappers further
-    // down — each wrapper inserts its own messages row, no manual record.
+    // Template construction (bucket → SMS + email body + subject) and welcome
+    // SMS/email sends all moved to /api/intake/welcome server-side. The client
+    // just creates the lead row and kicks off the welcome flow.
 
     const welcomeActivity = {
       id: `a_${Date.now()}`,
@@ -1956,96 +1943,26 @@ export default function App() {
       console.warn('[app] activity/tasks insert failed (lead still created)', e);
     }
 
-    // ---- AI-drafted personalized welcome (optional) ----
-    // If automation.aiWelcome is on (default true) AND ANTHROPIC_API_KEY is
-    // configured, swap the static bucket template for a personalized draft
-    // that references the lead's actual criteria. Falls back silently to the
-    // static template on any error.
-    let finalSms = welcomeSmsBody;
-    let finalEmailSubject = welcomeEmailSubject;
-    let finalEmailBody = welcomeEmailBody;
-    if (settings.automation?.aiWelcome !== false) {
-      try {
-        const aiRes = await fetch('/api/ai/welcome-draft', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ leadId: id }),
-        });
-        const aiData = await aiRes.json();
-        if (aiRes.ok && aiData.ok && aiData.sms && aiData.email) {
-          finalSms = aiData.sms;
-          finalEmailSubject = aiData.emailSubject || finalEmailSubject;
-          // Prepend "Hi {firstName}" + append the agent signature so the AI
-          // body slots cleanly between the two.
-          finalEmailBody = `Hi ${firstName},\n\n${aiData.email}\n\n— ${agentDisplay}`;
-        }
-      } catch (err) {
-        console.warn('[ai-welcome] draft failed, using bucket template', err?.message);
-      }
-    }
+    // ---- WELCOME FLOW (server-side) ----
+    // Fire-and-forget the entire welcome flow (AI draft + welcome SMS + welcome
+    // email + agent notification) via /api/intake/welcome. That endpoint is
+    // server-side so it can use the locked-down sendSms / sendEmail wrappers
+    // without the public client needing those tokens. It also has its own
+    // idempotency + fresh-lead guard so it can't be abused.
+    //
+    // We don't await — the user shouldn't have to sit on the intake submit
+    // button while AI generates copy + Twilio rate-limits + Resend acknowledges.
+    // The welcome messages will land in the lead's thread once the server is
+    // done. The agent's CRM picks them up automatically on next load / realtime.
+    fetch('/api/intake/welcome', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leadId: id }),
+    }).catch((err) => console.warn('[addLead] welcome flow kickoff failed', err?.message));
 
-    // Fire welcome email + SMS through the server wrappers. Each wrapper
-    // inserts its own messages row with delivery_status tracking. Both gated
-    // behind Settings → Automation: master switch + welcomeMessages toggle.
-    const welcomeOn =
-      settings.automation?.enabled !== false &&
-      settings.automation?.welcomeMessages !== false;
-    const emailResult = welcomeOn
-      ? await sendEmail({
-          leadId: id,
-          subject: finalEmailSubject,
-          body: finalEmailBody,
-          kind: 'welcome',
-          idempotencyKey: `welcome-email-${id}`,
-          automated: true,
-        })
-      : { ok: false, skipped: 'welcome automation off' };
-    const smsResult = welcomeOn
-      ? await sendSMS({
-          leadId: id,
-          body: finalSms,
-          kind: 'welcome',
-          idempotencyKey: `welcome-${id}`,
-          automated: true,
-        })
-      : { ok: false, skipped: 'welcome automation off' };
-
-    // Notify the agent of the new lead (if enabled in Settings → Notifications).
-    // Uses sendEmail with the agent's email as `to` and no leadId — keeps it
-    // off the lead's thread but still goes through the wrapper for tracking.
-    if (settings.notifications?.newLeadEmail !== false && settings.agentEmail) {
-      const bucketHint = {
-        GCMS: 'HOT — moving soon, good credit',
-        'GCM75+': 'WARM — moving 75+ days, good credit',
-        BCMS: 'WORK WITH — moving soon, limited credit',
-        'BC75+': 'LONGTAIL — moving 75+ days, limited credit',
-      }[bucket] || bucket;
-      try {
-        await sendEmail({
-          to: settings.agentEmail,
-          subject: `New lead: ${lead.fullName} (${bucket})`,
-          body:
-            `New lead just submitted the intake form.\n\n` +
-            `Name: ${lead.fullName}\n` +
-            `Email: ${lead.email}\n` +
-            `Phone: ${lead.phone}\n` +
-            `Budget: $${lead.budgetMin} – $${lead.budgetMax}/mo\n` +
-            `Beds: ${lead.beds}+\n` +
-            `Move-in: ${lead.moveInDate}\n` +
-            `Areas: ${lead.areas || 'no preference'}\n` +
-            `Source: ${lead.source || 'Unknown'}\n` +
-            `Bucket: ${bucketHint}\n\n` +
-            `Open the CRM: https://rentalsphilly.vercel.app/#admin`,
-          kind: 'new_lead_alert',
-          idempotencyKey: `agent-new-lead-${id}`,
-          automated: true,
-        });
-      } catch (err) {
-        console.warn('[addLead] agent notification failed', err?.message);
-      }
-    }
-
-    // Build the in-memory lead object for immediate UI use (matches old shape)
+    // Build the in-memory lead object for immediate UI use. Messages will be
+    // empty initially — the server-side welcome flow inserts the message rows
+    // asynchronously and the CRM picks them up on next load.
     const newLead = {
       ...lead, id, bucket, stage: 'new',
       createdAt,
@@ -2055,34 +1972,7 @@ export default function App() {
       tours: [], followUps: [],
       tasks: tasks.map(t => ({ id: t.id, title: t.title, dueDate: t.due_date, status: t.status, auto: t.auto })),
       activities: [{ id: welcomeActivity.id, type: welcomeActivity.type, message: welcomeActivity.message, timestamp: createdAt }],
-      messages: [
-        // Email — actual DB row returned by the server wrapper.
-        ...(emailResult?.ok && emailResult.message ? [{
-          id: emailResult.message.id,
-          channel: 'email',
-          direction: 'outbound',
-          status: emailResult.message.status || 'sent',
-          to: emailResult.message.to,
-          via: 'resend',
-          subject: emailResult.message.subject,
-          body: emailResult.message.body,
-          automated: true,
-          timestamp: emailResult.message.created_at || createdAt,
-        }] : []),
-        // SMS — actual DB row returned by the server wrapper.
-        ...(smsResult?.ok && smsResult.message ? [{
-          id: smsResult.message.id,
-          channel: 'sms',
-          direction: 'outbound',
-          status: smsResult.message.status || 'sent',
-          to: smsResult.message.to,
-          via: 'twilio',
-          subject: null,
-          body: smsResult.message.body,
-          automated: true,
-          timestamp: smsResult.message.created_at || createdAt,
-        }] : []),
-      ],
+      messages: [],
     };
 
     setLeads([newLead, ...leads]);
@@ -4913,9 +4803,8 @@ function NextBestActionCard({ lead, onCompose, showToast }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/ai/next-action', {
+      const res = await authedFetch('/api/ai/next-action', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leadId: lead.id }),
       });
       const json = await res.json();
@@ -5040,9 +4929,8 @@ function LeadSummaryCard({ lead }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/ai/lead-summary', {
+      const res = await authedFetch('/api/ai/lead-summary', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leadId: lead.id }),
       });
       const data = await res.json();
@@ -5138,9 +5026,8 @@ function TourPrepBriefing({ leadId, tourId }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/ai/tour-prep', {
+      const res = await authedFetch('/api/ai/tour-prep', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leadId, tourId }),
       });
       const data = await res.json();
@@ -7499,9 +7386,8 @@ function SmsTestCard({ form, showToast }) {
   const sendTest = async () => {
     setBusy(true); setResult(null);
     try {
-      const res = await fetch('/api/test-sms', {
+      const res = await authedFetch('/api/test-sms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to }),
       });
       const data = await res.json();
@@ -8946,9 +8832,8 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
       return;
     }
     setAiLoading(true);
-    fetch('/api/ai/suggest-tags', {
+    authedFetch('/api/ai/suggest-tags', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ leadId: lead.id }),
     })
       .then((r) => r.json())
@@ -10272,9 +10157,8 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     if (!force && aiSuggestions[aiCacheKey]?.suggestion) return;
     setAiSuggestions((prev) => ({ ...prev, [aiCacheKey]: { loading: true } }));
     try {
-      const res = await fetch('/api/ai/suggest-reply', {
+      const res = await authedFetch('/api/ai/suggest-reply', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leadId: activeThread.lead.id }),
       });
       const data = await res.json();
@@ -10995,9 +10879,8 @@ function BlastView({ leads, showToast }) {
   const runDryRun = async () => {
     setBusy(true);
     try {
-      const res = await fetch('/api/sms/blast', {
+      const res = await authedFetch('/api/sms/blast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bodyTemplate, filter: { stages }, dryRun: true }),
       });
       const data = await res.json();
@@ -11025,9 +10908,8 @@ function BlastView({ leads, showToast }) {
     if (!ok) return;
     setBusy(true);
     try {
-      const res = await fetch('/api/sms/blast', {
+      const res = await authedFetch('/api/sms/blast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bodyTemplate, filter: { stages }, dryRun: false }),
       });
       const data = await res.json();
@@ -11045,7 +10927,7 @@ function BlastView({ leads, showToast }) {
 
   const fetchRecent = async () => {
     try {
-      const res = await fetch('/api/sms/blast');
+      const res = await authedFetch('/api/sms/blast');
       const data = await res.json();
       if (res.ok) setRecent(data.blasts || []);
     } catch {}
@@ -13001,9 +12883,8 @@ ${settings.agentEmail || ''}` : '';
     if (!activeListing || !editedTo) return;
     setSending(true);
     try {
-      const res = await fetch('/api/send-email', {
+      const res = await authedFetch('/api/send-email', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           leadId: lead.id,
           to: editedTo,
@@ -13415,9 +13296,8 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch('/api/ai/suggest-reply', {
+      const res = await authedFetch('/api/ai/suggest-reply', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ leadId: lead.id }),
       });
       const data = await res.json();
