@@ -200,24 +200,24 @@ const DEFAULT_AGENT_SETTINGS = {
 
   welcomeMessages: {
     GCMS: {
-      sms: `Rentals Philly: Got it {firstName} — I'm hand-picking rentals that fit you right now. Expect a personalized link with photos within a few hours.`,
-      emailSubject: 'Welcome to Rentals Philly — hand-picked matches incoming',
-      email: `Hi {firstName},\n\nThanks for reaching out! Since you're moving in the next couple months, I'm prioritizing your search — I'll hand-pick rentals that match your criteria and send you a personalized link within a few hours.\n\nWhen the link arrives, click through to view photos and tell me which ones you'd like to tour. I'll handle the rest.\n\nTalk soon,\n— {agentName}`,
+      sms: `Rentals Philly: Got it, {firstName} — I'm hand-picking rentals for you now. You'll get a personalized link with photos soon. Reply STOP to opt out.`,
+      emailSubject: 'Hand-picked Philly rentals — incoming',
+      email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,\n— {agentName}`,
     },
     'GCM75+': {
-      sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked options. In the meantime, save my number.`,
-      emailSubject: 'Welcome to Rentals Philly — we\'ll be in touch soon',
-      email: `Hi {firstName},\n\nThanks for letting us know what you're looking for. Since your move-in is further out, the rental market won't have what you need quite yet — but we'll be ready when it does.\n\nI'll reach out about 75 days before {moveInDate} with hand-picked options. In the meantime, save my number — if you have questions or your timeline changes, text me anytime.\n\nTalk soon,\n— {agentName}`,
+      sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked rentals. Save my number for the meantime. Reply STOP to opt out.`,
+      emailSubject: 'Got you on the calendar for {moveInDate}',
+      email: `Hi {firstName},\n\nThanks for letting me know what you're looking for. Since your move-in is further out, the rental market won't have what you need quite yet — but we'll be ready when it does.\n\nI'll reach out about 75 days before {moveInDate} with hand-picked options. In the meantime, save my number — if your timeline shifts or you have questions, text me anytime.\n\nTalk soon,\n— {agentName}`,
     },
     BCMS: {
-      sms: `Rentals Philly: Got it {firstName} — I'll get back to you within 24 hours. I work with all credit profiles and have options that fit your situation.`,
+      sms: `Rentals Philly: Got it, {firstName} — I'll come back soon with options. I work with all credit profiles. Reply STOP to opt out.`,
       emailSubject: 'Welcome to Rentals Philly — let\'s find the right fit',
-      email: `Hi {firstName},\n\nThanks for reaching out! I work with prospects across all credit profiles, and there are good rental options available regardless — landlords with flexible criteria, units that accept cosigners or higher deposits, and so on.\n\nGive me 24 hours and I'll come back with a hand-picked list of rentals that fit your situation. We'll talk about cosigner options or alternate deposit structures if that helps unlock more units.\n\nTalk soon,\n— {agentName}`,
+      email: `Hi {firstName},\n\nThanks for reaching out. I work with renters across all credit profiles, and there are good options out there — landlords with flexible criteria, units that accept cosigners, and alternate deposit structures that can unlock more buildings.\n\nGive me a bit and I'll come back with a hand-picked list that fits your situation. We'll talk through any cosigner or deposit options if they help.\n\nTalk soon,\n— {agentName}`,
     },
     'BC75+': {
-      sms: `Rentals Philly: Thanks {firstName}! I'll reach out 75 days before {moveInDate}. If you can, work on credit in the meantime — it opens up more options. Save my number.`,
-      emailSubject: 'Welcome to Rentals Philly — planning ahead',
-      email: `Hi {firstName},\n\nThanks for reaching out. Since your move is further out, I'll plan to come back to you about 75 days before {moveInDate} with hand-picked rentals.\n\nOne thing to think about in the meantime: any progress you can make on your credit between now and your move will significantly widen the range of available rentals. Even getting current on a credit card or paying down a small balance can make a real difference.\n\nIf your timeline shifts or you have questions, text me anytime.\n\nTalk soon,\n— {agentName}`,
+      sms: `Rentals Philly: Thanks {firstName}! I'll reach out about 75 days before {moveInDate}. If you can work on credit in the meantime, it opens up more options. Save my number. Reply STOP to opt out.`,
+      emailSubject: 'Planning ahead for {moveInDate}',
+      email: `Hi {firstName},\n\nThanks for reaching out. Since your move is further out, I'll plan to come back to you about 75 days before {moveInDate} with hand-picked rentals.\n\nOne thing to think about between now and then: any progress on your credit will widen the range of buildings available to you. Even getting current on a card or paying down a small balance can make a real difference.\n\nIf your timeline shifts or you have questions, text me anytime.\n\nTalk soon,\n— {agentName}`,
     },
   },
 };
@@ -4003,7 +4003,7 @@ function CuratingConfirmed({ lead, agentName, agentPhone /* unused, onDone */ })
           <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 mb-2">Got it, {firstName}!</h1>
           <p className="text-slate-600 max-w-md mx-auto leading-relaxed">
             {agentLabel} is hand-picking rentals that match what you&apos;re looking for.
-            You&apos;ll get a personalized link by <strong>text and email</strong> within a few hours.
+            You&apos;ll get a personalized link by <strong>text and email</strong> soon.
           </p>
         </div>
 
@@ -4074,7 +4074,7 @@ function CuratingConfirmed({ lead, agentName, agentPhone /* unused, onDone */ })
             </li>
             <li className="flex items-start gap-3">
               <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5" style={{ backgroundColor: 'var(--brand-gold)' }}>2</span>
-              <span>You&apos;ll get a personalized link by text and email — usually within a few hours.</span>
+              <span>You&apos;ll get a personalized link by text and email — usually same-day during business hours.</span>
             </li>
             <li className="flex items-start gap-3">
               <span className="w-5 h-5 rounded-full text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5" style={{ backgroundColor: 'var(--brand-gold)' }}>3</span>

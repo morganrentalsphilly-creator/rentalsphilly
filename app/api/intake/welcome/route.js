@@ -111,24 +111,24 @@ Constraints:
 // fallback experience is identical when AI is off / down.
 const DEFAULT_TEMPLATES = {
   GCMS: {
-    sms: `Rentals Philly: Got it {firstName} — I'm hand-picking rentals that fit you right now. Expect a personalized link with photos soon. Reply STOP to opt out.`,
-    emailSubject: `Your Philly rental search — what to expect`,
-    email: `Hi {firstName},\n\nThanks for reaching out! Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match your criteria and send you a personalized link soon.\n\nWhen the link arrives, click through to view photos and tell me which ones you'd like to tour. I'll handle the rest.\n\nTalk soon,\n— {agentName}`,
+    sms: `Rentals Philly: Got it, {firstName} — I'm hand-picking rentals for you now. You'll get a personalized link with photos soon. Reply STOP to opt out.`,
+    emailSubject: `Hand-picked Philly rentals — incoming`,
+    email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,\n— {agentName}`,
   },
   BCMS: {
-    sms: `Rentals Philly: Got it {firstName} — I'll get back to you soon. I work with all credit profiles and have options that fit your situation. Reply STOP to opt out.`,
-    emailSubject: `Your Philly rental search — let's talk options`,
-    email: `Hi {firstName},\n\nThanks for reaching out! I work with prospects across all credit profiles, and there are good rental options available regardless — landlords with flexible criteria, units that accept cosigners or higher deposits, and so on.\n\nGive me a bit and I'll come back with a hand-picked list of rentals that fit your situation. We'll talk about cosigner options or alternate deposit structures if that helps unlock more units.\n\nTalk soon,\n— {agentName}`,
+    sms: `Rentals Philly: Got it, {firstName} — I'll come back soon with options. I work with all credit profiles. Reply STOP to opt out.`,
+    emailSubject: `Welcome to Rentals Philly — let's find the right fit`,
+    email: `Hi {firstName},\n\nThanks for reaching out. I work with renters across all credit profiles, and there are good options out there — landlords with flexible criteria, units that accept cosigners, and alternate deposit structures that can unlock more buildings.\n\nGive me a bit and I'll come back with a hand-picked list that fits your situation. We'll talk through any cosigner or deposit options if they help.\n\nTalk soon,\n— {agentName}`,
   },
   'GCM75+': {
-    sms: `Rentals Philly: Thanks {firstName}! Your move-in is a bit out. I'll reach out about 75 days before {moveInDate} with hand-picked options. Reply STOP to opt out.`,
-    emailSubject: `Got you in the queue for {moveInDate}`,
-    email: `Hi {firstName},\n\nThanks for reaching out! Since your move-in is further out, I'll start curating in earnest about 75 days before {moveInDate}. That's when listings for your window will actually be on the market.\n\nIn the meantime, save my contact and feel free to text any questions.\n\n— {agentName}`,
+    sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked rentals. Save my number for the meantime. Reply STOP to opt out.`,
+    emailSubject: `Got you on the calendar for {moveInDate}`,
+    email: `Hi {firstName},\n\nThanks for letting me know what you're looking for. Since your move-in is further out, I'll start curating about 75 days before {moveInDate}. That's when listings for your window will actually be on the market.\n\nIn the meantime, save my contact — if your timeline shifts or you have questions, text me anytime.\n\n— {agentName}`,
   },
   'BC75+': {
-    sms: `Rentals Philly: Thanks {firstName}! Your move-in is a bit out. I'll reach out about 75 days before {moveInDate} with options that fit your situation. Reply STOP to opt out.`,
-    emailSubject: `Got you in the queue for {moveInDate}`,
-    email: `Hi {firstName},\n\nThanks for reaching out! Since your move-in is further out, I'll start curating about 75 days before {moveInDate}. That's when relevant listings will actually be on the market.\n\nIn the meantime, save my contact and feel free to text any questions. I work with all credit profiles so we'll find the right fit.\n\n— {agentName}`,
+    sms: `Rentals Philly: Thanks {firstName}! I'll reach out about 75 days before {moveInDate}. If you can work on credit in the meantime, it opens up more options. Save my number. Reply STOP to opt out.`,
+    emailSubject: `Planning ahead for {moveInDate}`,
+    email: `Hi {firstName},\n\nThanks for reaching out. Since your move is further out, I'll plan to come back to you about 75 days before {moveInDate} with hand-picked rentals.\n\nOne thing to think about between now and then: any progress on your credit will widen the range of buildings available to you. Even getting current on a card or paying down a small balance can make a real difference.\n\nIf your timeline shifts or you have questions, text me anytime.\n\n— {agentName}`,
   },
 };
 

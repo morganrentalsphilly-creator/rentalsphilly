@@ -73,7 +73,7 @@ export default function PrivacyPage() {
         <strong>Example messages you may receive:</strong>
       </p>
       <ul className="list-disc pl-6 mb-3 space-y-1 text-sm bg-slate-50 border border-slate-200 rounded-lg p-4">
-        <li>&ldquo;Rentals Philly: Got it Alex — I&apos;m hand-picking rentals that fit you. Expect a personalized link with photos within a few hours.&rdquo;</li>
+        <li>&ldquo;Rentals Philly: Got it, Alex — I&apos;m hand-picking rentals for you now. You&apos;ll get a personalized link with photos soon. Reply STOP to opt out.&rdquo;</li>
         <li>&ldquo;Rentals Philly: Your hand-picked rentals are ready. View photos &amp; request tours: [link]&rdquo;</li>
         <li>&ldquo;Reminder: your showing is tomorrow at 5:00 PM. Reply if you need to reschedule.&rdquo;</li>
       </ul>

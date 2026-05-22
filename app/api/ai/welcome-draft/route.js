@@ -38,7 +38,7 @@ function buildPrompt(lead, agentName) {
   ].filter(Boolean).join('\n');
 
   const strategyNote = isSoon
-    ? 'They are moving SOON. We will hand-pick rentals immediately and send a personalized link within a few hours.'
+    ? 'They are moving SOON. We will hand-pick rentals immediately and send a personalized link soon.'
     : 'They are moving LATER. We will reach out about 75 days before their move-in date with hand-picked options. Until then, light touch.';
 
   const creditNote = isGoodCredit
