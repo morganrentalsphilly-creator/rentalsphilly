@@ -6722,9 +6722,23 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
       )}
 
       {leads.length === 0 ? (
-        <EmptyState icon={Users} title="No leads yet" desc="Submit a lead through the intake form." />
+        <EmptyState
+          icon={Users}
+          title="Your pipeline is ready"
+          desc="Leads will land here the moment someone submits the intake form. Or add one manually for walk-ins and referrals."
+          action={
+            <a
+              href="/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-medium px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1.5"
+            >
+              <ExternalLink className="w-3 h-3" /> Open intake form
+            </a>
+          }
+        />
       ) : filtered.length === 0 ? (
-        <EmptyState icon={Filter} title="No matches" desc="Try a different filter." />
+        <EmptyState icon={Filter} title="No matches" desc="Try a different filter or clear your search." />
       ) : (
         <>
           <div className="flex items-center gap-2 mb-2 text-xs">
@@ -9637,7 +9651,7 @@ function MessagesTab({ lead, onCompose }) {
       )}
 
       {messages.length === 0 ? (
-        <EmptyState icon={Mail} title="No messages yet" />
+        <EmptyState icon={Mail} title="No messages yet" desc="Tap Text client or Email client above to start the conversation." />
       ) : (
         <div className="bg-slate-50 rounded-2xl p-3 space-y-2 border border-slate-200">
           {messages.map((m) => {
@@ -10309,7 +10323,11 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       )}
 
       {threads.length === 0 ? (
-        <EmptyState icon={Inbox} title="No conversations yet" desc="Messages will appear here as they come in." />
+        <EmptyState
+          icon={Inbox}
+          title="Inbox zero, ready to go"
+          desc="Every reply from every lead — SMS or email — lands here. The newest unread thread will rise to the top automatically."
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] lg:grid-cols-[280px_1fr_280px] gap-3 h-[calc(100vh-300px)] min-h-[500px]">
           {/* LEFT: thread list — hidden on mobile when a thread is being viewed */}
@@ -12489,7 +12507,15 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
           </div>
 
           {filtered.length === 0 ? (
-            <EmptyState icon={Building2} title={properties.length === 0 ? 'No properties yet' : 'No matches'} desc={properties.length === 0 ? 'Import a CSV from your MLS or add a property manually.' : 'Try a different filter or search term.'} />
+            properties.length === 0 ? (
+              <EmptyState
+                icon={Building2}
+                title="Start your listing inventory"
+                desc="Import a CSV from your MLS, or add a property manually. Active listings show up here for matching against leads."
+              />
+            ) : (
+              <EmptyState icon={Filter} title="No matches" desc="Try a different filter or clear your search." />
+            )
           ) : (
             <Card className="overflow-hidden">
               {filtered.map((p, i) => (
