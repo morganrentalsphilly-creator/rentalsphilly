@@ -24,11 +24,20 @@ function buildPrompt(lead, messages) {
   const stage = lead.stage || 'new';
   const budget = lead.budget_min && lead.budget_max ? `$${lead.budget_min}-$${lead.budget_max}/mo` : '?';
   const moveIn = lead.move_in_date || lead.raw?.moveInDate || 'unspecified';
-  const credit = lead.credit_score || lead.raw?.creditScore;
+  // Bucket drives the workflow but is NEVER shown to the customer. We pass it
+  // to the AI for routing only — see the "NEVER mention credit" guardrail in
+  // the constraints block below.
+  const bucket = lead.bucket || 'unknown';
   const picks = Array.isArray(lead.raw?.curated_address_picks) ? lead.raw.curated_address_picks : [];
   const curatedSent = !!lead.raw?.curated_link_sent_at;
   const schedulingOpen = !!lead.raw?.scheduling_open_at;
   const tourCount = Array.isArray(lead.tours) ? lead.tours.length : 0;
+  // Application gate signals: for BCMS leads we wait on the application
+  // before doing any curation. Both an uploaded PDF (`application` jsonb) or
+  // a "marked received via RentSpree" flag clear the gate.
+  const hasApplication = !!lead.application || !!lead.raw?.application;
+  const applicationMarkedReceived = lead.application_status === 'received' || lead.raw?.application_status === 'received';
+  const applicationClear = hasApplication || applicationMarkedReceived;
   const lastMsg = messages[messages.length - 1];
   const lastMsgAge = lastMsg ? Math.floor((Date.now() - new Date(lastMsg.timestamp || lastMsg.created_at).getTime()) / 86400000) : null;
   const lastMsgDir = lastMsg?.direction;
@@ -38,14 +47,23 @@ function buildPrompt(lead, messages) {
     return `${who}: ${(m.body || '').slice(0, 160)}`;
   }).join('\n');
 
+  // Bucket-specific workflow hint so the AI doesn't have to infer it.
+  const bucketHint = {
+    GCMS:   'Moving soon. Hand-pick rentals now → send curated link → scheduling link → tour.',
+    'GCM75+': 'Moving 75+ days out. Light-touch until ~75 days before move-in, then curate.',
+    BCMS:   'Moving soon. MUST receive completed application BEFORE we start curating. If app not on file yet, nudge for it.',
+    'BC75+':  'Moving 75+ days out. Will send application link ~75 days before move-in. Light-touch until then.',
+  }[bucket] || '';
+
   return `You're helping a Philadelphia rental agent decide the single best next action for a lead. Recommend ONE concrete move — not a list.
 
 Lead state:
 - Name: ${lead.full_name}
 - Stage: ${stage}
+- Bucket: ${bucket} ${bucketHint ? `(${bucketHint})` : ''}
 - Budget: ${budget}
 - Move-in: ${moveIn}
-- Credit: ${credit || 'unspecified'}
+- Application on file: ${applicationClear ? 'yes' : 'no'}
 - Curated link sent: ${curatedSent ? 'yes' : 'no'}
 - Scheduling link sent: ${schedulingOpen ? 'yes' : 'no'}
 - Properties picked: ${picks.length}
@@ -60,7 +78,7 @@ Decide on ONE action from this list (pick the most impactful right now):
 - "send-email"             — email them with a draft
 - "send-curated-link"      — agent needs to curate + send the MLS portal link
 - "send-scheduling-link"   — they've picked properties; now send them the time picker
-- "request-application"    — they're warm, ask if they want to apply
+- "request-application"    — BCMS gate: nudge them to fill out the application link we already sent (or send it if missed)
 - "mark-stage"             — advance the stage (specify which)
 - "mark-lost"              — they've gone cold, mark lost
 - "wait"                   — nothing to do right now, let cron handle the cadence
@@ -77,6 +95,7 @@ Constraints:
 - "reason" is one sentence (<= 120 chars) explaining why this is the move now
 - "suggestedMessage" if present should be SMS-length (<= 280 chars), brand-prefixed "Rentals Philly:", end with "Reply STOP to opt out"
 - For "wait", reason should explain what we're waiting on
+- NEVER mention credit, credit score, credit profile, financial situation, or anything similar in "suggestedMessage" or "reason" — this is product policy. Bucket is a private workflow signal.
 - Output ONLY the JSON object, no commentary, no code fences.`;
 }
 

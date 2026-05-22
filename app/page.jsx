@@ -2364,6 +2364,39 @@ export default function App() {
     showToast(newReviewed ? 'Marked as reviewed' : 'Marked as unreviewed');
   };
 
+  // Fast path for the BCMS workflow: Morgan got the completed application via
+  // RentSpree (so the PDF is already on file there) and doesn't want to bother
+  // downloading + re-uploading it here. One tap flips the workflow gate so
+  // nextMove() advances past "Waiting on application" → "Send curated link".
+  // Pass action === 'clear' to undo.
+  const markApplicationReceived = async (leadId, action) => {
+    const lead = leads.find(l => l.id === leadId);
+    if (!lead) return;
+    const clearing = action === 'clear';
+    // If a real PDF is uploaded we don't touch anything — the PDF itself is
+    // the source of truth. This callback is only meaningful when there's no
+    // application object.
+    if (lead.application) {
+      showToast('Application PDF already on file — no change');
+      return;
+    }
+    await updateLead(leadId, {
+      applicationStatus: clearing ? null : 'received',
+      activities: [
+        ...(lead.activities || []),
+        {
+          id: `a_${Date.now()}`,
+          type: clearing ? 'application-unmarked-received' : 'application-marked-received',
+          timestamp: new Date().toISOString(),
+          message: clearing
+            ? 'Un-marked application as received via RentSpree'
+            : 'Marked application as received via RentSpree (no PDF on file)',
+        },
+      ],
+    });
+    showToast(clearing ? 'Un-marked received' : 'Application marked received');
+  };
+
   const addLead = async (lead) => {
     const bucket = classifyLead(lead);
     const id = `lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2778,7 +2811,7 @@ export default function App() {
             <div className="h-64 bg-slate-100 rounded-2xl" />
           </div></div>
         ) : (
-          <AdminCRM leads={leads} addLead={addLead} updateLead={updateLead} removeLead={removeLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
+          <AdminCRM leads={leads} addLead={addLead} updateLead={updateLead} removeLead={removeLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} markApplicationReceived={markApplicationReceived} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
         )
       )}
     </div>
@@ -6466,9 +6499,31 @@ function NextBestActionCard({ lead, onCompose, showToast, updateLead, settings }
       }
       return;
     }
+    // ---- request-application: nudge BCMS leads who haven't filled it out ----
+    // Special-case the BCMS workflow: their welcome already shipped the
+    // application URL, so the nudge composer pre-fills a friendly bump SMS
+    // with the same link (resolved from settings — no credit language).
+    if (t === 'request-application') {
+      const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+      const applicationUrl =
+        settings?.rentSpree?.applicationUrl ||
+        settings?.rentspree_application_url ||
+        settings?.application_url ||
+        '';
+      if (applicationUrl) {
+        onCompose({
+          kind: 'sms-custom',
+          prefill: `Rentals Philly: Hi ${firstName} — quick reminder to fill out the rental application so I can start hand-picking for you: ${applicationUrl}`,
+        });
+        return;
+      }
+      // No URL configured — push Morgan to Settings instead of letting her
+      // ship a placeholder.
+      showToast({ message: 'Set the general application URL in Settings → Integrations first.', kind: 'error' });
+      return;
+    }
     // Other action types — scroll to the relevant panel by hint.
     const hint = t === 'send-curated-link' ? 'Open the curated link panel below to send the portal link.'
-      : t === 'request-application' ? 'Use the Submit Application button on this lead.'
       : t === 'mark-stage' ? 'Use the stage dropdown at the top to advance.'
       : t === 'mark-lost' ? 'Use the actions menu (▾) to mark this lead lost.'
       : 'Waiting — cron will handle the next cadence touch.';
@@ -7816,7 +7871,7 @@ function KeyboardShortcutHelp({ onClose }) {
   );
 }
 
-function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
+function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, markApplicationReceived, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
   const [submitModal, setSubmitModal] = useState(null);
@@ -8115,6 +8170,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
             saveApplicationFile={saveApplicationFile}
             deleteApplicationFile={deleteApplicationFile}
             toggleApplicationReviewed={toggleApplicationReviewed}
+            markApplicationReceived={markApplicationReceived}
             updateSubmissionStatus={updateSubmissionStatus}
             onPrev={prevId ? () => setSelectedLeadId(prevId) : null}
             onNext={nextId ? () => setSelectedLeadId(nextId) : null}
@@ -10218,12 +10274,13 @@ function PasteField({ label, hint, children }) {
 // ============================================================
 // APPLICATION UPLOAD
 // ============================================================
-function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast }) {
+function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, onMarkReceived, showToast }) {
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const fileInputRef = useRef(null);
   const application = lead.application;
+  const markedReceived = !application && lead.applicationStatus === 'received';
 
   const handleFiles = async (files) => {
     const file = files[0];
@@ -10278,25 +10335,50 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
 
   if (!application) {
     return (
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
-        onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-        className={`rounded-2xl border-2 border-dashed p-10 text-center cursor-pointer transition-colors ${dragActive ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/50'}`}
-      >
-        <input ref={fileInputRef} type="file" accept="application/pdf" onChange={(e) => handleFiles(e.target.files)} className="hidden" />
-        <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-slate-100 flex items-center justify-center">
-          {uploading ? <Hourglass className="w-5 h-5 text-slate-400 animate-pulse" /> : <Upload className="w-5 h-5 text-slate-500" />}
+      <div className="space-y-2">
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          className={`rounded-2xl border-2 border-dashed p-10 text-center cursor-pointer transition-colors ${dragActive ? 'border-slate-900 bg-slate-50' : markedReceived ? 'border-emerald-300 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50/50'}`}
+        >
+          <input ref={fileInputRef} type="file" accept="application/pdf" onChange={(e) => handleFiles(e.target.files)} className="hidden" />
+          <div className={`w-12 h-12 mx-auto mb-4 rounded-full flex items-center justify-center ${markedReceived ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100'}`}>
+            {uploading ? <Hourglass className="w-5 h-5 text-slate-400 animate-pulse" /> : markedReceived ? <CheckCircle2 className="w-5 h-5" /> : <Upload className="w-5 h-5 text-slate-500" />}
+          </div>
+          <div className="font-semibold text-slate-900 mb-1">
+            {uploading ? 'Uploading…' : markedReceived ? 'Application received via RentSpree' : 'Upload application PDF'}
+          </div>
+          <div className="text-sm text-slate-500 mb-4">
+            {markedReceived
+              ? 'Marked received without an uploaded PDF. Upload a copy anytime if you want one on file.'
+              : 'Drag & drop or click to browse · PDF only · Max 10MB'}
+          </div>
+          {!uploading && !markedReceived && (
+            <Button variant="secondary" icon={Upload}>Choose file</Button>
+          )}
         </div>
-        <div className="font-semibold text-slate-900 mb-1">
-          {uploading ? 'Uploading…' : 'Upload application PDF'}
-        </div>
-        <div className="text-sm text-slate-500 mb-4">
-          Drag & drop or click to browse · PDF only · Max 10MB
-        </div>
-        {!uploading && (
-          <Button variant="secondary" icon={Upload}>Choose file</Button>
+        {/* Fast path: Morgan got the app via RentSpree, doesn't need to
+            download + re-upload the PDF. One tap marks the workflow gate
+            cleared so the lead progresses to "Send curated link". */}
+        {!markedReceived && onMarkReceived && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onMarkReceived(); }}
+            className="w-full text-xs text-slate-600 hover:text-slate-900 underline py-1.5 transition-colors"
+          >
+            Or — application came in via RentSpree? Mark it received without uploading.
+          </button>
+        )}
+        {markedReceived && onMarkReceived && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onMarkReceived('clear'); }}
+            className="w-full text-xs text-slate-500 hover:text-slate-900 underline py-1.5"
+          >
+            Undo — un-mark application received
+          </button>
         )}
       </div>
     );
@@ -12476,7 +12558,7 @@ function QuickNoteBar({ lead, updateLead, showToast }) {
   );
 }
 
-function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus, onPrev, onNext, position, allLeads }) {
+function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, markApplicationReceived, updateSubmissionStatus, onPrev, onNext, position, allLeads }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
   const initials = lead.fullName.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase();
@@ -12804,6 +12886,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
                 onSave={(fileData) => saveApplicationFile(lead.id, fileData)}
                 onDelete={() => deleteApplicationFile(lead.id)}
                 onToggleReviewed={() => toggleApplicationReviewed(lead.id)}
+                onMarkReceived={markApplicationReceived ? (action) => markApplicationReceived(lead.id, action) : null}
                 showToast={showToast}
               />
             </div>
@@ -14272,7 +14355,9 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                 {composerChannel === 'email' && (
                   <input value={composerSubject} onChange={(e) => setComposerSubject(e.target.value)}
                     placeholder="Subject"
-                    className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
+                    autoCapitalize="sentences"
+                    style={{ fontSize: 16 }}
+                    className="w-full text-base md:text-sm px-3 py-2 md:py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
                 )}
                 <SlashAwareTextarea
                   value={composerBody}
@@ -14293,10 +14378,15 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                   )}
                   <div className="ml-auto flex items-center gap-2">
                     <span className="text-[10px] text-slate-400 hidden md:inline">⌘+Enter to send</span>
+                    {/* Send button: larger on mobile (44px min tap target
+                        per Apple HIG), tighter on desktop to keep the
+                        composer compact. Morgan will be tapping this
+                        dozens of times a day on her phone. */}
                     <button onClick={handleSend}
                       disabled={!composerBody.trim() || sending || (composerChannel === 'sms' && activeThread.lead.opted_out)}
-                      className="px-4 py-1.5 bg-slate-900 text-white rounded-full text-xs font-medium hover:bg-slate-800 transition-colors flex items-center gap-1.5 disabled:opacity-40">
-                      <Send className="w-3 h-3" /> {sending ? 'Sending…' : 'Send'}
+                      style={{ minHeight: 44 }}
+                      className="px-5 py-2.5 md:px-4 md:py-1.5 md:min-h-0 bg-slate-900 text-white rounded-full text-sm md:text-xs font-semibold md:font-medium hover:bg-slate-800 active:scale-[0.97] transition-all flex items-center gap-1.5 disabled:opacity-40">
+                      <Send className="w-3.5 h-3.5 md:w-3 md:h-3" /> {sending ? 'Sending…' : 'Send'}
                     </button>
                   </div>
                 </div>
@@ -14493,6 +14583,10 @@ function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOp
         onChange={(e) => updateValue(e.target.value)}
         placeholder={placeholder}
         rows={rows}
+        autoCapitalize="sentences"
+        autoCorrect="on"
+        spellCheck="true"
+        enterKeyHint="send"
         onKeyDown={(e) => {
           if (e.key === 'Escape' && paletteOpen) { e.preventDefault(); setPaletteOpen(false); return; }
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -14503,7 +14597,13 @@ function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOp
             onSubmit?.();
           }
         }}
-        className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-none"
+        // 16px font prevents iOS Safari from auto-zooming into the textarea
+        // when Morgan taps to focus on her iPhone — that zoom is jarring
+        // every single time she replies. text-base is 16px on default
+        // Tailwind config; explicit style fallback in case the project's
+        // base font-size differs.
+        className="w-full text-base px-3 py-2.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-none leading-relaxed"
+        style={{ fontSize: 16 }}
       />
       {paletteOpen && filtered.length > 0 && (
         <div className="absolute bottom-full left-0 mb-1 z-20 bg-white border border-slate-200 rounded-xl shadow-lg w-full max-w-md max-h-64 overflow-y-auto">
