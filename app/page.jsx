@@ -13222,6 +13222,19 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
               ) : visibleThreads.map((t) => {
                 const isActive = activeThread?.lead.id === t.lead.id;
                 const preview = (t.last.body || '').replace(/\n+/g, ' ').slice(0, 60);
+                // Check for an unsent draft on this thread. For the active
+                // thread, read live composer state (so the indicator appears
+                // as Morgan types). For inactive threads, read from the
+                // persisted drafts ref (survives navigation + refresh).
+                const draftSaved = draftsRef.current[t.lead.id];
+                const hasDraft = isActive
+                  ? !!(composerBody.trim() || composerSubject.trim())
+                  : !!(draftSaved && (draftSaved.body?.trim() || draftSaved.subject?.trim()));
+                const draftPreview = hasDraft
+                  ? (isActive ? composerBody : (draftSaved?.body || draftSaved?.subject || ''))
+                      .replace(/\n+/g, ' ')
+                      .slice(0, 50)
+                  : '';
                 return (
                   <button key={t.lead.id}
                     onClick={() => { setSelectedThreadId(t.lead.id); setMobileViewingThread(true); }}
@@ -13230,7 +13243,10 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                     }`}>
                     <div className="flex items-center gap-2 mb-0.5">
                       {t.isUnread && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" title="Unread" />}
-                      {t.isHandled && !t.isUnread && (
+                      {hasDraft && !t.isUnread && (
+                        <Edit3 className="w-3 h-3 shrink-0" style={{ color: 'var(--brand-gold)' }} title="Unsent draft" />
+                      )}
+                      {t.isHandled && !t.isUnread && !hasDraft && (
                         <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" title="Handled — will re-surface when they reply" />
                       )}
                       <div className={`text-sm truncate ${
@@ -13244,11 +13260,21 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                       </div>
                       <div className={`text-[10px] ml-auto shrink-0 tabular-nums ${t.isUnread ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>{timeAgo(t.last.timestamp)}</div>
                     </div>
-                    <div className={`text-[11px] truncate flex items-center gap-1 ${t.isUnread ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>
-                      {t.last.channel === 'sms' ? <MessageSquare className="w-3 h-3 shrink-0" /> : <Mail className="w-3 h-3 shrink-0" />}
-                      {t.last.direction === 'outbound' && <span className="text-slate-400 font-normal">You: </span>}
-                      <span className="truncate">{preview}</span>
-                    </div>
+                    {hasDraft ? (
+                      // When there's a draft, surface IT in the preview line
+                      // instead of the last received message — that's what
+                      // Morgan needs to see/finish, not what the lead said.
+                      <div className="text-[11px] truncate flex items-center gap-1 italic" style={{ color: 'var(--brand-gold)' }}>
+                        <Edit3 className="w-3 h-3 shrink-0" />
+                        <span className="truncate">Draft: {draftPreview}</span>
+                      </div>
+                    ) : (
+                      <div className={`text-[11px] truncate flex items-center gap-1 ${t.isUnread ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>
+                        {t.last.channel === 'sms' ? <MessageSquare className="w-3 h-3 shrink-0" /> : <Mail className="w-3 h-3 shrink-0" />}
+                        {t.last.direction === 'outbound' && <span className="text-slate-400 font-normal">You: </span>}
+                        <span className="truncate">{preview}</span>
+                      </div>
+                    )}
                   </button>
                 );
               })}
