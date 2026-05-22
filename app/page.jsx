@@ -771,6 +771,20 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Normalize a raw settings row from the DB into the shape the app expects.
+// Handles the case where `agent_availability` lives inside `raw` jsonb (when
+// migration 0004 hasn't been applied yet) by lifting it back out to the top
+// level. Future per-field fallbacks should be added here too.
+function mergeSettingsRow(row) {
+  if (!row || typeof row !== 'object') return row || {};
+  const merged = { ...row };
+  // Prefer the top-level column when present; fall back to raw.agent_availability.
+  if (!merged.agent_availability && row.raw && row.raw.agent_availability) {
+    merged.agent_availability = row.raw.agent_availability;
+  }
+  return merged;
+}
+
 // Translate raw AI endpoint error codes into a short, friendly sentence Morgan
 // can actually understand. Each AI surface (lead-summary, next-action, tour-prep,
 // suggest-tags, suggest-reply) returns codes like "claude_api_500", "parse_failed",
@@ -1223,7 +1237,7 @@ export default function App() {
       try {
         const data = await loadPublic();
         setProperties(hydrateProperties(data.properties || []));
-        if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...data.settings });
+        if (data.settings) setSettings({ ...DEFAULT_AGENT_SETTINGS, ...mergeSettingsRow(data.settings) });
       } catch (e) {
         console.error('[app] Failed to load public data', e);
       }
@@ -1246,7 +1260,7 @@ export default function App() {
         setSlots((data.slots || []).length > 0 ? data.slots : generateDefaultSlots());
         setWaitlist(data.waitlist || []);
         setProperties(hydrateProperties(data.properties || []));
-        if (data.settings) setSettings((prev) => ({ ...DEFAULT_AGENT_SETTINGS, ...prev, ...data.settings }));
+        if (data.settings) setSettings((prev) => ({ ...DEFAULT_AGENT_SETTINGS, ...prev, ...mergeSettingsRow(data.settings) }));
         try {
           const offsetRes = await window.storage.get('time-offset').catch(() => null);
           if (offsetRes && offsetRes.value) setTimeOffset(JSON.parse(offsetRes.value));
@@ -1483,20 +1497,70 @@ export default function App() {
       console.error('[app] Failed to save waitlist', e);
     }
   };
+  // Persists the entire settings object to the DB. Every field in the
+  // settings table gets sent — previously only 6 were being saved, which is
+  // why agent_availability (shifts), welcomeMessages, notifications, etc.
+  // appeared to "reset" on every page reload. The DB row was real but the
+  // client only ever wrote a slice of it.
+  //
+  // Key mapping:
+  //   • Some columns are snake_case (agent_name, agent_email, twilio_number).
+  //   • Others are camelCase (welcomeMessages, quickReplyTemplates) — added
+  //     in migration 0003 with quoted identifiers.
+  //   • Some are already passed through as-is (automation, notifications,
+  //     agent_availability — all jsonb).
   const saveSettings = async (newSettings) => {
     setSettings(newSettings);
     try {
       const { updateSettings } = await import('@/lib/db');
-      await updateSettings({
+      const payload = {
+        // snake_case columns
         agent_name: newSettings.agentName,
         agent_email: newSettings.agentEmail,
         agent_phone: newSettings.agentPhone,
         twilio_number: newSettings.twilioNumber,
         rentspree_dashboard_url: newSettings.rentSpree?.dashboardUrl,
+
+        // jsonb columns (pass through, no transform)
         automation: newSettings.automation,
-      });
+        agent_availability: newSettings.agent_availability,
+        notifications: newSettings.notifications,
+
+        // camelCase-quoted columns from migration 0003
+        welcomeMessages: newSettings.welcomeMessages,
+        quickReplyTemplates: newSettings.quickReplyTemplates,
+        systemTemplates: newSettings.systemTemplates,
+        emailSignature: newSettings.emailSignature,
+
+        // Fallback: also stash agent_availability inside raw jsonb so it
+        // survives even if migration 0004 hasn't been applied. The load path
+        // reads from this if the top-level column is missing.
+        raw: {
+          ...(newSettings.raw || {}),
+          agent_availability: newSettings.agent_availability,
+        },
+      };
+      // Strip any keys that are undefined so we don't accidentally null out
+      // a column that the caller didn't set (e.g. a partial save from a
+      // narrow updater that only knows about one field).
+      const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
+      try {
+        await updateSettings(cleaned);
+      } catch (firstErr) {
+        // If the DB rejects a column (e.g. migration 0004 not yet applied),
+        // retry without it. agent_availability still persists via raw.
+        const msg = String(firstErr?.message || '').toLowerCase();
+        if (msg.includes('agent_availability') && msg.includes('column')) {
+          console.warn('[settings] agent_availability column missing — saving via raw only. Apply migration 0004.');
+          const { agent_availability: _omit, ...withoutCol } = cleaned;
+          await updateSettings(withoutCol);
+        } else {
+          throw firstErr;
+        }
+      }
     } catch (e) {
       console.error('[app] Failed to save settings', e);
+      showToast({ message: `Couldn't save settings: ${e.message}`, kind: 'error' });
     }
   };
   const saveTimeOffset = async (offset) => {
@@ -8331,10 +8395,29 @@ function SmsTestCard({ form, showToast }) {
 
 function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplates }) {
   const [form, setForm] = useState(settings);
-  const update = (k, v) => setForm({ ...form, [k]: v });
-  const updateAutomation = (k, v) => setForm({ ...form, automation: { ...form.automation, [k]: v } });
-  const updateAvailability = (next) => setForm({ ...form, agent_availability: next });
-  const save = async () => { await saveSettings(form); showToast('Settings saved'); };
+  const [dirty, setDirty] = useState(false);
+
+  // Re-sync the form when the settings prop changes from outside — e.g. when
+  // the app's initial loadAll() returns AFTER the Settings page first mounts.
+  // Without this, the form keeps its stale initial state (often defaults) and
+  // the next Save can overwrite real DB values with empty defaults. The
+  // `dirty` flag prevents clobbering in-progress edits if a realtime update
+  // happens to fire while the user is typing.
+  useEffect(() => {
+    if (dirty) return;
+    setForm(settings);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
+
+  const markDirty = (next) => { setDirty(true); setForm(next); };
+  const update = (k, v) => markDirty({ ...form, [k]: v });
+  const updateAutomation = (k, v) => markDirty({ ...form, automation: { ...form.automation, [k]: v } });
+  const updateAvailability = (next) => markDirty({ ...form, agent_availability: next });
+  const save = async () => {
+    await saveSettings(form);
+    setDirty(false);
+    showToast('Settings saved');
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
