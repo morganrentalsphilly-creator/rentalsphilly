@@ -12669,6 +12669,22 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   const [aiSuggestions, setAiSuggestions] = useState({});
   const [aiDismissed, setAiDismissed] = useState({});
   const scrollerRef = useRef(null);
+  // Per-lead composer drafts. Saved to localStorage so a half-typed reply
+  // survives switching threads OR refreshing the page mid-compose. Cleared
+  // automatically after a successful send. Lives outside React state so it
+  // doesn't trigger re-renders on every keystroke.
+  const DRAFTS_KEY = 'rp_inbox_drafts_v1';
+  const draftsRef = useRef({});
+  // Hydrate drafts from localStorage on first mount.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFTS_KEY);
+      if (raw) draftsRef.current = JSON.parse(raw) || {};
+    } catch {}
+  }, []);
+  const persistDrafts = () => {
+    try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(draftsRef.current)); } catch {}
+  };
 
   // User templates (live-edited in Settings).
   const userTemplates = settings?.quickReplyTemplates || DEFAULT_AGENT_SETTINGS.quickReplyTemplates;
@@ -12739,6 +12755,43 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     }
     return visibleThreads[0] || null;
   }, [threads, visibleThreads, selectedThreadId]);
+
+  // ---- COMPOSER DRAFT PERSISTENCE ----
+  // When the active thread changes, swap in that lead's saved draft (or
+  // empty if none). On every keystroke, save the current composer body to
+  // draftsRef + localStorage. Means Morgan can switch between two leads
+  // mid-conversation without losing what she had typed in either.
+  const activeLeadId = activeThread?.lead.id;
+  useEffect(() => {
+    if (!activeLeadId) {
+      setComposerBody('');
+      setComposerSubject('');
+      return;
+    }
+    const saved = draftsRef.current[activeLeadId];
+    setComposerBody(saved?.body || '');
+    setComposerSubject(saved?.subject || '');
+    if (saved?.channel) setComposerChannel(saved.channel);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLeadId]);
+  useEffect(() => {
+    if (!activeLeadId) return;
+    if (!composerBody && !composerSubject) {
+      // Empty draft — clear the key entirely so localStorage doesn't grow.
+      if (draftsRef.current[activeLeadId]) {
+        delete draftsRef.current[activeLeadId];
+        persistDrafts();
+      }
+      return;
+    }
+    draftsRef.current[activeLeadId] = {
+      body: composerBody,
+      subject: composerSubject,
+      channel: composerChannel,
+      updatedAt: new Date().toISOString(),
+    };
+    persistDrafts();
+  }, [activeLeadId, composerBody, composerSubject, composerChannel]);
 
   // Inbox keyboard shortcuts.
   //   j / ↓  → next visible thread
@@ -12941,11 +12994,37 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           timestamp: new Date().toISOString(),
           message: `${composerChannel === 'sms' ? 'SMS' : 'Email'} sent (from inbox)`,
         }],
-        raw: { ...(lead.raw || {}), inbox_last_read_at: new Date().toISOString() },
+        // Mark the thread as handled too — we just replied, so it shouldn't
+        // sit in the "needs reply" queue anymore. Without this, the just-
+        // replied-to thread would re-surface in the queue every time the
+        // page re-renders, which is confusing right after sending.
+        raw: {
+          ...(lead.raw || {}),
+          inbox_last_read_at: new Date().toISOString(),
+          inbox_dismissed_at: new Date().toISOString(),
+        },
       });
       setComposerBody('');
       setComposerSubject('');
       showToast(`${composerChannel === 'sms' ? 'SMS' : 'Email'} sent`);
+
+      // ---- AUTO-ADVANCE TO NEXT NEEDS-REPLY THREAD ----
+      // After a successful send, jump to the next thread that still needs
+      // a reply (inbound > outbound, not yet handled). Lets Morgan clear
+      // an inbox in a steady rhythm without manually picking each thread.
+      // Skips silently if there isn't a next thread or if she's not on the
+      // "needs-reply" filter (would be disorienting on the "all" filter).
+      if (filter === 'needs-reply') {
+        const next = visibleThreads.find(
+          (t) => t.lead.id !== lead.id && t.needsReply
+        );
+        if (next) {
+          setSelectedThreadId(next.lead.id);
+        } else {
+          // Inbox-zero moment — celebrate it.
+          showToast('Inbox zero ✓');
+        }
+      }
     } catch (err) {
       console.error('[inbox send]', err);
       showToast({ message: `Send failed — ${err.message}`, kind: 'error' });
