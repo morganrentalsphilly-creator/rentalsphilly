@@ -10205,6 +10205,11 @@ function CloseStageModal({ stageId, onClose, onConfirm, showToast }) {
 // and clicks "Send scheduling link" to enable phase 2 (the time picker).
 function SchedulingLinkPanel({ lead, updateLead, showToast }) {
   const [busy, setBusy] = useState(false);
+  // Sync re-entry lock. Without this, a fast double-tap on "Send scheduling
+  // link" would fire two SMS + two emails (different idempotencyKey because
+  // Date.now() differs) and create two activity rows. The async setBusy
+  // can't catch the second tap before React re-renders.
+  const sendInFlightRef = useRef(false);
   // Agent-side address entry — for the (very common) case where the lead
   // texts Morgan back the addresses they want to tour instead of clicking
   // through /c/[token] to use the picker. Lets Morgan paste/type those
@@ -10241,6 +10246,8 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
       showToast({ message: 'Add at least one address before sending', kind: 'error' });
       return;
     }
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setBusy(true);
     // Generate a curated_token if the lead doesn't have one. This is the
     // path key for the /c/[token] page that hosts the time-picker UI.
@@ -10268,6 +10275,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
       if (!smsResult.ok && smsResult.error !== 'opted_out') {
         showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
         setBusy(false);
+        sendInFlightRef.current = false;
         return;
       }
       await sendEmail({
@@ -10315,6 +10323,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
       showToast({ message: 'Send failed', kind: 'error' });
     } finally {
       setBusy(false);
+      sendInFlightRef.current = false;
     }
   };
 
@@ -10479,6 +10488,11 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
   });
   const [agentSuggestOpen, setAgentSuggestOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Sync re-entry lock — async setBusy can be bypassed by a fast double-tap
+  // on Send, which would fire two SMS + two emails for the same application
+  // link. Application links are high-stakes (lead expects ONE message with
+  // ONE link), so dedup here is important.
+  const sendInFlightRef = useRef(false);
 
   // Build an address book from every lead's prior application_link.listing_agent.
   // De-dup by lowercased email (or name+brokerage if no email). Sorted by most-
@@ -10553,6 +10567,8 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
       showToast({ message: mode === 'rentspree' ? 'Set your RentSpree dashboard URL in Settings → Integrations first.' : 'Paste a valid application URL first.', kind: 'error' });
       return;
     }
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setBusy(true);
     const { sms, emailSubject, emailBody } = buildMessages();
     try {
@@ -10566,6 +10582,7 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
       if (!smsResult.ok && smsResult.error !== 'opted_out') {
         showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
         setBusy(false);
+        sendInFlightRef.current = false;
         return;
       }
       await sendEmail({
@@ -10601,8 +10618,10 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
     } catch (err) {
       console.error('[application link]', err);
       showToast({ message: `Send failed: ${err.message}`, kind: 'error' });
+    } finally {
+      setBusy(false);
+      sendInFlightRef.current = false;
     }
-    setBusy(false);
   };
 
   const updateAgent = (k, v) => setListingAgent((prev) => ({ ...prev, [k]: v }));
@@ -10954,6 +10973,10 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
 function CuratedLinkPanel({ lead, updateLead, showToast }) {
   const [url, setUrl] = useState(lead.raw?.curated_portal_url || '');
   const [busy, setBusy] = useState(false);
+  // Sync re-entry lock — same async-setBusy race pattern. A double-tap on
+  // "Send curated link" would fire two SMS + two emails (different
+  // idempotencyKey, different Date.now()) and create two activity rows.
+  const sendInFlightRef = useRef(false);
   const alreadySent = !!lead.curatedLinkSentAt;
   const firstName = (lead.fullName || '').split(' ')[0];
 
@@ -10970,6 +10993,8 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       showToast('Paste a valid portal URL first');
       return;
     }
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setBusy(true);
 
     const token = lead.raw?.curated_token || (typeof crypto !== 'undefined' && crypto.randomUUID
@@ -10999,6 +11024,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       if (!smsResult.ok && smsResult.error !== 'opted_out') {
         showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
         setBusy(false);
+        sendInFlightRef.current = false;
         return;
       }
       await sendEmail({
@@ -11040,6 +11066,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       showToast({ message: 'Send failed — check logs', kind: 'error' });
     } finally {
       setBusy(false);
+      sendInFlightRef.current = false;
     }
   };
 
@@ -15978,6 +16005,12 @@ ${settings.agentEmail || ''}` : '';
   const [copied, setCopied] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState(null); // 'sent' | 'failed'
+  // Sync re-entry locks for both Send-via-Resend and Log-only flows. Async
+  // setState can't catch a fast Cmd+Enter or double-tap before React
+  // re-renders — these refs flip synchronously. Each flow has its own ref
+  // so a failed send doesn't lock the log-only path.
+  const sendEmailInFlightRef = useRef(false);
+  const submitInFlightRef = useRef(false);
 
   // Update edited fields when activeListing changes
   useEffect(() => {
@@ -15998,6 +16031,8 @@ ${settings.agentEmail || ''}` : '';
   // Actually send the email via Resend (logged in lead's inbox).
   const handleSendEmail = async () => {
     if (!activeListing || !editedTo) return;
+    if (sendEmailInFlightRef.current) return;
+    sendEmailInFlightRef.current = true;
     setSending(true);
     try {
       const res = await authedFetch('/api/send-email', {
@@ -16015,7 +16050,6 @@ ${settings.agentEmail || ''}` : '';
       const data = await res.json();
       if (!res.ok || !data.ok) {
         setSendStatus('failed');
-        setSending(false);
         showToast?.({ message: `Email send failed: ${data.error || 'unknown error'}`, kind: 'error' });
         return;
       }
@@ -16033,16 +16067,22 @@ ${settings.agentEmail || ''}` : '';
     } catch (err) {
       setSendStatus('failed');
       showToast?.({ message: `Send failed: ${err.message}`, kind: 'error' });
+    } finally {
+      setSending(false);
+      sendEmailInFlightRef.current = false;
     }
-    setSending(false);
   };
 
   // Track submitting state so a fast double-click doesn't create two
   // submission rows (each with its own 3-day + 7-day follow-up tasks → 4
-  // duplicate tasks in the lead's Today queue).
+  // duplicate tasks in the lead's Today queue). Sync ref backs up the
+  // async setSubmitting so a double-tap within the same React batch can't
+  // sneak through.
   const [submitting, setSubmitting] = useState(false);
   const handleSubmit = async () => {
     if (!activeListing || submitting) return;
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
     setSubmitting(true);
     try {
       await onSubmit({
@@ -16057,6 +16097,7 @@ ${settings.agentEmail || ''}` : '';
       showToast?.({ message: `Couldn't log submission: ${err.message}`, kind: 'error' });
     } finally {
       setSubmitting(false);
+      submitInFlightRef.current = false;
     }
   };
 
