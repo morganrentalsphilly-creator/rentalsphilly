@@ -121,27 +121,55 @@ export async function POST(request) {
       }
     }
     if (!lead) {
-      // Unknown number — log as an orphan inbound so we can backfill later.
-      // We store it as a row with lead_id null. (The leads table FK should allow this;
-      // if not, we'll just log to console.)
+      // Unknown number — auto-create a stub lead so the message has a home
+      // in the inbox. Without this, inbound SMS from any phone not already
+      // on a lead record would be dropped on the floor (the lead_id NOT NULL
+      // constraint would either reject the message or, worse, accept it but
+      // leave it invisible to the inbox UI which filters by lead).
+      //
+      // The stub is intentionally minimal: phone-only, stage='new', source
+      // tagged so Morgan can filter "Cold SMS" leads. No welcome flow fires
+      // (we only fire welcome for intake-form submissions). Morgan sees the
+      // new lead in the Today queue + the inbound message in the inbox
+      // thread, can decide if it's a real prospect, and either fill in
+      // their info or hard-delete.
+      const stubId = `lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const stubName = `Unknown (${from})`;
       try {
-        await db.from('messages').insert({
-          lead_id: null,
-          channel: 'sms',
-          direction: 'inbound',
-          status: 'received',
-          delivery_status: 'received',
-          to: to,
-          via: 'twilio',
-          body,
-          kind: 'unknown_sender',
-          twilio_sid: messageSid,
+        const { error: leadErr } = await db.from('leads').insert({
+          id: stubId,
+          full_name: stubName,
+          phone: from,
+          stage: 'new',
+          bucket: 'GCMS',  // placeholder; Morgan can re-classify after gathering info
+          raw: {
+            source: 'Cold SMS',
+            notes: `Auto-created from inbound SMS on ${new Date().toISOString()}. Body: ${body.slice(0, 200)}`,
+            tags: ['Cold SMS'],
+          },
         });
+        if (leadErr) {
+          console.error('[twilio inbound] stub lead create failed', leadErr);
+          return twiml();
+        }
+        lead = { id: stubId, full_name: stubName, phone: from, opted_out: false };
+        // Best-effort activity row so the inbox shows what happened.
+        try {
+          await db.from('activities').insert({
+            id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            lead_id: stubId,
+            type: 'lead-created',
+            message: 'Lead created from incoming SMS',
+          });
+        } catch {}
+        console.log('[twilio inbound] created stub lead for unknown sender', { from, stubId });
       } catch (err) {
-        console.warn('[twilio inbound] orphan inbound (lead_id NOT NULL?)', err?.message);
+        console.error('[twilio inbound] stub lead create threw', err?.message);
+        return twiml();
       }
-      console.log('[twilio inbound] no matching lead', { from, bodyPreview: body.slice(0, 60) });
-      return twiml();
+      // Fall through to the normal insert + STOP/HELP handling — `lead` is
+      // now set so the rest of the webhook works as if this were a known
+      // sender.
     }
 
     // 4. Insert the inbound message row.

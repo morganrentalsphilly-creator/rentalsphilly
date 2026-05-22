@@ -12522,11 +12522,26 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
                 if (lead.budgetMin && lead.budgetMax) {
                   chips.push({ label: 'Budget', value: `${fmtCurrency(Number(lead.budgetMin))}–${fmtCurrency(Number(lead.budgetMax))}/mo` });
                 }
-                if (lead.beds || lead.baths) {
-                  chips.push({
-                    label: 'Beds/baths',
-                    value: `${lead.beds === '0' ? 'Studio' : `${lead.beds}+ bd`}${lead.baths ? ` · ${lead.baths}+ ba` : ''}`,
-                  });
+                if (lead.beds || lead.baths || lead.bedsMin || lead.bathsMin) {
+                  // Render the bed/bath display from bedsMin/bedsMax when
+                  // they're set (new picker), with a clean range like
+                  // "1–2 bd". Falls back to the legacy "1+ bd" display for
+                  // leads created before the range picker existed. Studio
+                  // (0 beds) gets its own friendly label.
+                  const fmtBedBath = (min, max, legacy, unit) => {
+                    const lo = min || legacy || null;
+                    const hi = max || null;
+                    if (!lo && !hi) return null;
+                    if (lo === '0' && (!hi || hi === '0')) return 'Studio';
+                    if (lo && hi && lo === hi) return `${lo} ${unit}`;
+                    if (lo && hi) return `${lo}–${hi} ${unit}`;
+                    if (lo && !hi) return `${lo}+ ${unit}`;
+                    return null;
+                  };
+                  const bedStr = fmtBedBath(lead.bedsMin, lead.bedsMax, lead.beds, 'bd');
+                  const bathStr = fmtBedBath(lead.bathsMin, lead.bathsMax, lead.baths, 'ba');
+                  const combined = [bedStr, bathStr].filter(Boolean).join(' · ');
+                  if (combined) chips.push({ label: 'Beds/baths', value: combined });
                 }
                 if (lead.moveInDate) chips.push({ label: 'Move-in', value: fmtDate(lead.moveInDate) });
                 if (lead.areas) chips.push({ label: 'Areas', value: lead.areas });
