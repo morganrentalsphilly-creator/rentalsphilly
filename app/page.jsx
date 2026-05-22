@@ -1339,6 +1339,21 @@ function hydrateProperties(rows) {
 
 export default function App() {
   const [view, setView] = useState('landing');
+  // Deep-link: visiting /?start=1 (or /?intake) drops the user straight into
+  // the intake form, skipping the landing page. Useful for SMS, email
+  // signatures, business cards, social bios — anywhere we want one tap
+  // between the prospect and the first question. We read window.location on
+  // mount to avoid SSR/hydration mismatch.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.has('start') || sp.has('intake')) {
+        setView('intake');
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [leads, setLeads] = useState([]);
   const [slots, setSlots] = useState([]);
   const [waitlist, setWaitlist] = useState([]);
@@ -3830,6 +3845,10 @@ function IntakeForm({ onSubmit, onBack }) {
       )
     },
     {
+      // Tour-type is now the final step. Note: we removed a trailing
+      // "How did you hear about us?" step — it was optional and lengthened
+      // a flow we want to keep ruthlessly short. Lead.source still defaults
+      // to 'Unknown' in addLead so nothing downstream breaks.
       title: 'How would you like to tour?',
       subtitle: 'Pick what works best for you.',
       valid: () => !!data.tourType,
@@ -3845,19 +3864,6 @@ function IntakeForm({ onSubmit, onBack }) {
               <div className="font-semibold text-slate-900 mb-1">{o.title}</div>
               <div className="text-xs text-slate-500 leading-relaxed">{o.desc}</div>
             </button>
-          ))}
-        </div>
-      )
-    },
-    {
-      title: 'How did you hear about us?',
-      subtitle: 'Optional — helps us know what works.',
-      valid: () => true,
-      optional: true,
-      fields: (
-        <div className="grid grid-cols-2 gap-2">
-          {['Zillow', 'Apartments.com', 'Google', 'Instagram', 'Facebook', 'Referral', 'Walked in', 'Other'].map((s) => (
-            <ChoiceButton key={s} selected={data.source === s} onClick={() => update('source', s)}>{s}</ChoiceButton>
           ))}
         </div>
       )
@@ -3886,6 +3892,19 @@ function IntakeForm({ onSubmit, onBack }) {
     return () => clearTimeout(handle);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, data, submitting]);
+
+  // Scroll to top on every step change. Without this, after auto-advancing
+  // on a phone the user is left looking at the bottom of the screen (where
+  // the Continue button just was) and the new step's title is off-screen.
+  // Also dismisses the iOS keyboard if it was open, which prevents the
+  // sticky-footer Continue button from jumping under the keyboard hood.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (typeof document !== 'undefined' && document.activeElement && 'blur' in document.activeElement) {
+      try { document.activeElement.blur(); } catch {}
+    }
+  }, [step]);
 
   const handleNext = async () => {
     if (!s.valid() || submitting) return;
