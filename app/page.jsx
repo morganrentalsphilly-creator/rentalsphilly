@@ -7003,33 +7003,42 @@ function AddTaskQuickForm({ leads, updateLead, showToast }) {
 // ⌘K command palette — fuzzy-jump to any lead by name / email / phone, and
 // quick-jump to top-level views. Opens with ⌘K (Mac) or Ctrl+K (Windows/Linux),
 // closes with Esc. Arrow keys navigate results, Enter opens.
-function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
+function CommandPalette({ leads, onClose, onSelectLead, setSubview, onAddLead, onShowHelp }) {
   const [query, setQuery] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef(null);
 
-  // Top-level views always available as quick jumps. These show first when
-  // the palette is empty (so opening + Enter goes to the first view).
+  // Top-level views — quick jumps to admin tabs. Removed the `g x` hints
+  // that used to appear here; those keyboard sequences were never actually
+  // wired up and showing a stale hint is worse than showing none.
   const viewCommands = useMemo(() => ([
-    { type: 'view', id: 'today', label: 'Go to Today', hint: 'g t' },
-    { type: 'view', id: 'inbox', label: 'Go to Inbox', hint: 'g i' },
-    { type: 'view', id: 'pipeline', label: 'Go to Pipeline', hint: 'g p' },
-    { type: 'view', id: 'leads', label: 'Go to Leads', hint: 'g l' },
-    { type: 'view', id: 'tours', label: 'Go to Tours', hint: 'g c' },
-    { type: 'view', id: 'settings', label: 'Go to Settings', hint: 'g s' },
+    { type: 'view', id: 'today',    label: 'Go to Today',    icon: Sparkles },
+    { type: 'view', id: 'inbox',    label: 'Go to Inbox',    icon: Inbox },
+    { type: 'view', id: 'pipeline', label: 'Go to Pipeline', icon: Activity },
+    { type: 'view', id: 'leads',    label: 'Go to Leads',    icon: Users },
+    { type: 'view', id: 'tours',    label: 'Go to Tours',    icon: CalendarDays },
+    { type: 'view', id: 'settings', label: 'Go to Settings', icon: Settings },
   ]), []);
+
+  // Action commands — things Morgan does that aren't a "go to" or "jump to
+  // lead". Discoverable via Cmd+K so power users don't have to remember
+  // every individual shortcut.
+  const actionCommands = useMemo(() => ([
+    { type: 'action', id: 'add-lead',  label: 'Add a new lead',         hint: 'n', run: onAddLead },
+    { type: 'action', id: 'show-help', label: 'Show keyboard shortcuts', hint: '?', run: onShowHelp },
+  ].filter((a) => typeof a.run === 'function')), [onAddLead, onShowHelp]);
 
   // Filter leads + commands against the query. Match name / email / phone.
   // Score by where the match lands (start-of-name > start-of-word > substring).
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
-      // Empty query: show top 8 most recently-created leads + all views.
+      // Empty query: top 8 recent leads, then actions, then views.
       const recent = [...leads]
         .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
         .slice(0, 8)
         .map((l) => ({ type: 'lead', lead: l }));
-      return [...recent, ...viewCommands];
+      return [...recent, ...actionCommands, ...viewCommands];
     }
     const scored = [];
     for (const l of leads) {
@@ -7050,8 +7059,9 @@ function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
     const leadResults = scored.slice(0, 10).map(({ type, lead }) => ({ type, lead }));
 
     const viewResults = viewCommands.filter((v) => v.label.toLowerCase().includes(q));
-    return [...leadResults, ...viewResults];
-  }, [leads, query, viewCommands]);
+    const actionResults = actionCommands.filter((a) => a.label.toLowerCase().includes(q));
+    return [...leadResults, ...actionResults, ...viewResults];
+  }, [leads, query, viewCommands, actionCommands]);
 
   // Reset active index when the query changes so the first result is always
   // highlighted after typing.
@@ -7077,6 +7087,8 @@ function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
         onSelectLead(r.lead.id);
       } else if (r.type === 'view') {
         setSubview(r.id);
+      } else if (r.type === 'action') {
+        r.run?.();
       }
       onClose();
     }
@@ -7110,6 +7122,7 @@ function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
               const onClick = () => {
                 if (r.type === 'lead') onSelectLead(r.lead.id);
                 else if (r.type === 'view') setSubview(r.id);
+                else if (r.type === 'action') r.run?.();
                 onClose();
               };
               if (r.type === 'lead') {
@@ -7133,7 +7146,26 @@ function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
                   </button>
                 );
               }
+              if (r.type === 'action') {
+                return (
+                  <button
+                    key={`action-${r.id}`}
+                    onMouseEnter={onMouseEnter}
+                    onClick={onClick}
+                    className={`w-full text-left flex items-center gap-3 px-4 py-2.5 ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                  >
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0" style={{ backgroundColor: 'var(--brand-gold-soft)', color: 'var(--brand-gold)' }}>
+                      <Sparkles className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="flex-1 text-sm text-slate-900">{r.label}</div>
+                    {r.hint && (
+                      <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded shrink-0">{r.hint}</kbd>
+                    )}
+                  </button>
+                );
+              }
               // View row
+              const ViewIcon = r.icon || ArrowRight;
               return (
                 <button
                   key={`view-${r.id}`}
@@ -7142,10 +7174,9 @@ function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
                   className={`w-full text-left flex items-center gap-3 px-4 py-2.5 ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
                 >
                   <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center shrink-0">
-                    <ArrowRight className="w-3.5 h-3.5" />
+                    <ViewIcon className="w-3.5 h-3.5" />
                   </div>
                   <div className="flex-1 text-sm text-slate-900">{r.label}</div>
-                  <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded shrink-0">{r.hint}</kbd>
                 </button>
               );
             })
@@ -7567,6 +7598,8 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
           onClose={() => setShowCommandPalette(false)}
           onSelectLead={(id) => setSelectedLeadId(id)}
           setSubview={setSubview}
+          onAddLead={() => setAddLeadModal(true)}
+          onShowHelp={() => setShowShortcutHelp(true)}
         />
       )}
 
