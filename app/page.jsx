@@ -5872,7 +5872,9 @@ function KeyboardShortcutHelp({ onClose }) {
     { keys: ['g', 's'], label: 'Go to Settings' },
     { keys: ['1-9'],    label: 'Jump to Focus Now row (Today view)' },
     { keys: ['←', '→'], label: 'Prev / Next lead (when drawer is open)' },
-    { keys: ['j', 'k'], label: 'Prev / Next lead (when drawer is open)' },
+    { keys: ['j', 'k'], label: 'Prev / Next lead or inbox thread' },
+    { keys: ['c'],      label: 'Focus composer (Inbox)' },
+    { keys: ['r'],      label: 'Refresh AI suggested reply (Inbox)' },
     { keys: ['⌘', 'Enter'], label: 'Send message in inbox composer' },
     { keys: ['Esc'],    label: 'Close drawer or overlay' },
     { keys: ['?'],      label: 'Toggle this help' },
@@ -10348,6 +10350,55 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     return visibleThreads[0] || null;
   }, [threads, visibleThreads, selectedThreadId]);
 
+  // Inbox keyboard shortcuts.
+  //   j / ↓  → next visible thread
+  //   k / ↑  → previous visible thread
+  //   c      → focus the composer textarea
+  //   r      → refresh AI suggested reply (when one is loaded/loadable)
+  //
+  // Ignored when the user is typing in an input/textarea so editing fields
+  // doesn't accidentally navigate. Modifier keys pass through to the browser.
+  useEffect(() => {
+    const isTyping = (el) => {
+      if (!el) return false;
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      return !!el.isContentEditable;
+    };
+    const handler = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTyping(document.activeElement)) return;
+      const currentIdx = activeThread ? visibleThreads.findIndex((t) => t.lead.id === activeThread.lead.id) : -1;
+      if ((e.key === 'j' || e.key === 'ArrowDown') && visibleThreads.length > 0) {
+        e.preventDefault();
+        const next = Math.min(visibleThreads.length - 1, currentIdx + 1);
+        setSelectedThreadId(visibleThreads[next].lead.id);
+      } else if ((e.key === 'k' || e.key === 'ArrowUp') && visibleThreads.length > 0) {
+        e.preventDefault();
+        const prev = Math.max(0, currentIdx === -1 ? 0 : currentIdx - 1);
+        setSelectedThreadId(visibleThreads[prev].lead.id);
+      } else if (e.key === 'c' && activeThread) {
+        e.preventDefault();
+        // Find the composer textarea inside the active thread pane and focus it.
+        const ta = document.querySelector('[data-inbox-composer] textarea');
+        if (ta) ta.focus();
+      } else if (e.key === 'r' && activeThread) {
+        // Refresh AI suggestion: clear the cache entry for the current key
+        // so the auto-fetch effect re-runs.
+        const msgs = (activeThread.lead.messages || []).filter((m) => !m.internal);
+        const last = msgs[msgs.length - 1];
+        if (last) {
+          e.preventDefault();
+          const key = `${activeThread.lead.id}::${last.id}`;
+          setAiSuggestions((prev) => { const next = { ...prev }; delete next[key]; return next; });
+          setAiDismissed((prev) => { const next = { ...prev }; delete next[key]; return next; });
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [activeThread, visibleThreads]);
+
   // Mark active thread as read on selection.
   useEffect(() => {
     if (!activeThread || !activeThread.isUnread) return;
@@ -10736,8 +10787,9 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                 </div>
               )}
 
-              {/* COMPOSER */}
-              <div className="border-t border-slate-200 bg-white p-3 space-y-2">
+              {/* COMPOSER. data-inbox-composer hook lets the `c` keyboard
+                  shortcut find + focus the textarea from anywhere on the page. */}
+              <div data-inbox-composer className="border-t border-slate-200 bg-white p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <div className="flex rounded-full bg-slate-100 p-0.5">
                     <button onClick={() => setComposerChannel('sms')}
