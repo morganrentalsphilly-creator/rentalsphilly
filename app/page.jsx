@@ -7163,42 +7163,75 @@ function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
 
 // Keyboard shortcut help overlay — opened with "?" key.
 function KeyboardShortcutHelp({ onClose }) {
-  const rows = [
-    { keys: ['⌘', 'K'],  label: 'Quick search — jump to any lead or view' },
-    { keys: ['/'],      label: 'Focus global search' },
-    { keys: ['g', 'i'], label: 'Go to Inbox' },
-    { keys: ['g', 't'], label: 'Go to Today' },
-    { keys: ['g', 'p'], label: 'Go to Pipeline' },
-    { keys: ['g', 'l'], label: 'Go to Leads' },
-    { keys: ['g', 'c'], label: 'Go to Tours (Calendar)' },
-    { keys: ['g', 's'], label: 'Go to Settings' },
-    { keys: ['n'],      label: 'Add a lead (walk-in / phone)' },
-    { keys: ['1-9'],    label: 'Jump to Focus Now row (Today view)' },
-    { keys: ['←', '→'], label: 'Prev / Next lead (when drawer is open)' },
-    { keys: ['j', 'k'], label: 'Prev / Next lead or inbox thread' },
-    { keys: ['c'],      label: 'Focus composer (Inbox)' },
-    { keys: ['r'],      label: 'Refresh AI suggested reply (Inbox)' },
-    { keys: ['e'],      label: 'Mark thread handled (Inbox)' },
-    { keys: ['⌘', 'Enter'], label: 'Send message in inbox composer' },
-    { keys: ['Esc'],    label: 'Close drawer or overlay' },
-    { keys: ['?'],      label: 'Toggle this help' },
+  // Organized by surface — same layout as how Morgan thinks about her day.
+  // Listed only shortcuts that are actually wired. (Previous version
+  // advertised `g i / g t / g p / g l / g c / g s` "go to view" sequences
+  // that were never implemented — those have been removed.)
+  const sections = [
+    {
+      title: 'Anywhere',
+      rows: [
+        { keys: ['⌘', 'K'],     label: 'Quick search — jump to any lead' },
+        { keys: ['n'],          label: 'Add a lead (walk-in / phone / referral)' },
+        { keys: ['?'],          label: 'Toggle this help' },
+        { keys: ['Esc'],        label: 'Close drawer or overlay' },
+      ],
+    },
+    {
+      title: 'Inbox',
+      rows: [
+        { keys: ['j', '↓'],     label: 'Next thread' },
+        { keys: ['k', '↑'],     label: 'Previous thread' },
+        { keys: ['c'],          label: 'Focus composer' },
+        { keys: ['r'],          label: 'Refresh AI suggested reply' },
+        { keys: ['e'],          label: 'Mark thread handled' },
+        { keys: ['⌘', 'Enter'], label: 'Send (auto-advances to next needs-reply)' },
+      ],
+    },
+    {
+      title: 'Lead detail',
+      rows: [
+        { keys: ['j', '→'],     label: 'Next lead in the list' },
+        { keys: ['k', '←'],     label: 'Previous lead in the list' },
+        { keys: ['t'],          label: 'Open text (SMS) composer' },
+        { keys: ['e'],          label: 'Open email composer' },
+        { keys: ['1'],          label: 'Overview tab' },
+        { keys: ['2'],          label: 'Messages tab' },
+        { keys: ['3'],          label: 'Pipeline tab' },
+        { keys: ['4'],          label: 'Activity tab' },
+      ],
+    },
+    {
+      title: 'Today view',
+      rows: [
+        { keys: ['1-9'],        label: 'Jump to that Focus Now row' },
+      ],
+    },
   ];
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div className="font-semibold text-slate-900">Keyboard shortcuts</div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
         </div>
-        <div className="space-y-2">
-          {rows.map((r) => (
-            <div key={r.label} className="flex items-center justify-between gap-3 py-1">
-              <span className="text-sm text-slate-700">{r.label}</span>
-              <div className="flex items-center gap-1">
-                {r.keys.map((k, i) => (
-                  <span key={i} className="inline-block min-w-[22px] text-center px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-[11px] font-mono font-semibold text-slate-700">
-                    {k}
-                  </span>
+        <div className="space-y-5">
+          {sections.map((s) => (
+            <div key={s.title}>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">{s.title}</div>
+              <div className="space-y-1.5">
+                {s.rows.map((r) => (
+                  <div key={r.label} className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-slate-700">{r.label}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {r.keys.map((k, i) => (
+                        <span key={i} className="inline-block min-w-[22px] text-center px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-[11px] font-mono font-semibold text-slate-700">
+                          {k}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
