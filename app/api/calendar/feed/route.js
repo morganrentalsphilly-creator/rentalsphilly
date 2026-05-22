@@ -29,14 +29,36 @@ function fmtUtc(d) {
     'T' + pad(d.getUTCHours()) + pad(d.getUTCMinutes()) + '00Z';
 }
 
+// Parse a tour date+time as America/New_York wall-clock → returns UTC Date.
+//
+// CRITICAL: tours are stored as `date` ('YYYY-MM-DD') + `time` ('2:00 PM')
+// representing Philadelphia local time. The previous implementation used
+// `new Date(date + 'T00:00:00').setHours(...)` which interprets in the
+// SERVER's local TZ — Vercel runs in UTC by default, so a 2:00 PM ET tour
+// showed up in Morgan's phone calendar as 10:00 AM ET (4-hour shift in DST).
+function nyOffsetHours(dateStr) {
+  // Hours UTC is ahead of America/New_York on this date. EDT → 4, EST → 5.
+  const sample = new Date(`${dateStr}T12:00:00Z`);
+  const tz = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    timeZoneName: 'short',
+  }).formatToParts(sample).find((p) => p.type === 'timeZoneName')?.value;
+  return tz === 'EDT' ? 4 : 5;
+}
+
 function parseStart(date, time) {
   if (!date || !time) return null;
-  const [t, ampm] = time.split(' ');
-  let [h, m] = t.split(':').map(Number);
-  if (ampm === 'PM' && h !== 12) h += 12;
-  if (ampm === 'AM' && h === 12) h = 0;
-  const d = new Date(date + 'T00:00:00');
-  d.setHours(h, m || 0, 0, 0);
+  const m = String(time).trim().match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const ap = (m[3] || '').toUpperCase();
+  if (ap === 'PM' && h < 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCHours(h + nyOffsetHours(date), min, 0, 0);
   return d;
 }
 

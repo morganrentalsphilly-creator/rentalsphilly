@@ -60,11 +60,18 @@ async function runReminders(db) {
   // Tour rows have separate `date` (yyyy-mm-dd) and `time` columns based on
   // the page code, so we compute a starts_at on the fly via a SQL expression.
   // Simpler: pull a generous slice of upcoming tours and filter in JS.
+  // Pull a 3-day window starting from YESTERDAY's UTC date. Yesterday catches
+  // any late-evening ET tour whose stored `date` is still "today" in ET but
+  // already rolled to "tomorrow" in UTC (the cron runs in UTC). The parser
+  // below filters to the actual reminder windows, so the wider date range is
+  // cheap and bulletproof against TZ rollover.
+  const yesterdayStr = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+  const dayAfterStr = new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10);
   const { data: tours, error } = await db
     .from('tours')
     .select('id, lead_id, date, time, status, reminders_sent')
-    .gte('date', now.toISOString().slice(0, 10))
-    .lte('date', new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10));
+    .gte('date', yesterdayStr)
+    .lte('date', dayAfterStr);
 
   if (error) {
     console.error('[cron] reminder query failed', error);
@@ -152,16 +159,47 @@ async function runReminders(db) {
   return { sent, errors };
 }
 
+// Parse a tour's date + time as America/New_York wall-clock and return a Date
+// object representing that moment in UTC.
+//
+// CRITICAL: Tours are stored as separate `date` ('YYYY-MM-DD') and `time`
+// ('2:00 PM') columns representing Philadelphia local time — that's what
+// Morgan typed when she booked. The previous implementation used
+// `new Date(\`${date} ${time}\`)` which parses in the SERVER's local
+// timezone. Vercel functions default to UTC, so a 2:00 PM ET tour was being
+// treated as 2:00 PM UTC — making the 24h reminder fire 4 hours BEFORE it
+// should (or 5h in winter / standard time). Now we explicitly:
+//   1. parse the wall-clock components
+//   2. compute the EDT/EST offset for that specific date via Intl
+//   3. construct the UTC instant the wall-clock corresponds to
+function nyOffsetHours(dateStr) {
+  // Return how many hours UTC is AHEAD of America/New_York on this date.
+  // EDT (DST, ~mid-March to early-Nov) → 4. EST → 5.
+  const sample = new Date(`${dateStr}T12:00:00Z`);
+  const tz = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    timeZoneName: 'short',
+  }).formatToParts(sample).find((p) => p.type === 'timeZoneName')?.value;
+  return tz === 'EDT' ? 4 : 5;
+}
+
 function parseTourStartsAt(date, time) {
   if (!date || !time) return null;
-  // time is like "2:00 PM" — combine with date.
-  try {
-    const d = new Date(`${date} ${time}`);
-    if (Number.isNaN(d.getTime())) return null;
-    return d;
-  } catch {
-    return null;
-  }
+  const m = String(time).trim().match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const ap = (m[3] || '').toUpperCase();
+  if (ap === 'PM' && h < 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  // Build the UTC moment by starting at the date's midnight UTC and adding
+  // (wall-clock hour + ET-to-UTC offset). setUTCHours handles day rollover
+  // when h + offset goes >= 24.
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCHours(h + nyOffsetHours(date), min, 0, 0);
+  return d;
 }
 
 async function runBlastDrain(db) {
