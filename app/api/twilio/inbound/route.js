@@ -87,14 +87,22 @@ export async function POST(request) {
     }
 
     // 3. Find or create the lead by phone.
+    //
+    // We use `.limit(1)` (not `.maybeSingle()`) because maybeSingle throws if
+    // 2+ leads share the phone — which can happen if a lead retries intake
+    // under a slightly different name. A throw here would crash the webhook,
+    // Twilio would retry-storm us with 500s, and the lead's reply would be
+    // silently lost. Ordering by created_at DESC picks the most recent lead
+    // when there's ambiguity (typically the right answer for "who texted me").
     let lead = null;
     {
       const { data } = await db
         .from('leads')
-        .select('id, full_name, phone, opted_out')
+        .select('id, full_name, phone, opted_out, created_at')
         .eq('phone', from)
-        .maybeSingle();
-      lead = data;
+        .order('created_at', { ascending: false })
+        .limit(1);
+      lead = (data && data[0]) || null;
     }
     if (!lead) {
       // Stored phones may be in legacy formats (10-digit, or `(215) 555-1234`).
@@ -105,10 +113,11 @@ export async function POST(request) {
       for (const candidate of [digits, pretty]) {
         const { data } = await db
           .from('leads')
-          .select('id, full_name, phone, opted_out')
+          .select('id, full_name, phone, opted_out, created_at')
           .eq('phone', candidate)
-          .maybeSingle();
-        if (data) { lead = data; break; }
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (data && data[0]) { lead = data[0]; break; }
       }
     }
     if (!lead) {

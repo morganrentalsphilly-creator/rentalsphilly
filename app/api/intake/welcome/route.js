@@ -165,15 +165,19 @@ export async function POST(request) {
     if (!createdAt || Date.now() - createdAt > FRESH_LEAD_WINDOW_MS) {
       return NextResponse.json({ ok: false, error: 'lead_too_old' }, { status: 403 });
     }
-    // 2) Welcome must not already be in flight / sent. Check for an existing
-    //    welcome SMS row for this lead.
+    // 2) Welcome must not already be in flight / sent. Check for any existing
+    //    welcome message row for this lead. Use `.limit(1)` (NOT
+    //    `.maybeSingle()`) because the welcome flow inserts TWO rows on a
+    //    successful run — one for SMS and one for email, both with
+    //    kind='welcome'. maybeSingle() would throw on the 2-row case, making
+    //    every retry of this endpoint return 500 instead of "alreadySent".
     const { data: existing } = await db
       .from('messages')
       .select('id')
       .eq('lead_id', lead.id)
       .eq('kind', 'welcome')
-      .maybeSingle();
-    if (existing) {
+      .limit(1);
+    if (existing && existing.length > 0) {
       return NextResponse.json({ ok: true, alreadySent: true });
     }
 

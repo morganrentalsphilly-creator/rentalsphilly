@@ -9958,27 +9958,51 @@ function CloseStageModal({ stageId, onClose, onConfirm, showToast }) {
 // and clicks "Send scheduling link" to enable phase 2 (the time picker).
 function SchedulingLinkPanel({ lead, updateLead, showToast }) {
   const [busy, setBusy] = useState(false);
+  // Agent-side address entry — for the (very common) case where the lead
+  // texts Morgan back the addresses they want to tour instead of clicking
+  // through /c/[token] to use the picker. Lets Morgan paste/type those
+  // addresses and fire the scheduling link in one step.
+  const [manualAddrs, setManualAddrs] = useState('');
+  const [editingManual, setEditingManual] = useState(false);
   const picks = Array.isArray(lead.raw?.curated_address_picks) ? lead.raw.curated_address_picks : [];
   const note = lead.raw?.curated_note;
   const schedulingSent = !!lead.raw?.scheduling_open_at;
   const timesSubmitted = !!lead.raw?.times_submitted_at;
   const firstName = (lead.fullName || '').split(' ')[0];
-  const curatedUrl = lead.curatedLinkUrl || (lead.raw?.curated_token
-    ? `${typeof window !== 'undefined' ? window.location.origin : 'https://rentalsphilly.vercel.app'}/c/${lead.raw.curated_token}`
-    : null);
 
-  if (picks.length === 0) return null;   // hidden until lead picks properties
-  // Also hide for late-stage leads — by the time you're at applied+, the
+  // Hide for late-stage leads — by the time you're at applied+, the
   // scheduling-link conversation is over.
   const lateStages = ['applied', 'leased', 'paid', 'lost', 'archived'];
   if (lateStages.includes(lead.stage || '')) return null;
 
-  const onSend = async () => {
-    if (!curatedUrl) {
-      showToast('No curated link token found');
+  // Parse the manual textarea into an array of cleaned addresses (one per
+  // line, trimmed, empties dropped).
+  const parseManualAddrs = (raw) =>
+    String(raw || '')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  // Send the scheduling link. If `nextPicks` is provided we persist those
+  // addresses to lead.raw.curated_address_picks first (covers the manual-
+  // entry path). Auto-generates a curated_token if the lead doesn't have
+  // one yet so it works even for fresh leads who never got the curated
+  // link panel send.
+  const onSend = async (nextPicks) => {
+    const addressesToSend = nextPicks || picks;
+    if (addressesToSend.length === 0) {
+      showToast({ message: 'Add at least one address before sending', kind: 'error' });
       return;
     }
     setBusy(true);
+    // Generate a curated_token if the lead doesn't have one. This is the
+    // path key for the /c/[token] page that hosts the time-picker UI.
+    const token = lead.raw?.curated_token || (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+      : Math.random().toString(36).slice(2, 18));
+    const appBase = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://rentalsphilly.vercel.app';
+    const curatedUrl = `${appBase}/c/${token}`;
+
     const smsBody = `Rentals Philly: I checked availability — pick your tour times here: ${curatedUrl}`;
     const emailSubject = 'Pick your tour times';
     const emailBody =
@@ -10007,18 +10031,29 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         idempotencyKey: `scheduling-link-email-${lead.id}-${Date.now()}`,
         automated: false,
       });
+      // Persist: token (if newly generated), the address picks (if entered
+      // manually), and the scheduling-open timestamp. We also auto-advance
+      // the stage to tour-requested so the pipeline reflects "scheduling
+      // link out, waiting on lead".
       await updateLead(lead.id, {
         raw: {
           ...(lead.raw || {}),
+          curated_token: token,
+          curated_address_picks: addressesToSend,
+          curated_submitted_at: lead.raw?.curated_submitted_at || new Date().toISOString(),
           scheduling_open_at: new Date().toISOString(),
         },
+        curatedLinkUrl: lead.curatedLinkUrl || curatedUrl,
+        stage: lead.stage === 'new' || lead.stage === 'matched' ? 'tour-requested' : lead.stage,
         activities: [...(lead.activities || []), {
           id: `a_${Date.now()}`,
           type: 'scheduling-link-sent',
           timestamp: new Date().toISOString(),
-          message: `Scheduling link sent to ${firstName} (${picks.length} properties)`,
+          message: `Scheduling link sent to ${firstName} (${addressesToSend.length} ${addressesToSend.length === 1 ? 'property' : 'properties'})`,
         }],
       });
+      setManualAddrs('');
+      setEditingManual(false);
       showToast('Scheduling link sent');
     } catch (err) {
       console.error('[scheduling link] send failed', err);
@@ -10026,6 +10061,15 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onSendManual = () => {
+    const next = parseManualAddrs(manualAddrs);
+    if (next.length === 0) {
+      showToast({ message: 'Enter at least one address (one per line)', kind: 'error' });
+      return;
+    }
+    onSend(next);
   };
 
   return (
