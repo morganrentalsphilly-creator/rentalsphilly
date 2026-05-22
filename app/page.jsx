@@ -1685,7 +1685,17 @@ export default function App() {
     return () => {
       try { supa.removeChannel(channel); } catch {}
     };
-  }, [loaded, view, session, adminSubview, selectedLeadId]);
+    // CRITICAL: deps deliberately DO NOT include adminSubview or selectedLeadId
+    // even though `settings` is read inside via closure. Those values change
+    // on routine navigation (clicking Today → Pipeline, or opening different
+    // leads). If included, the channel tears down and rebuilds on every click
+    // — and any inbound SMS arriving during the brief CLOSED window is
+    // permanently lost. We want the channel to stay open for the entire
+    // admin session. Stale settings inside the handlers is acceptable:
+    // settings rarely change, and the worst case is a toast preference that's
+    // one render behind.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, view, session]);
 
   // In the Supabase world, we only call saveLeads for bulk operations.
   // The main bulk op is "clear all" from the leads list.
