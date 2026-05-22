@@ -6311,6 +6311,47 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
+  // Smart greeting — time-of-day + first name of the agent. Falls back to
+  // "Hey" if no name is configured.
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    const word = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    const first = (settings?.agentName || '').split(' ')[0];
+    return first && first !== '[Your name]' ? `${word}, ${first}` : word;
+  }, [settings?.agentName]);
+
+  // Situation summary — what's most relevant about today's state, in one line.
+  // Skips items that are zero so we don't say "0 tours today" — keep it positive.
+  const situation = useMemo(() => {
+    const todayStrLocal = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
+    const weekAgo = now - 7 * 86400000;
+
+    const toursToday = leads.flatMap((l) => (l.tours || []))
+      .filter((t) => t.date === todayStrLocal && t.status !== 'cancelled').length;
+
+    const hotLeads = leads.filter((l) => {
+      if (isLeadSnoozed(l)) return false;
+      if (['leased', 'paid', 'lost', 'archived'].includes(l.stage)) return false;
+      return leadScore(l).label === 'A';
+    }).length;
+
+    let touchesThisWeek = 0;
+    for (const l of leads) {
+      for (const m of (l.messages || [])) {
+        if (m.internal || m.direction !== 'outbound') continue;
+        const t = new Date(m.timestamp).getTime();
+        if (t >= weekAgo && t <= now) touchesThisWeek++;
+      }
+    }
+
+    const parts = [];
+    if (toursToday > 0) parts.push(`${toursToday} tour${toursToday === 1 ? '' : 's'} today`);
+    if (hotLeads > 0) parts.push(`${hotLeads} hot lead${hotLeads === 1 ? '' : 's'}`);
+    if (touchesThisWeek > 0) parts.push(`${touchesThisWeek} touch${touchesThisWeek === 1 ? '' : 'es'} this week`);
+    return parts.join(' · ');
+  }, [leads]);
+
   // Focus Now consolidates needs-reply, new-no-curate, tour-requested, cadence,
   // and stuck leads into a single ranked queue. We only keep the Tours card
   // here because it has unique side-actions (Route in Maps + Print sheet).
@@ -6367,8 +6408,16 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
     <div className="space-y-5">
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
-          <h2 className="text-2xl font-semibold text-slate-900">Good morning</h2>
-          <p className="text-sm text-slate-500">{dateLabel}</p>
+          <h2 className="text-2xl font-semibold text-slate-900">{greeting}</h2>
+          <p className="text-sm text-slate-500">
+            {dateLabel}
+            {situation && (
+              <>
+                <span className="mx-2 text-slate-300">·</span>
+                <span className="text-slate-700">{situation}</span>
+              </>
+            )}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
           <button onClick={() => setSubview('inbox')} className="px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium inline-flex items-center gap-1.5">
