@@ -5261,6 +5261,30 @@ function HeadsUpBanner({ leads, overdueTasks, setSubview, onSelectLead }) {
     const now = Date.now();
     const out = [];
 
+    // 0. Scheduling links waiting to be sent — leads picked properties via
+    //    /c/[token] but Morgan hasn't fired the time picker yet. Highest
+    //    priority: until this goes out, the deal is stalled on Morgan.
+    const needsSchedulingLink = leads.filter((l) => {
+      if (isLeadSnoozed(l)) return false;
+      if (['leased', 'paid', 'lost', 'archived'].includes(l.stage)) return false;
+      if (l.opted_out) return false;
+      const picks = Array.isArray(l.raw?.curated_address_picks) ? l.raw.curated_address_picks : [];
+      if (picks.length === 0) return false;
+      if (l.raw?.scheduling_open_at) return false;       // already sent
+      if (l.raw?.times_submitted_at) return false;       // lead already booked
+      return true;
+    });
+    if (needsSchedulingLink.length > 0) {
+      out.push({
+        id: 'needs-scheduling-link',
+        kind: 'gold',                  // brand color — it's an opportunity, not a problem
+        icon: CheckCircle2,
+        label: `${needsSchedulingLink.length} ${needsSchedulingLink.length === 1 ? 'lead' : 'leads'} ready for scheduling link`,
+        cta: needsSchedulingLink.length === 1 ? `Send to ${(needsSchedulingLink[0].fullName || '').split(' ')[0]}` : 'Send',
+        onClick: () => onSelectLead(needsSchedulingLink[0].id),
+      });
+    }
+
     // 1. Overdue replies — inbound message > 24h ago, not handled.
     const overdueReplies = leads.filter((l) => {
       if (isLeadSnoozed(l)) return false;
@@ -5350,9 +5374,12 @@ function HeadsUpBanner({ leads, overdueTasks, setSubview, onSelectLead }) {
   if (alerts.length === 0) return null;
 
   const TONE = {
-    error: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-900', icon: 'text-red-600', btn: 'bg-red-600 hover:bg-red-700 text-white' },
+    error:   { bg: 'bg-red-50',   border: 'border-red-200',   text: 'text-red-900',   icon: 'text-red-600',   btn: 'bg-red-600 hover:bg-red-700 text-white' },
     warning: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-900', icon: 'text-amber-600', btn: 'bg-amber-600 hover:bg-amber-700 text-white' },
-    info: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-900', icon: 'text-blue-600', btn: 'bg-blue-600 hover:bg-blue-700 text-white' },
+    info:    { bg: 'bg-blue-50',  border: 'border-blue-200',  text: 'text-blue-900',  icon: 'text-blue-600',  btn: 'bg-blue-600 hover:bg-blue-700 text-white' },
+    // Brand gold — used for high-leverage opportunities (not problems).
+    // Matches the brand-gold-soft / brand-gold pair used elsewhere.
+    gold:    { bg: 'bg-brand-gold-soft', border: 'border-brand-gold', text: 'text-slate-900', icon: 'brand-gold', btn: 'bg-brand-gold hover:bg-brand-gold-hover text-white' },
   };
 
   return (
@@ -12929,8 +12956,32 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   // Today action cards.
   const newLeadsNoCurate = useMemo(() =>
     leads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [leads]);
+  // Leads who picked properties via /c/[token] but Morgan hasn't sent the
+  // scheduling link yet. This is the single highest-value action — until the
+  // scheduling link goes out, the lead can't pick a tour time and the deal
+  // stalls. Surfacing it as its own card means Morgan sees the queue without
+  // having to click into individual lead details.
+  const needsSchedulingLink = useMemo(() =>
+    leads.filter((l) => {
+      const picks = Array.isArray(l.raw?.curated_address_picks) ? l.raw.curated_address_picks : [];
+      if (picks.length === 0) return false;
+      if (l.raw?.scheduling_open_at) return false;       // already sent
+      if (l.raw?.times_submitted_at) return false;       // lead already booked
+      // Skip if lead is closed/snoozed/opted-out — those aren't actionable.
+      if (['leased', 'paid', 'lost', 'archived'].includes(l.stage)) return false;
+      if (l.opted_out) return false;
+      return true;
+    }), [leads]);
   const requestedTours = useMemo(() =>
-    leads.filter((l) => l.stage === 'tour-requested' || (l.tours || []).some((t) => t.status === 'requested')), [leads]);
+    // "Tour-requested" stage minus leads that are caught by needsSchedulingLink
+    // above (otherwise the same lead surfaces in both cards).
+    leads.filter((l) => {
+      const inToursRequested = l.stage === 'tour-requested' || (l.tours || []).some((t) => t.status === 'requested');
+      if (!inToursRequested) return false;
+      const picks = Array.isArray(l.raw?.curated_address_picks) ? l.raw.curated_address_picks : [];
+      const needsLink = picks.length > 0 && !l.raw?.scheduling_open_at && !l.raw?.times_submitted_at;
+      return !needsLink;
+    }), [leads]);
   const toursToday = useMemo(() => {
     const today = new Date().toDateString();
     return leads.flatMap((l) => (l.tours || []).filter((t) => {
@@ -12944,9 +12995,23 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
 
   return (
     <div className="space-y-4">
-      {/* TODAY action cards stay above the inbox (same as before, condensed). */}
-      {(newLeadsNoCurate.length > 0 || requestedTours.length > 0 || toursToday.length > 0) && (
+      {/* TODAY action cards stay above the inbox. The 'Send scheduling link'
+          card is intentionally surfaced FIRST when there's a queue, because
+          it's the single most time-sensitive action — until the scheduling
+          link goes out, the lead can't pick a tour time and the deal stalls. */}
+      {(needsSchedulingLink.length > 0 || newLeadsNoCurate.length > 0 || requestedTours.length > 0 || toursToday.length > 0) && (
         <div className="flex flex-wrap gap-2">
+          {needsSchedulingLink.length > 0 && (
+            <button
+              onClick={() => onSelectLead(needsSchedulingLink[0].id)}
+              className="px-3 py-2 rounded-xl border-2 text-xs font-semibold inline-flex items-center gap-2 transition-shadow hover:shadow-md"
+              style={{ backgroundColor: 'var(--brand-gold)', borderColor: 'var(--brand-gold)', color: 'white' }}
+              title={`Picked properties, waiting on you to send the time picker: ${needsSchedulingLink.slice(0, 5).map((l) => l.fullName).join(', ')}${needsSchedulingLink.length > 5 ? ' …' : ''}`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Send scheduling link · {needsSchedulingLink.length}
+            </button>
+          )}
           {newLeadsNoCurate.length > 0 && (
             <button onClick={() => onSelectLead(newLeadsNoCurate[0].id)}
               className="px-3 py-2 rounded-xl border-2 text-xs font-medium inline-flex items-center gap-2"
