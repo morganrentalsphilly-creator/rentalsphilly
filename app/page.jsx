@@ -4954,6 +4954,139 @@ function NotificationPrompt() {
 // Touch tracker — counts outbound messages (your manual touches, not automated
 // system messages) over the last 24h and 7 days. Visible counter motivates
 // consistency — the agents who close the most also touch the most.
+// Heads-up alert banner — proactive intelligence at the very top of Today.
+// Scans current state for actionable warnings the agent shouldn't miss:
+//   • Overdue replies (last inbound > 24h ago, thread not marked handled)
+//   • Hot leads (A grade) silent 5+ days
+//   • Tours today missing an address (would be embarrassing in the field)
+//   • Pile of overdue tasks (>3)
+//
+// Each alert has its own severity (error / warning / info) and a CTA that
+// jumps to the right view. Hides entirely when there are no signals.
+function HeadsUpBanner({ leads, overdueTasks, setSubview, onSelectLead }) {
+  const alerts = useMemo(() => {
+    const now = Date.now();
+    const out = [];
+
+    // 1. Overdue replies — inbound message > 24h ago, not handled.
+    const overdueReplies = leads.filter((l) => {
+      if (isLeadSnoozed(l)) return false;
+      if (['leased', 'paid', 'lost', 'archived'].includes(l.stage)) return false;
+      const msgs = (l.messages || []).filter((m) => !m.internal);
+      const last = msgs[msgs.length - 1];
+      if (!last || last.direction !== 'inbound') return false;
+      const dismissedAt = l.raw?.inbox_dismissed_at;
+      if (dismissedAt && new Date(dismissedAt) >= new Date(last.timestamp)) return false;
+      const ageHrs = (now - new Date(last.timestamp).getTime()) / 3600000;
+      return ageHrs >= 24;
+    });
+    if (overdueReplies.length > 0) {
+      out.push({
+        id: 'overdue-replies',
+        kind: 'error',
+        icon: MessageSquare,
+        label: `${overdueReplies.length} ${overdueReplies.length === 1 ? 'reply' : 'replies'} overdue (24h+)`,
+        cta: 'Open inbox',
+        onClick: () => setSubview('inbox'),
+      });
+    }
+
+    // 2. Hot leads silent 5+ days — A grade with no outbound in last 5 days.
+    const hotSilent = leads.filter((l) => {
+      if (isLeadSnoozed(l)) return false;
+      if (['leased', 'paid', 'lost', 'archived'].includes(l.stage)) return false;
+      const sc = leadScore(l);
+      if (sc.label !== 'A') return false;
+      const outbound = (l.messages || []).filter((m) => !m.internal && m.direction === 'outbound');
+      const lastOut = outbound[outbound.length - 1];
+      if (!lastOut) return true; // No outbound at all on an A lead = silent
+      const ageDays = (now - new Date(lastOut.timestamp).getTime()) / 86400000;
+      return ageDays >= 5;
+    });
+    if (hotSilent.length > 0) {
+      out.push({
+        id: 'hot-silent',
+        kind: 'warning',
+        icon: AlertTriangle,
+        label: `${hotSilent.length} hot lead${hotSilent.length === 1 ? '' : 's'} silent 5+ days`,
+        cta: 'Re-engage',
+        onClick: () => onSelectLead(hotSilent[0].id),
+      });
+    }
+
+    // 3. Tours today with no address set (would be embarrassing in the field).
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const toursMissingAddr = leads.flatMap((l) => (l.tours || []).filter((t) =>
+      t.date === todayStr &&
+      t.status !== 'cancelled' &&
+      (!(t.listings || []).some((listing) => listing.address))
+    ));
+    if (toursMissingAddr.length > 0) {
+      out.push({
+        id: 'tour-no-addr',
+        kind: 'error',
+        icon: MapPin,
+        label: `${toursMissingAddr.length} tour${toursMissingAddr.length === 1 ? '' : 's'} today missing address`,
+        cta: 'Fix',
+        onClick: () => {
+          const lead = leads.find((l) => (l.tours || []).some((t) => t.id === toursMissingAddr[0].id));
+          if (lead) onSelectLead(lead.id);
+        },
+      });
+    }
+
+    // 4. Pile of overdue tasks. Single is fine; pile (4+) deserves a heads-up.
+    if (overdueTasks.length >= 4) {
+      out.push({
+        id: 'overdue-tasks',
+        kind: 'warning',
+        icon: CheckCircle2,
+        label: `${overdueTasks.length} overdue tasks`,
+        cta: 'See tasks',
+        onClick: () => {
+          // Scroll to the Tasks card — it's the only place to actually clear them.
+          const el = document.querySelector('[data-card="tasks"]');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+      });
+    }
+
+    return out.slice(0, 4); // cap visible at 4
+  }, [leads, overdueTasks, setSubview, onSelectLead]);
+
+  if (alerts.length === 0) return null;
+
+  const TONE = {
+    error: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-900', icon: 'text-red-600', btn: 'bg-red-600 hover:bg-red-700 text-white' },
+    warning: { bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-900', icon: 'text-amber-600', btn: 'bg-amber-600 hover:bg-amber-700 text-white' },
+    info: { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-900', icon: 'text-blue-600', btn: 'bg-blue-600 hover:bg-blue-700 text-white' },
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {alerts.map((a) => {
+        const t = TONE[a.kind] || TONE.info;
+        const Icon = a.icon;
+        return (
+          <div
+            key={a.id}
+            className={`flex items-center gap-3 px-3.5 py-2 rounded-xl border ${t.bg} ${t.border}`}
+          >
+            <Icon className={`w-4 h-4 shrink-0 ${t.icon}`} />
+            <div className={`flex-1 min-w-0 text-sm font-medium truncate ${t.text}`}>{a.label}</div>
+            <button
+              onClick={a.onClick}
+              className={`shrink-0 text-[11px] font-semibold px-3 py-1 rounded-full ${t.btn}`}
+            >
+              {a.cta}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Week-over-week KPI strip — surfaces business pulse at the top of Today.
 // Computes 5 rolling-7-day metrics:
 //   • Touches sent (outbound non-internal messages)
@@ -6247,6 +6380,16 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
         </div>
       </div>
 
+      {/* HEADS UP — proactive alerts (overdue replies, hot leads silent,
+          tour missing address, pile of overdue tasks). Hidden when there
+          are no signals. Each alert has its own CTA jump. */}
+      <HeadsUpBanner
+        leads={leads}
+        overdueTasks={overdueTasks}
+        setSubview={setSubview}
+        onSelectLead={onSelectLead}
+      />
+
       {/* Setup checklist — only renders while there's outstanding setup */}
       <SetupChecklist settings={settings} setSubview={setSubview} />
 
@@ -6268,7 +6411,7 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
       <HotProspectsCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* TASKS */}
-      <Card className="p-5 space-y-3">
+      <Card className="p-5 space-y-3" data-card="tasks">
         <div className="flex items-center justify-between">
           <SectionHeader icon={CheckCircle2}>Tasks</SectionHeader>
           <AddTaskQuickForm leads={leads} updateLead={updateLead} showToast={showToast} />
