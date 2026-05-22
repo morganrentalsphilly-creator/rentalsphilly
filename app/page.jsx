@@ -6422,7 +6422,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
 
       {screeningModal && <ScreeningPasteModal lead={screeningModal.lead} onClose={() => setScreeningModal(null)} onSave={async (reportInput) => { await saveScreeningReport(screeningModal.lead.id, reportInput); setScreeningModal(null); }} settings={settings} />}
 
-      {submitModal && <SubmitApplicationModal lead={submitModal.lead} onClose={() => setSubmitModal(null)} onSubmit={async (submission) => { await createSubmission(submitModal.lead.id, submission); setSubmitModal(null); }} settings={settings} />}
+      {submitModal && <SubmitApplicationModal lead={submitModal.lead} onClose={() => setSubmitModal(null)} onSubmit={async (submission) => { await createSubmission(submitModal.lead.id, submission); setSubmitModal(null); }} settings={settings} showToast={showToast} />}
 
       {followUpModal && <LogFollowUpModal lead={followUpModal.lead} submissionId={followUpModal.submissionId} onClose={() => setFollowUpModal(null)} onLog={async (note) => { await logSubmissionFollowUp(followUpModal.lead.id, followUpModal.submissionId, note); setFollowUpModal(null); }} />}
 
@@ -8621,6 +8621,7 @@ function StageDropdown({ lead, updateLead, showToast }) {
       {closeModal && (
         <CloseStageModal
           stageId={closeModal.stageId}
+          showToast={showToast}
           onClose={() => setCloseModal(null)}
           onConfirm={async (data) => {
             await applyStageChange(closeModal.stageId, data);
@@ -8635,7 +8636,7 @@ function StageDropdown({ lead, updateLead, showToast }) {
 // Modal that pops when marking a lead as 'leased' or 'lost' to capture the
 // reason / details. Improves analytics + helps Morgan see patterns in
 // what's converting vs. what's failing.
-function CloseStageModal({ stageId, onClose, onConfirm }) {
+function CloseStageModal({ stageId, onClose, onConfirm, showToast }) {
   const isLost = stageId === 'lost';
   const lostReasons = ['Bad timing / not ready', 'Budget mismatch', 'Location mismatch', 'Ghosted us', 'Picked another agent', 'Found a place themselves', 'Credit / qualification issue', 'Other'];
   const [reason, setReason] = useState(isLost ? lostReasons[0] : '');
@@ -8661,7 +8662,7 @@ function CloseStageModal({ stageId, onClose, onConfirm }) {
     try {
       await onConfirm(payload);
     } catch (err) {
-      alert(`Couldn't save: ${err.message}`);
+      showToast?.({ message: `Couldn't save: ${err.message}`, kind: 'error' });
       setSubmitting(false);
     }
   };
@@ -13522,7 +13523,7 @@ function SubmissionsView({ leads, onSelectLead, updateSubmissionStatus }) {
 // ============================================================
 // SUBMIT APPLICATION MODAL
 // ============================================================
-function SubmitApplicationModal({ lead, onClose, onSubmit, settings }) {
+function SubmitApplicationModal({ lead, onClose, onSubmit, settings, showToast }) {
   const firstName = lead.fullName.split(' ')[0];
 
   // Collect toured listings as primary choices
@@ -13620,7 +13621,7 @@ ${settings.agentEmail || ''}` : '';
       if (!res.ok || !data.ok) {
         setSendStatus('failed');
         setSending(false);
-        alert(`Email send failed: ${data.error || 'unknown error'}`);
+        showToast?.({ message: `Email send failed: ${data.error || 'unknown error'}`, kind: 'error' });
         return;
       }
       setSendStatus('sent');
@@ -13636,7 +13637,7 @@ ${settings.agentEmail || ''}` : '';
       });
     } catch (err) {
       setSendStatus('failed');
-      alert(`Send failed: ${err.message}`);
+      showToast?.({ message: `Send failed: ${err.message}`, kind: 'error' });
     }
     setSending(false);
   };
