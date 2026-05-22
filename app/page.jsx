@@ -1195,7 +1195,7 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [adminSubview, setAdminSubview] = useState('today');
   const [selectedLeadId, setSelectedLeadId] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [toast, setToast] = useState([]);
   // Auth state for the admin views. `session` is the Supabase session (or null);
   // `authChecked` flips to true after the initial getSession() resolves, so we
   // can avoid flashing the login screen during the first paint.
@@ -1520,9 +1520,28 @@ export default function App() {
   // returns.
   // useEffect(() => { ... }, [...]);
 
-  const showToast = (msg) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
+  // Stacked toasts. Each call appends a new toast; older toasts stay visible
+  // until they auto-dismiss (3s for success, 6s for errors) or the user clicks
+  // them. Caller can pass a string (success) or { message, kind } for tone.
+  // Display caps at 3 — older toasts auto-fade earlier when overflow occurs.
+  const showToast = (msgOrObj) => {
+    const m = typeof msgOrObj === 'string'
+      ? { message: msgOrObj, kind: 'success' }
+      : { kind: 'success', ...msgOrObj };
+    const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const ttl = m.kind === 'error' ? 6000 : 3000;
+    setToast((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const next = [...list, { id, ...m }];
+      // Cap visible at 3; older ones get nudged out immediately.
+      return next.slice(-3);
+    });
+    setTimeout(() => {
+      setToast((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== id) : prev));
+    }, ttl);
+  };
+  const dismissToast = (id) => {
+    setToast((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== id) : prev));
   };
 
   // Update a lead in Supabase + sync newly-added nested items (messages/activities/tasks/submissions).
@@ -2115,9 +2134,31 @@ export default function App() {
   return (
     <div className="min-h-screen bg-white font-sans antialiased text-slate-900" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif" }}>
       <Nav view={view} setView={setView} />
-      {toast && (
-        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-full shadow-lg text-sm flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4" /> {toast}
+      {/* Toast stack — newest at the top, click any to dismiss. Auto-fade is
+          handled by the showToast helper above. Kept centered + above the
+          fold so it doesn't compete with the nav. */}
+      {Array.isArray(toast) && toast.length > 0 && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 pointer-events-none">
+          {toast.map((t) => {
+            const isError = t.kind === 'error';
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => dismissToast(t.id)}
+                className={`pointer-events-auto px-4 py-2.5 rounded-full shadow-lg text-sm flex items-center gap-2 transition-all hover:opacity-90 active:scale-[0.97] max-w-md ${
+                  isError
+                    ? 'bg-red-600 text-white'
+                    : 'bg-slate-900 text-white'
+                }`}
+                title="Click to dismiss"
+              >
+                {isError ? <AlertTriangle className="w-4 h-4 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
+                <span className="truncate">{t.message}</span>
+                <X className="w-3 h-3 opacity-50 shrink-0" />
+              </button>
+            );
+          })}
         </div>
       )}
       {view === 'landing' && <Landing onStart={() => setView('intake')} />}
