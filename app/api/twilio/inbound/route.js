@@ -94,31 +94,49 @@ export async function POST(request) {
     // Twilio would retry-storm us with 500s, and the lead's reply would be
     // silently lost. Ordering by created_at DESC picks the most recent lead
     // when there's ambiguity (typically the right answer for "who texted me").
+    // Match lead by phone, robustly across ALL formats it might be stored in:
+    //   +14842641230, 14842641230, 4842641230, (484) 264-1230,
+    //   484-264-1230, 484.264.1230, +1 (484) 264-1230, etc.
+    //
+    // Strategy: build a LIKE pattern that requires the 10 digits to appear in
+    // order, but allows any characters between them. This matches every
+    // reasonable phone format without us having to enumerate them.
+    //
+    //   digits 4842641230 → pattern %4%8%4%2%6%4%1%2%3%0%
+    //
+    // We FIRST try fast exact-equality against the common formats (E.164,
+    // 10-digit, pretty) since they cover 99% of cases without a LIKE scan.
+    // Only fall back to LIKE on miss.
     let lead = null;
-    {
+    const digits = from.replace(/^\+1/, '');
+    const last10 = digits.slice(-10);
+    const e164 = `+1${last10}`;
+    const pretty = `(${last10.slice(0, 3)}) ${last10.slice(3, 6)}-${last10.slice(6)}`;
+    for (const candidate of [from, e164, last10, pretty]) {
+      if (lead) break;
       const { data } = await db
         .from('leads')
         .select('id, full_name, phone, opted_out, created_at')
-        .eq('phone', from)
+        .eq('phone', candidate)
         .order('created_at', { ascending: false })
         .limit(1);
-      lead = (data && data[0]) || null;
+      if (data && data[0]) lead = data[0];
     }
-    if (!lead) {
-      // Stored phones may be in legacy formats (10-digit, or `(215) 555-1234`).
-      // Try each shape with a separate query — Supabase's `.or()` doesn't like
-      // unquoted parens/spaces in values, so we keep it simple.
-      const digits = from.replace(/^\+1/, '');
-      const pretty = `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
-      for (const candidate of [digits, pretty]) {
-        const { data } = await db
-          .from('leads')
-          .select('id, full_name, phone, opted_out, created_at')
-          .eq('phone', candidate)
-          .order('created_at', { ascending: false })
-          .limit(1);
-        if (data && data[0]) { lead = data[0]; break; }
-      }
+    if (!lead && last10.length === 10) {
+      // Fallback: LIKE pattern that matches the 10 digits in order with
+      // arbitrary separators between them. Catches dashes, dots, spaces,
+      // mixed punctuation — any format we didn't pre-enumerate.
+      const likePattern = '%' + last10.split('').join('%') + '%';
+      const { data } = await db
+        .from('leads')
+        .select('id, full_name, phone, opted_out, created_at')
+        .like('phone', likePattern)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (data && data[0]) lead = data[0];
+    }
+    if (lead) {
+      console.log('[twilio inbound] matched lead', { from, leadId: lead.id, storedPhone: lead.phone });
     }
     if (!lead) {
       // Unknown number — auto-create a stub lead so the message has a home

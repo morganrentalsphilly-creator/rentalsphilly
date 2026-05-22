@@ -1488,6 +1488,36 @@ export default function App() {
     if (!session) return;
     const supa = createBrowserSupabase();
     if (!supa) return;
+    // Fetch a single lead by id + hydrate it. Used when a Realtime message
+    // arrives for a lead that's not yet in local state (e.g. the inbound
+    // webhook auto-created a stub for an unknown sender just milliseconds
+    // before the message INSERT fires). Without this, the message would be
+    // dropped because the `setLeads(prev.map(...))` loop wouldn't find the
+    // lead. Imported lazily to keep this effect lean.
+    const fetchAndAddLead = async (leadId) => {
+      try {
+        const { data, error } = await supa
+          .from('leads')
+          .select('*')
+          .eq('id', leadId)
+          .maybeSingle();
+        if (error || !data) return null;
+        // Use hydrateLeads with a minimal envelope so the new lead has the
+        // same camelCase shape as the rest of the in-memory list. Empty
+        // child arrays — they'll fill via subsequent Realtime events.
+        const [hydrated] = hydrateLeads({
+          leads: [data],
+          messages: [], activities: [], tasks: [], tours: [],
+          submissions: [], scheduledNudges: [],
+        });
+        setLeads((prev) => prev.some((l) => l.id === hydrated.id) ? prev : [hydrated, ...prev]);
+        return hydrated;
+      } catch (err) {
+        console.warn('[realtime] fetchAndAddLead failed', err?.message);
+        return null;
+      }
+    };
+
     const channel = supa
       .channel('messages-stream')
       .on(
@@ -1498,8 +1528,10 @@ export default function App() {
           if (!row || !row.lead_id) return;
           let leadName = 'A lead';
           let isNewInbound = false;
+          let leadFound = false;
           setLeads((prev) => prev.map((l) => {
             if (l.id !== row.lead_id) return l;
+            leadFound = true;
             leadName = l.fullName || 'A lead';
             // Skip if we already have this message (optimistic insert).
             if ((l.messages || []).some((m) => m.id === row.id)) return l;
@@ -1528,6 +1560,35 @@ export default function App() {
             };
             return { ...l, messages: [...(l.messages || []), incoming] };
           }));
+          // Lead not in local state — likely the inbound webhook just
+          // auto-created a stub and the message Realtime event arrived
+          // before the lead Realtime event. Fetch the lead, add it to
+          // state, and then re-attempt the message merge.
+          if (!leadFound) {
+            (async () => {
+              const lead = await fetchAndAddLead(row.lead_id);
+              if (!lead) return;
+              setLeads((prev) => prev.map((l) => {
+                if (l.id !== row.lead_id) return l;
+                if ((l.messages || []).some((m) => m.id === row.id)) return l;
+                const incoming = {
+                  id: row.id, channel: row.channel, direction: row.direction,
+                  status: row.status, to: row.to, via: row.via,
+                  subject: row.subject, body: row.body,
+                  automated: !!row.automated, internal: !!row.internal,
+                  kind: row.kind, deliveryStatus: row.delivery_status,
+                  twilioSid: row.twilio_sid, openedAt: row.opened_at,
+                  clickedAt: row.clicked_at,
+                  timestamp: row.created_at || new Date().toISOString(),
+                };
+                return { ...l, messages: [...(l.messages || []), incoming] };
+              }));
+              if (row.direction === 'inbound' && !row.internal && settings?.notifications?.inboundToast !== false) {
+                showToast(`💬 ${lead.fullName || 'New lead'}: ${(row.body || '').slice(0, 80)}`);
+              }
+            })();
+            return;
+          }
           // Inbound real-message? Surface it. Toast + (with permission)
           // browser notification when the tab is backgrounded. Both are
           // gated by the inboundToast notification preference.
@@ -1593,7 +1654,34 @@ export default function App() {
           ));
         }
       )
-      .subscribe();
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'leads' },
+        (payload) => {
+          const row = payload.new;
+          if (!row?.id) return;
+          // New lead appeared (intake form, manual modal, or the Twilio
+          // inbound webhook auto-creating a stub for an unknown sender).
+          // Hydrate it into the same camelCase shape the rest of the
+          // list uses + prepend so Morgan sees the newest at the top.
+          setLeads((prev) => {
+            if (prev.some((l) => l.id === row.id)) return prev;
+            const [hydrated] = hydrateLeads({
+              leads: [row],
+              messages: [], activities: [], tasks: [], tours: [],
+              submissions: [], scheduledNudges: [],
+            });
+            return [hydrated, ...prev];
+          });
+        }
+      )
+      .subscribe((status) => {
+        // Surface subscription state in the console so Morgan can verify
+        // Realtime is healthy via DevTools. If she ever sees "CHANNEL_ERROR"
+        // or "TIMED_OUT", the Realtime publication likely isn't enabled on
+        // the messages/leads tables yet (see LAUNCH_READINESS.md).
+        console.log('[realtime] messages-stream subscription:', status);
+      });
     return () => {
       try { supa.removeChannel(channel); } catch {}
     };
