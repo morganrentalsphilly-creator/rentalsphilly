@@ -45,18 +45,52 @@ export async function POST(request) {
     const params = Object.fromEntries(new URLSearchParams(formText));
 
     // 2. Verify Twilio signature unless explicitly disabled (local dev).
+    //
+    // CRITICAL: the URL we validate against MUST match the URL Twilio
+    // actually called byte-for-byte. The previous version built the URL
+    // from NEXT_PUBLIC_APP_URL, which is fragile — if the env var is the
+    // .vercel.app URL but Twilio was configured with a custom domain (or
+    // vice versa), the signature never matches and every single inbound
+    // returns 403. Silent failure mode that's brutal to debug.
+    //
+    // Reconstruct the URL from the incoming request headers instead.
+    // Vercel sets x-forwarded-proto + host, and request.url gives us the
+    // path. We also fall back to the env-built URL so this still works if
+    // headers are stripped for any reason.
     if (process.env.TWILIO_SKIP_SIGNATURE !== 'true') {
       const token = process.env.TWILIO_AUTH_TOKEN;
       const signature = request.headers.get('x-twilio-signature') || '';
-      const url =
+      const forwardedProto = request.headers.get('x-forwarded-proto') || 'https';
+      const host = request.headers.get('host') || '';
+      const requestUrl = host
+        ? `${forwardedProto}://${host}/api/twilio/inbound`
+        : null;
+      const envUrl =
         (process.env.NEXT_PUBLIC_APP_URL ||
           (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')) +
         '/api/twilio/inbound';
-      const ok = token && twilio.validateRequest(token, signature, url, params);
+      // Try the request-reconstructed URL first (correct in 99% of cases),
+      // then fall back to env-derived. If EITHER matches, we accept.
+      const candidates = [requestUrl, envUrl].filter(Boolean);
+      let ok = false;
+      let lastTriedUrl = '';
+      for (const url of candidates) {
+        lastTriedUrl = url;
+        if (token && twilio.validateRequest(token, signature, url, params)) {
+          ok = true;
+          break;
+        }
+      }
       if (!ok) {
-        console.warn('[twilio inbound] signature verification failed', { url });
+        console.warn('[twilio inbound] signature verification failed', {
+          tried: candidates,
+          gotSignature: signature.slice(0, 12) + '…',
+          hasToken: !!token,
+        });
         return new NextResponse('Forbidden', { status: 403 });
       }
+      // Helpful breadcrumb in production logs so we know which URL matched.
+      console.log('[twilio inbound] signature OK', { matchedUrl: lastTriedUrl });
     }
 
     const from = toE164(params.From);
