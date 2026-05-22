@@ -76,10 +76,21 @@ const matchListings = (lead, pool, excludedBrokerages) => {
     const n = Number(s);
     return Number.isFinite(n) ? n : Infinity;
   };
+  // bedsMin always falls back to the legacy `beds` value (single number =
+  // lower bound). bedsMax ONLY uses the explicit bedsMax field — if it's
+  // not present (legacy data created before the range picker), treat the
+  // upper bound as Infinity so old "1+ bed" leads keep matching the way
+  // they always did. Without this fallback, switching the picker to exact
+  // would have silently re-interpreted every existing lead's `beds: '2'`
+  // as "exactly 2BR" instead of "2+ BR" — dropping all 3BR matches.
   const bedsMin = Number(lead.bedsMin ?? lead.beds ?? 0) || 0;
-  const bedsMax = parseUpper(lead.bedsMax ?? lead.beds);
+  const bedsMax = (lead.bedsMax != null && lead.bedsMax !== '')
+    ? parseUpper(lead.bedsMax)
+    : Infinity;
   const bathsMin = Number(lead.bathsMin ?? lead.baths ?? 0) || 0;
-  const bathsMax = parseUpper(lead.bathsMax ?? lead.baths);
+  const bathsMax = (lead.bathsMax != null && lead.bathsMax !== '')
+    ? parseUpper(lead.bathsMax)
+    : Infinity;
 
   return source.filter(l => {
     if (l.status && l.status !== 'active') return false;
@@ -2322,11 +2333,18 @@ export default function App() {
         bucket,
         stage: 'new',
         // Stash extra fields in raw jsonb so we don't need a schema migration.
+        // beds_min/beds_max/baths_min/baths_max drive accurate matching —
+        // hydrateLeads maps them back to bedsMin/bedsMax/bathsMin/bathsMax
+        // (camelCase). matchListings already prefers these when present.
         raw: {
           source: lead.source || 'Unknown',     // where the lead came from
           tags: dupLead ? ['Possible duplicate'] : [],  // user-applied tags
           notes: dupNote || '',                 // private agent notes
           duplicate_of: dupLead?.id || null,    // pointer back to original lead
+          beds_min: lead.bedsMin || lead.beds || null,
+          beds_max: lead.bedsMax || lead.beds || null,
+          baths_min: lead.bathsMin || lead.baths || null,
+          baths_max: lead.bathsMax || lead.baths || null,
         },
       });
       // If server deduped, `created.id` differs from our client `id`. Use
@@ -3592,7 +3610,14 @@ function IntakeForm({ onSubmit, onBack }) {
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
     moveInDate: '', budgetMin: '', budgetMax: '',
-    beds: '1', baths: '1', areas: '',
+    // bedsMin/bedsMax/bathsMin/bathsMax drive matching. Legacy beds/baths
+    // stay as the lower bound so any read that hasn't been migrated yet
+    // still works. All blank by default so the user is forced to pick —
+    // the previous default of '1' meant a lead who skimmed past the step
+    // shipped as "1+ bed, 1+ bath" which matched every apartment in Philly.
+    beds: '', bedsMin: '', bedsMax: '',
+    baths: '', bathsMin: '', bathsMax: '',
+    areas: '',
     employed: '', creditScore: '', tourType: '',
     source: '',
   });
@@ -3649,7 +3674,15 @@ function IntakeForm({ onSubmit, onBack }) {
     if (step === 1 && !data.moveInDate) return 'Pick a move-in date';
     // Step 2: budget
     if (step === 2 && (!data.budgetMin || !data.budgetMax)) return 'Set your budget range';
-    // Step 3: beds/baths — already defaults to 1/1, basically can't be invalid
+    // Step 3: beds/baths — require an actual pick so leads don't ship as
+    // "1+ bed, 1+ bath" (matches every unit in Philly).
+    if (step === 3) {
+      const hasBeds = data.bedsMin || data.beds;
+      const hasBaths = data.bathsMin || data.baths;
+      if (!hasBeds && !hasBaths) return 'Pick bedrooms and bathrooms';
+      if (!hasBeds) return 'Pick a bedroom count';
+      if (!hasBaths) return 'Pick a bathroom count';
+    }
     // Step 5: financial
     if (step === 5) {
       if (!data.employed) return 'Are you currently employed?';
@@ -3802,9 +3835,23 @@ function IntakeForm({ onSubmit, onBack }) {
     },
     {
       title: 'How much space do you need?',
-      subtitle: 'Pick the minimum you\'d consider.',
-      valid: () => data.beds !== '' && data.baths !== '',
-      fields: <BedBathSelector beds={data.beds || '1'} baths={data.baths || '1'} onChange={(patch) => setData({ ...data, ...patch })} />
+      subtitle: 'Tap one for an exact match, or tap two to set a range.',
+      // Require an actual selection on each row — no defaulting to "1+" so
+      // we don't ship leads that match every unit in Philly. We accept
+      // either the new bedsMin/bedsMax fields or the legacy beds field
+      // (in case progress was saved before this picker existed).
+      valid: () => (data.bedsMin || data.beds) && (data.bathsMin || data.baths),
+      fields: (
+        <BedBathSelector
+          beds={data.beds}
+          baths={data.baths}
+          bedsMin={data.bedsMin}
+          bedsMax={data.bedsMax}
+          bathsMin={data.bathsMin}
+          bathsMax={data.bathsMax}
+          onChange={(patch) => setData({ ...data, ...patch })}
+        />
+      )
     },
     {
       title: 'Where do you want to live?',
@@ -4242,62 +4289,153 @@ function DatePicker({ value, onChange }) {
 // Simple single-select bed/bath picker. One tap commits a value.
 // Lead picks the minimum they'd consider (matches the way most rental
 // search sites work — "show me 1+ beds" rather than a range).
-function BedBathSelector({ beds, baths, onChange }) {
+function BedBathSelector({ beds, baths, bedsMin, bedsMax, bathsMin, bathsMax, onChange }) {
+  // ---- v2: exact-or-range picker -----------------------------------------
+  // Behavior per row:
+  //   • First tap selects exactly that value (min === max).
+  //   • Tapping a different value extends to a range (lo → hi auto-sorted).
+  //   • Tapping while a range is set replaces it with the new exact value.
+  //   • Tapping the only currently-selected value deselects (back to empty).
+  //
+  // Storage: writes bedsMin/bedsMax (and bathsMin/bathsMax) for accurate
+  // matching, plus the legacy `beds`/`baths` single value (set to the min)
+  // so existing reads of those fields continue to work. matchListings
+  // already prefers bedsMin/bedsMax when present.
   const bedOptions = [
     { value: '0', label: 'Studio' },
     { value: '1', label: '1' },
     { value: '2', label: '2' },
     { value: '3', label: '3' },
-    { value: '4', label: '4+' },
+    { value: '4', label: '4' },
   ];
   const bathOptions = [
-    { value: '1', label: '1' },
+    { value: '1',   label: '1' },
     { value: '1.5', label: '1.5' },
-    { value: '2', label: '2' },
+    { value: '2',   label: '2' },
     { value: '2.5', label: '2.5' },
-    { value: '3', label: '3+' },
+    { value: '3',   label: '3' },
   ];
 
-  const renderRow = (options, currentValue, onPick, Icon) => (
-    <div className="grid grid-cols-5 gap-1.5 sm:gap-2">
-      {options.map((o) => {
-        const selected = currentValue === o.value;
-        return (
-          <button
-            key={o.value}
-            type="button"
-            onClick={() => onPick(o.value)}
-            style={{ minHeight: 68 }}
-            className={`flex flex-col items-center justify-center gap-1.5 py-3 px-1 rounded-2xl transition-all active:scale-[0.96] ${
-              selected
-                ? 'bg-slate-900 text-white shadow-lg scale-[1.02]'
-                : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
-            }`}
-          >
-            <Icon className={`w-5 h-5 ${selected ? 'text-white' : 'text-slate-400'}`} />
-            <span className="text-sm sm:text-base font-semibold whitespace-nowrap">{o.label}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
+  // Compute the current selection state for a row. Returns:
+  //   { lo, hi, isExact, isRange, isEmpty }
+  // where lo/hi are option values or null.
+  const getState = (minVal, maxVal, legacy, options) => {
+    // Fall back to legacy `beds` / `baths` if min/max not set (back-compat
+    // with any data created before this picker existed).
+    const min = minVal ?? legacy ?? null;
+    const max = maxVal ?? legacy ?? null;
+    if (!min && !max) return { lo: null, hi: null, isExact: false, isRange: false, isEmpty: true };
+    // Map to option indices so we can fill the visual range.
+    const idxOf = (v) => options.findIndex((o) => o.value === String(v));
+    const a = idxOf(min);
+    const b = idxOf(max);
+    const lo = a >= 0 ? options[Math.min(a, b)] : null;
+    const hi = b >= 0 ? options[Math.max(a, b)] : null;
+    return {
+      lo: lo?.value || null,
+      hi: hi?.value || null,
+      isExact: lo && hi && lo.value === hi.value,
+      isRange: lo && hi && lo.value !== hi.value,
+      isEmpty: !lo,
+    };
+  };
+
+  // Build the patch when a row option is tapped. Always returns an object
+  // with min/max/legacy keys keyed by the field names we're updating.
+  const handleTap = (v, currentMin, currentMax, currentLegacy, options, fieldNames) => {
+    const { minKey, maxKey, legacyKey } = fieldNames;
+    const state = getState(currentMin, currentMax, currentLegacy, options);
+    // Tap the only selected exact value → deselect.
+    if (state.isExact && state.lo === v) {
+      return { [minKey]: '', [maxKey]: '', [legacyKey]: '' };
+    }
+    // Range selected → replace with new exact.
+    if (state.isRange) {
+      return { [minKey]: v, [maxKey]: v, [legacyKey]: v };
+    }
+    // Exact selected + tap a different value → make it a range.
+    if (state.isExact && state.lo !== v) {
+      const idxOf = (x) => options.findIndex((o) => o.value === String(x));
+      const a = idxOf(state.lo);
+      const b = idxOf(v);
+      const lo = options[Math.min(a, b)].value;
+      const hi = options[Math.max(a, b)].value;
+      return { [minKey]: lo, [maxKey]: hi, [legacyKey]: lo };
+    }
+    // Empty → set as exact.
+    return { [minKey]: v, [maxKey]: v, [legacyKey]: v };
+  };
+
+  const renderRow = (options, state, onPick, Icon) => {
+    const { lo, hi, isExact, isRange } = state;
+    const loIdx = lo ? options.findIndex((o) => o.value === lo) : -1;
+    const hiIdx = hi ? options.findIndex((o) => o.value === hi) : -1;
+    return (
+      <div className="grid grid-cols-5 gap-1.5 sm:gap-2">
+        {options.map((o, i) => {
+          const inRange = isRange && i > loIdx && i < hiIdx;
+          const isEdge = (isExact || isRange) && (o.value === lo || o.value === hi);
+          const selected = isEdge;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => onPick(o.value)}
+              style={{ minHeight: 68 }}
+              className={`flex flex-col items-center justify-center gap-1.5 py-3 px-1 rounded-2xl transition-all active:scale-[0.96] ${
+                selected
+                  ? 'bg-slate-900 text-white shadow-lg scale-[1.02]'
+                  : inRange
+                  ? 'bg-slate-200 text-slate-900 border-2 border-slate-300'
+                  : 'bg-white text-slate-700 border-2 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+              }`}
+            >
+              <Icon className={`w-5 h-5 ${selected ? 'text-white' : inRange ? 'text-slate-600' : 'text-slate-400'}`} />
+              <span className="text-sm sm:text-base font-semibold whitespace-nowrap">{o.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Human-readable summary under each row.
+  const summary = (state, options, noun) => {
+    if (state.isEmpty) return 'Tap a number to start. Tap another to make it a range.';
+    const loLabel = options.find((o) => o.value === state.lo)?.label || '';
+    const hiLabel = options.find((o) => o.value === state.hi)?.label || '';
+    if (state.isExact) {
+      if (state.lo === '0') return 'Studio only';
+      return `Exactly ${loLabel} ${noun}`;
+    }
+    return `${loLabel} to ${hiLabel} ${noun}`;
+  };
+
+  const bedState = getState(bedsMin, bedsMax, beds, bedOptions);
+  const bathState = getState(bathsMin, bathsMax, baths, bathOptions);
 
   return (
     <div className="space-y-6">
       <div>
         <div className="flex items-end justify-between mb-3">
           <div className="text-sm font-semibold text-slate-900">Bedrooms</div>
-          <div className="text-[11px] text-slate-500">Minimum you&apos;d consider</div>
+          <div className="text-[11px] text-slate-500">Tap one for exact · tap two for a range</div>
         </div>
-        {renderRow(bedOptions, beds, (v) => onChange({ beds: v }), Bed)}
+        {renderRow(bedOptions, bedState, (v) =>
+          onChange(handleTap(v, bedsMin, bedsMax, beds, bedOptions, { minKey: 'bedsMin', maxKey: 'bedsMax', legacyKey: 'beds' })),
+        Bed)}
+        <div className="text-[11px] text-slate-500 mt-2 text-center">{summary(bedState, bedOptions, 'bedrooms')}</div>
       </div>
 
       <div>
         <div className="flex items-end justify-between mb-3">
           <div className="text-sm font-semibold text-slate-900">Bathrooms</div>
-          <div className="text-[11px] text-slate-500">Minimum you&apos;d consider</div>
+          <div className="text-[11px] text-slate-500">Tap one for exact · tap two for a range</div>
         </div>
-        {renderRow(bathOptions, baths, (v) => onChange({ baths: v }), Bath)}
+        {renderRow(bathOptions, bathState, (v) =>
+          onChange(handleTap(v, bathsMin, bathsMax, baths, bathOptions, { minKey: 'bathsMin', maxKey: 'bathsMax', legacyKey: 'baths' })),
+        Bath)}
+        <div className="text-[11px] text-slate-500 mt-2 text-center">{summary(bathState, bathOptions, 'bathrooms')}</div>
       </div>
     </div>
   );
@@ -5186,16 +5324,16 @@ function AddLeadModal({ onClose, onCreate, showToast }) {
             <FormField label="Budget max *">
               <input type="number" value={data.budgetMax} onChange={(e) => update('budgetMax', e.target.value)} className="form-input" placeholder="2500" inputMode="numeric" />
             </FormField>
-            <FormField label="Beds (min)">
+            <FormField label="Beds">
               <select value={data.beds} onChange={(e) => update('beds', e.target.value)} className="form-input">
-                {[{ v: '0', l: 'Studio' }, { v: '1', l: '1+' }, { v: '2', l: '2+' }, { v: '3', l: '3+' }, { v: '4', l: '4+' }].map((o) => (
+                {[{ v: '0', l: 'Studio' }, { v: '1', l: '1 bed' }, { v: '2', l: '2 bed' }, { v: '3', l: '3 bed' }, { v: '4', l: '4 bed' }].map((o) => (
                   <option key={o.v} value={o.v}>{o.l}</option>
                 ))}
               </select>
             </FormField>
-            <FormField label="Baths (min)">
+            <FormField label="Baths">
               <select value={data.baths} onChange={(e) => update('baths', e.target.value)} className="form-input">
-                {['1', '1.5', '2', '2.5', '3'].map((b) => <option key={b} value={b}>{b}+</option>)}
+                {['1', '1.5', '2', '2.5', '3'].map((b) => <option key={b} value={b}>{b} bath</option>)}
               </select>
             </FormField>
             <FormField label="Employed?">
