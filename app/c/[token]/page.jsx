@@ -447,21 +447,40 @@ export default function CuratedPage() {
               <h2 className="text-base font-semibold text-slate-900">Which ones do you like?</h2>
             </div>
             <p className="text-sm text-slate-500 mb-3">
-              Copy addresses from the listings tab — one per line. No need to be exact, anything that
-              identifies the listing works.
+              Paste or type addresses from the listings tab — one per line. Anything that identifies
+              the place works (full address, just the street, or even &quot;the 4BR on Pine&quot;).
             </p>
             <textarea
               value={addressesText}
               onChange={(e) => setAddressesText(e.target.value)}
               rows={5}
+              autoCapitalize="words"
+              autoCorrect="off"
+              spellCheck="false"
+              enterKeyHint="enter"
               placeholder={`1420 Pine St #3B\n234 N 3rd St\n876 S 4th St`}
-              className="w-full rounded-2xl border-2 border-slate-200 bg-white px-4 py-3 text-sm focus:outline-none focus:border-slate-900 resize-y font-mono"
+              className="w-full rounded-2xl border-2 border-slate-200 bg-white px-4 py-3 text-base focus:outline-none focus:border-slate-900 resize-y leading-relaxed"
+              style={{ fontSize: 16 }}
             />
+            {/* Live preview chips — confirm to the lead exactly what they've
+                entered so they aren't guessing whether a line is blank or
+                whether their last paste landed clean. Much friendlier than
+                a silent counter. */}
             {parsedAddresses.length > 0 && (
-              <div className="text-[11px] text-slate-500 mt-1.5 text-right">
-                {parsedAddresses.length} {parsedAddresses.length === 1 ? 'property' : 'properties'}
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {parsedAddresses.map((addr, i) => (
+                  <span key={`${addr}-${i}`} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium text-slate-900 border" style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--brand-gold)' }} />
+                    {addr}
+                  </span>
+                ))}
               </div>
             )}
+            <div className="text-[11px] text-slate-500 mt-2 text-right">
+              {parsedAddresses.length === 0
+                ? 'Add at least one to continue'
+                : `${parsedAddresses.length} ${parsedAddresses.length === 1 ? 'property' : 'properties'} so far`}
+            </div>
           </section>
 
           <section>

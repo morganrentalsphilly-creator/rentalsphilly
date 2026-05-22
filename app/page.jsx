@@ -6187,13 +6187,17 @@ function SetupChecklist({ settings, setSubview }) {
 // Renders as a tappable button right next to the AI summary card. Tapping
 // the suggested message routes to the compose modal pre-filled, so it's
 // a one-tap execute.
-function NextBestActionCard({ lead, onCompose, showToast }) {
+function NextBestActionCard({ lead, onCompose, showToast, updateLead, settings }) {
   const lastMsg = (lead.messages || []).filter((m) => !m.internal).slice(-1)[0];
   const cacheKey = `${lead.id}::${lastMsg?.id || 'no-msgs'}::${lead.stage || 'new'}`;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [dismissed, setDismissed] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  // Sync re-entry lock for the one-tap execute paths that fire transactional
+  // sends (scheduling link). Same pattern as SchedulingLinkPanel.
+  const executeInFlightRef = useRef(false);
   const cacheRef = useRef({});
 
   const load = async (force = false) => {
@@ -6233,23 +6237,103 @@ function NextBestActionCard({ lead, onCompose, showToast }) {
 
   if (dismissed) return null;
 
-  const execute = () => {
+  const execute = async () => {
     if (!data?.action) return;
+    if (executeInFlightRef.current) return;
     const t = data.action.type;
     if (t === 'send-sms') {
       onCompose({ kind: 'sms-custom', prefill: data.suggestedMessage || '' });
-    } else if (t === 'send-email') {
-      onCompose({ kind: 'email-custom', prefill: data.suggestedMessage || '' });
-    } else {
-      // For non-message actions, scroll the user to the right panel by hint.
-      const hint = t === 'send-curated-link' ? 'Open the curated link panel below to send the portal link.'
-        : t === 'send-scheduling-link' ? 'Open the scheduling link panel below to enable time picks.'
-        : t === 'request-application' ? 'Use the Submit Application button on this lead.'
-        : t === 'mark-stage' ? 'Use the stage dropdown at the top to advance.'
-        : t === 'mark-lost' ? 'Use the actions menu (▾) to mark this lead lost.'
-        : 'Waiting — cron will handle the next cadence touch.';
-      showToast(hint);
+      return;
     }
+    if (t === 'send-email') {
+      onCompose({ kind: 'email-custom', prefill: data.suggestedMessage || '' });
+      return;
+    }
+    // ---- send-scheduling-link: one-tap execute ----
+    // When the AI recommends sending the scheduling link AND the lead already
+    // has curated_address_picks (they told us via /c/[token] which properties
+    // they want), there's nothing to type — just fire it. This is the
+    // workflow Morgan asked for: "the user has selected them in the prompt
+    // screen so we should be able to just send them a scheduling link
+    // because they already said property."
+    if (t === 'send-scheduling-link' && updateLead) {
+      const picks = Array.isArray(lead.raw?.curated_address_picks) ? lead.raw.curated_address_picks : [];
+      if (picks.length === 0) {
+        // No picks yet — fall back to scrolling them to the panel so they
+        // can paste in the addresses Morgan was texted directly.
+        showToast({ message: 'No picks yet — use the Scheduling link panel below to enter addresses.', kind: 'error' });
+        const el = document.querySelector('[data-scheduling-link-panel]');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+      executeInFlightRef.current = true;
+      setExecuting(true);
+      try {
+        const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+        const token = lead.raw?.curated_token || (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+          : Math.random().toString(36).slice(2, 18));
+        const appBase = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://rentalsphilly.vercel.app';
+        const curatedUrl = `${appBase}/c/${token}`;
+        const smsBody = `Rentals Philly: I checked availability — pick your tour times here: ${curatedUrl}`;
+        const emailSubject = 'Pick your tour times';
+        const emailBody =
+          `Hi ${firstName},\n\nGood news — the properties you picked are available. Click below to pick a tour time for each:\n\n${curatedUrl}\n\n— Morgan`;
+        const smsResult = await sendSMS({
+          leadId: lead.id,
+          body: smsBody,
+          kind: 'manual',
+          idempotencyKey: `scheduling-link-nba-${lead.id}-${Date.now()}`,
+          automated: false,
+        });
+        if (!smsResult.ok && smsResult.error !== 'opted_out') {
+          showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
+          return;
+        }
+        await sendEmail({
+          leadId: lead.id,
+          subject: emailSubject,
+          body: emailBody,
+          kind: 'manual',
+          idempotencyKey: `scheduling-link-nba-email-${lead.id}-${Date.now()}`,
+          automated: false,
+        });
+        await updateLead(lead.id, {
+          raw: {
+            ...(lead.raw || {}),
+            curated_token: token,
+            curated_link_url: lead.raw?.curated_link_url || curatedUrl,
+            curated_link_sent_at: lead.raw?.curated_link_sent_at || new Date().toISOString(),
+            scheduling_open_at: new Date().toISOString(),
+          },
+          curatedLinkUrl: lead.curatedLinkUrl || curatedUrl,
+          curatedLinkSentAt: lead.curatedLinkSentAt || new Date().toISOString(),
+          stage: lead.stage === 'new' || lead.stage === 'matched' ? 'tour-requested' : lead.stage,
+          activities: [...(lead.activities || []), {
+            id: `a_${Date.now()}`,
+            type: 'scheduling-link-sent',
+            timestamp: new Date().toISOString(),
+            message: `Scheduling link sent to ${firstName} (${picks.length} ${picks.length === 1 ? 'property' : 'properties'}) — via Next Best Action`,
+          }],
+        });
+        showToast('Scheduling link sent');
+        setDismissed(true);
+      } catch (err) {
+        console.error('[NBA send-scheduling-link]', err);
+        showToast({ message: `Send failed: ${err.message}`, kind: 'error' });
+      } finally {
+        setExecuting(false);
+        executeInFlightRef.current = false;
+      }
+      return;
+    }
+    // Other action types — scroll to the relevant panel by hint.
+    const hint = t === 'send-curated-link' ? 'Open the curated link panel below to send the portal link.'
+      : t === 'request-application' ? 'Use the Submit Application button on this lead.'
+      : t === 'mark-stage' ? 'Use the stage dropdown at the top to advance.'
+      : t === 'mark-lost' ? 'Use the actions menu (▾) to mark this lead lost.'
+      : 'Waiting — cron will handle the next cadence touch.';
+    showToast(hint);
   };
 
   return (
@@ -6291,11 +6375,11 @@ function NextBestActionCard({ lead, onCompose, showToast }) {
           <div className="flex items-center gap-2">
             <button
               onClick={execute}
-              disabled={data.action.type === 'wait'}
+              disabled={data.action.type === 'wait' || executing}
               className="px-4 py-2 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
               style={{ backgroundColor: 'var(--brand-gold)' }}
             >
-              <Check className="w-3 h-3" /> {data.action.label || 'Do it'}
+              <Check className="w-3 h-3" /> {executing ? 'Sending…' : (data.action.label || 'Do it')}
             </button>
             {data.action.type === 'wait' && (
               <span className="text-[10px] text-slate-500 italic">Waiting — no manual action needed.</span>
@@ -10663,7 +10747,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
   const showManualEntry = !hasPicks && !timesSubmitted;
 
   return (
-    <Card className="p-5 space-y-4 border-2" style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
+    <Card data-scheduling-link-panel className="p-5 space-y-4 border-2" style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
       <PanelHeader
         icon={CheckCircle2}
         iconClassName="text-white"
@@ -12472,7 +12556,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               {/* AI status briefing — instant context when reopening a lead */}
               <LeadSummaryCard lead={lead} />
               {/* AI Next Best Action — one concrete recommended move */}
-              <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} />
+              <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} updateLead={updateLead} settings={settings} />
               {/* Phase 1: send curated portal link. */}
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
