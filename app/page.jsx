@@ -4802,6 +4802,111 @@ function WeekKpiStrip({ leads }) {
   );
 }
 
+// Pipeline funnel widget — horizontal stage breakdown with click-to-jump.
+// Shows active stages only (hides leased/paid/lost/archived by default since
+// those are "closed states" and would dominate the visual). Stage with the
+// most leads gets the largest bar; everything else is proportional.
+function PipelineFunnelCard({ leads, onJumpToStage }) {
+  const counts = useMemo(() => {
+    const m = {};
+    for (const s of PIPELINE_STAGES) m[s.id] = 0;
+    for (const l of leads) {
+      const stage = l.stage || 'new';
+      m[stage] = (m[stage] || 0) + 1;
+    }
+    return m;
+  }, [leads]);
+
+  // Active stages = the funnel. Closed states (lost/leased/paid/archived)
+  // sit in a side row below so they don't dominate the visual.
+  const ACTIVE_IDS = ['new', 'matched', 'tour-requested', 'tour-booked', 'post-tour', 'applied'];
+  const CLOSED_IDS = ['leased', 'paid', 'lost'];
+
+  const activeStages = ACTIVE_IDS
+    .map((id) => ({ id, label: PIPELINE_STAGES.find((s) => s.id === id)?.label || id, count: counts[id] || 0 }))
+    .filter((s) => s.count > 0);
+  const totalActive = activeStages.reduce((sum, s) => sum + s.count, 0);
+
+  const closedStages = CLOSED_IDS
+    .map((id) => ({ id, label: PIPELINE_STAGES.find((s) => s.id === id)?.label || id, count: counts[id] || 0 }))
+    .filter((s) => s.count > 0);
+
+  // If there's nothing yet, hide the card entirely — the Today empty state covers it.
+  if (totalActive === 0 && closedStages.length === 0) return null;
+
+  const stageTone = (id) => ({
+    new: 'bg-slate-400',
+    matched: 'bg-blue-400',
+    'tour-requested': 'bg-amber-400',
+    'tour-booked': 'bg-blue-500',
+    'post-tour': 'bg-blue-500',
+    applied: 'bg-violet-500',
+  }[id] || 'bg-slate-400');
+
+  // Width per stage relative to the largest active stage so the bars stay
+  // visually distinguishable even when one stage has way more than others.
+  const maxCount = Math.max(1, ...activeStages.map((s) => s.count));
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">Pipeline</div>
+          <div className="text-[11px] text-slate-500">{totalActive} active · click a stage to drill in</div>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {activeStages.length === 0 ? (
+          <div className="text-xs text-slate-400 italic py-2">No active leads — they\'ll appear here once you add some.</div>
+        ) : (
+          activeStages.map((s) => {
+            const pct = (s.count / maxCount) * 100;
+            return (
+              <button
+                key={s.id}
+                onClick={() => onJumpToStage?.(s.id)}
+                className="w-full text-left group"
+                title={`Jump to ${s.label}`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="text-[11px] font-medium text-slate-700 w-32 shrink-0 truncate group-hover:text-slate-900">
+                    {s.label}
+                  </div>
+                  <div className="flex-1 h-5 rounded bg-slate-100 overflow-hidden relative">
+                    <div
+                      className={`h-full ${stageTone(s.id)} transition-all`}
+                      style={{ width: `${Math.max(8, pct)}%` }}
+                    />
+                  </div>
+                  <div className="text-sm font-bold tabular-nums w-8 text-right text-slate-900">{s.count}</div>
+                </div>
+              </button>
+            );
+          })
+        )}
+      </div>
+      {closedStages.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-2">
+          {closedStages.map((s) => {
+            const tone = s.id === 'leased' || s.id === 'paid' ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                       : s.id === 'lost' ? 'bg-red-50 text-red-700 border-red-200'
+                       : 'bg-slate-50 text-slate-600 border-slate-200';
+            return (
+              <button
+                key={s.id}
+                onClick={() => onJumpToStage?.(s.id)}
+                className={`text-[11px] px-2.5 py-1 rounded-full border font-medium hover:opacity-80 ${tone}`}
+              >
+                {s.label} · <span className="tabular-nums font-bold">{s.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function TouchTrackerCard({ leads }) {
   const stats = useMemo(() => {
     const now = Date.now();
@@ -5791,6 +5896,11 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* THIS WEEK — business pulse KPI strip with week-over-week deltas */}
       <WeekKpiStrip leads={leads} />
+
+      {/* PIPELINE FUNNEL — at-a-glance "where are my leads sitting" with
+          click-to-drill behavior. Jumping to a stage opens Pipeline view
+          (TODO: wire stage filter so clicking a stage pre-filters Pipeline). */}
+      <PipelineFunnelCard leads={leads} onJumpToStage={() => setSubview('pipeline')} />
 
       {/* FOCUS NOW — the single source-of-truth ranked queue */}
       <FocusNowCard
