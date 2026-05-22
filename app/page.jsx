@@ -1870,16 +1870,8 @@ export default function App() {
     const welcomeEmailBody = fill(t.email);
     const welcomeSmsBody = fill(t.sms);
 
-    // Email message inserted directly to DB below. SMS goes through sendSMS
-    // (server wrapper) which inserts its own messages row — no duplicate.
-    const welcomeEmailMsg = {
-      id: `m_${Date.now()}_e`,
-      lead_id: id,
-      channel: 'email', direction: 'outbound', status: 'sent',
-      to: lead.email, via: 'gmail',
-      subject: welcomeEmailSubject, body: welcomeEmailBody,
-      automated: true, internal: false,
-    };
+    // Welcome email + SMS go through sendEmail / sendSMS wrappers further
+    // down — each wrapper inserts its own messages row, no manual record.
 
     const welcomeActivity = {
       id: `a_${Date.now()}`,
@@ -1915,9 +1907,12 @@ export default function App() {
       });
     }
 
+    // LAUNCH-CRITICAL: the createLead call MUST succeed before we send any
+    // welcome messages or surface success to the user. If the DB write fails
+    // we re-throw so IntakeForm sees the error and shows its polished retry
+    // banner. The user's draft stays in localStorage so they don't lose work.
     try {
       const db = await import('@/lib/db');
-      // Create lead row
       await db.createLead({
         id,
         full_name: lead.fullName,
@@ -1942,11 +1937,23 @@ export default function App() {
           duplicate_of: dupLead?.id || null,    // pointer back to original lead
         },
       });
-      // Activity + tasks. Email + SMS rows are inserted by the server wrappers.
+    } catch (e) {
+      console.error('[app] Failed to create lead in Supabase', e);
+      // Re-throw so the IntakeForm catch block shows the retry banner.
+      // Without this, the user would see success but the lead would be lost.
+      throw new Error('Could not save your info. Please check your connection and try again.');
+    }
+
+    // Best-effort: insert activity + tasks. These reference the lead row, so
+    // they should succeed if createLead did. If they fail we log + continue —
+    // the lead is in the DB, which is the critical part. The agent can manually
+    // recreate the task if needed.
+    try {
+      const db = await import('@/lib/db');
       await db.insertActivity(welcomeActivity);
       for (const t of tasks) await db.insertTask(t);
     } catch (e) {
-      console.error('[app] Failed to create lead in Supabase', e);
+      console.warn('[app] activity/tasks insert failed (lead still created)', e);
     }
 
     // ---- AI-drafted personalized welcome (optional) ----
