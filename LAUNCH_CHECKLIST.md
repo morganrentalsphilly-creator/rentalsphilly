@@ -8,6 +8,38 @@ checks** are nice-to-have but not blocking.
 
 ---
 
+## Step 0: apply all DB migrations (do this FIRST)
+
+In Supabase → SQL Editor → New query, paste and run each migration file in
+`supabase/migrations/` in numerical order. All migrations are idempotent
+(`IF NOT EXISTS` everywhere) so re-running is safe.
+
+- [ ] `0001_sms_refinement.sql` — base SMS columns (delivered_at, twilio_sid, etc.)
+- [ ] `0002_properties.sql` — properties table
+- [ ] `0003_consolidated_recent_features.sql` — systemTemplates, quickReplyTemplates, emailSignature, notifications, calendar_feed_token, message engagement
+- [ ] `0004_settings_agent_availability.sql` — agent_availability shift column
+- [ ] `0005_settings_raw_column.sql` — raw jsonb (cron heartbeat lives here)
+- [ ] `0006_settings_welcome_messages.sql` — welcomeMessages + catch-all for every settings column the client writes
+
+**Verify columns landed:**
+
+```sql
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'settings' ORDER BY column_name;
+```
+
+You should see at minimum: `agent_availability`, `agent_email`, `agent_name`,
+`agent_phone`, `automation`, `calendar_feed_token`, `emailSignature`, `id`,
+`notifications`, `quickReplyTemplates`, `raw`, `rentspree_dashboard_url`,
+`systemTemplates`, `twilio_number`, `updated_at`, `welcomeMessages`.
+
+If any of these are missing, Settings → Save will silently drop those fields
+(the client has a resilient fallback that skips unknown columns, but Morgan's
+edits to those fields won't persist). Re-run migration 0006 — it's the
+catch-all.
+
+---
+
 ## Critical paths
 
 ### 1. Intake form (anonymous renter)

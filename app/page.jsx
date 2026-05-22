@@ -10913,9 +10913,15 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
     setUploading(true);
     const fileList = Array.from(files);
     const next = [...docs];
+    // Track success/failure separately so the activity log reflects what
+    // actually happened, not just what was attempted. Previously the activity
+    // claimed "Uploaded 3 documents" even when all 3 failed silently.
+    let successCount = 0;
+    let failedNames = [];
     for (const file of fileList) {
       if (file.size > MAX_DOC_SIZE) {
-        showToast(`${file.name} is over 10MB — skipped`);
+        showToast({ message: `${file.name} is over 10MB — skipped`, kind: 'error' });
+        failedNames.push(file.name);
         continue;
       }
       try {
@@ -10936,10 +10942,12 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
           });
         } catch (err) {
           showToast({ message: `Couldn't upload ${file.name}`, kind: 'error' });
+          failedNames.push(file.name);
           continue;
         }
         if (!data?.path) {
           showToast({ message: `Couldn't upload ${file.name}`, kind: 'error' });
+          failedNames.push(file.name);
           continue;
         }
         next.push({
@@ -10952,20 +10960,33 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
           url: data.url,
           uploadedAt: new Date().toISOString(),
         });
+        successCount++;
       } catch (err) {
         console.error('[doc upload]', err);
         showToast({ message: `Upload failed: ${err.message}`, kind: 'error' });
+        failedNames.push(file.name);
       }
     }
-    await updateLead(lead.id, {
-      raw: { ...(lead.raw || {}), documents: next },
-      activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
-        type: 'document-uploaded',
-        timestamp: new Date().toISOString(),
-        message: `Uploaded ${fileList.length} document${fileList.length === 1 ? '' : 's'}`,
-      }],
-    });
+    // Only touch the lead if at least one upload succeeded. Otherwise the
+    // update would write the unchanged docs array AND log a misleading
+    // "Uploaded N documents" activity for failures.
+    if (successCount > 0) {
+      await updateLead(lead.id, {
+        raw: { ...(lead.raw || {}), documents: next },
+        activities: [...(lead.activities || []), {
+          id: `a_${Date.now()}`,
+          type: 'document-uploaded',
+          timestamp: new Date().toISOString(),
+          message: `Uploaded ${successCount} document${successCount === 1 ? '' : 's'}${failedNames.length ? ` (${failedNames.length} failed)` : ''}`,
+        }],
+      });
+      showToast(`Uploaded ${successCount} document${successCount === 1 ? '' : 's'}`);
+    } else if (failedNames.length > 0) {
+      // All uploads failed — surface a summary toast so Morgan knows the
+      // drop didn't silently no-op. Individual per-file errors already
+      // fired above; this is the "nothing landed" recap.
+      showToast({ message: `No documents uploaded — ${failedNames.length} file${failedNames.length === 1 ? '' : 's'} failed`, kind: 'error' });
+    }
     setUploading(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
