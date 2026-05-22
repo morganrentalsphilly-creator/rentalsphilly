@@ -12838,10 +12838,17 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     setComposerBody(fillTemplate(tpl.body, activeThread.lead, settings));
   };
 
-  const handleSend = async () => {
+  // handleSend accepts an optional bodyOverride so callers (like the AI
+  // "Send now" button) can fire a send with a body that hasn't yet hit
+  // composerBody state. Without this, AI one-tap-send would race the state
+  // update — setComposerBody schedules an async re-render, and the
+  // setTimeout(() => handleSend(), 0) would still read the OLD body via
+  // closure on the current render.
+  const handleSend = async (bodyOverride) => {
     if (!activeThread) return;
     const lead = activeThread.lead;
-    if (!composerBody.trim()) return;
+    const body = (typeof bodyOverride === 'string' ? bodyOverride : composerBody).trim();
+    if (!body) return;
     if (composerChannel === 'sms' && lead.opted_out) {
       showToast({ message: 'Lead has opted out of SMS', kind: 'error' });
       return;
@@ -12852,7 +12859,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       if (composerChannel === 'sms') {
         const result = await sendSMS({
           leadId: lead.id,
-          body: composerBody,
+          body,
           kind: 'manual',
           idempotencyKey: `inbox-${lead.id}-${Date.now()}`,
           automated: false,
@@ -12874,10 +12881,12 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       } else {
         // Auto-append the agent's signature if they have one and the body
         // doesn't already include it (avoid double-signing on quoted replies).
+        // Use `body` (which respects bodyOverride from the AI Send-now path)
+        // instead of composerBody so the override actually goes out.
         const sig = (settings?.emailSignature || '').trim();
-        const finalBody = sig && !composerBody.includes(sig)
-          ? `${composerBody}\n\n${sig}`
-          : composerBody;
+        const finalBody = sig && !body.includes(sig)
+          ? `${body}\n\n${sig}`
+          : body;
         const result = await sendEmail({
           leadId: lead.id, subject: composerSubject || '(no subject)', body: finalBody,
           kind: 'manual', idempotencyKey: `inbox-email-${lead.id}-${Date.now()}`, automated: false,
@@ -12895,7 +12904,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
         } : {
           id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
           to: lead.email, via: 'resend',
-          subject: composerSubject, body: composerBody, timestamp: new Date().toISOString(),
+          subject: composerSubject, body, timestamp: new Date().toISOString(),
         };
       }
       await updateLead(lead.id, {
@@ -13171,22 +13180,47 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                       <div className="text-sm text-slate-800 whitespace-pre-wrap bg-white rounded-lg p-2.5 border border-slate-200">
                         {aiSlot.suggestion}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* SEND NOW — primary action. Stuffs the AI draft into
+                            the composer state AND immediately fires handleSend.
+                            One-tap reply when the AI nailed it. The existing
+                            sending-state guard on handleSend prevents
+                            double-click. Disabled if the lead opted out so we
+                            don't accidentally fire an SMS to someone who
+                            asked us to stop. */}
                         <button
-                          onClick={() => setComposerBody(aiSlot.suggestion)}
-                          className="px-3 py-1.5 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5"
+                          onClick={() => {
+                            setComposerBody(aiSlot.suggestion);
+                            // Send on the next tick so the state update lands
+                            // before handleSend reads composerBody. (handleSend
+                            // also reads composerBody via closure on the
+                            // current render; passing the body explicitly
+                            // would be cleaner but the current architecture
+                            // works because setComposerBody schedules a
+                            // re-render and the click handler returns first.)
+                            setTimeout(() => handleSend(aiSlot.suggestion), 0);
+                          }}
+                          disabled={sending || (composerChannel === 'sms' && activeThread.lead.opted_out)}
+                          className="px-3 py-1.5 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                           style={{ backgroundColor: 'var(--brand-gold)' }}
+                          title="Send the AI draft exactly as written"
                         >
-                          <Check className="w-3 h-3" /> Use this draft
+                          <Send className="w-3 h-3" />
+                          {sending ? 'Sending…' : 'Send now'}
                         </button>
                         <button
-                          onClick={() => { setComposerBody(aiSlot.suggestion); }}
-                          className="text-[10px] text-slate-500 hover:text-slate-900"
-                          title="Paste and edit before sending"
+                          onClick={() => {
+                            setComposerBody(aiSlot.suggestion);
+                            // Focus composer so Morgan can immediately tweak.
+                            const ta = document.querySelector('[data-inbox-composer] textarea');
+                            if (ta) ta.focus();
+                          }}
+                          className="px-3 py-1.5 rounded-full text-xs font-medium bg-white text-slate-700 border border-slate-300 hover:border-slate-500 inline-flex items-center gap-1.5"
+                          title="Paste and tweak before sending"
                         >
-                          Use &amp; edit
+                          <Edit3 className="w-3 h-3" /> Edit first
                         </button>
-                        <span className="text-[10px] text-slate-400 ml-auto">Claude Haiku · review before sending</span>
+                        <span className="text-[10px] text-slate-400 ml-auto">Claude Haiku · review tone before sending</span>
                       </div>
                     </div>
                   ) : (
