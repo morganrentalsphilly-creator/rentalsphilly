@@ -1015,8 +1015,10 @@ function Button({ variant = 'primary', size = 'md', icon: Icon, iconRight: IconR
 }
 
 function Card({ children, className = '', ...props }) {
+  // Subtle shadow + crisper border gives cards gentle depth on the slate-50
+  // admin canvas without feeling heavy. Classic Linear / Stripe / Notion look.
   return (
-    <div className={`rounded-2xl border border-slate-200 bg-white ${className}`} {...props}>
+    <div className={`rounded-2xl border border-slate-200 bg-white shadow-[0_1px_2px_0_rgba(15,23,42,0.04)] ${className}`} {...props}>
       {children}
     </div>
   );
@@ -2247,7 +2249,7 @@ export default function App() {
         ) : !isAdminEmail(session.user?.email) ? (
           <AdminUnauthorized email={session.user?.email} />
         ) : !adminDataLoaded ? (
-          <div className="max-w-7xl mx-auto px-6 md:px-8 py-8 animate-pulse">
+          <div className="min-h-screen bg-slate-50 -mt-px"><div className="max-w-7xl mx-auto px-6 md:px-8 py-8 animate-pulse">
             <div className="flex items-center justify-between mb-8">
               <div>
                 <div className="h-8 w-32 bg-slate-200 rounded mb-2" />
@@ -2262,7 +2264,7 @@ export default function App() {
               {[1,2,3,4].map(i => <div key={i} className="h-24 bg-slate-100 rounded-2xl" />)}
             </div>
             <div className="h-64 bg-slate-100 rounded-2xl" />
-          </div>
+          </div></div>
         ) : (
           <AdminCRM leads={leads} addLead={addLead} updateLead={updateLead} removeLead={removeLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
         )
@@ -7028,7 +7030,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
   }, [leads]);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 md:px-8 py-6 md:py-8">
+    <div className="min-h-screen bg-slate-50 -mt-px"><div className="max-w-7xl mx-auto px-4 md:px-8 py-6 md:py-8">
       <div className="flex items-center justify-between mb-6 md:mb-8 gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <Logo size="md" />
@@ -7303,7 +7305,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
         showToast(`${msg.channel === 'sms' ? 'SMS' : 'Email'} sent`);
         setComposeModal(null);
       }} />}
-    </div>
+    </div></div>
   );
 }
 
