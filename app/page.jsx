@@ -14032,34 +14032,72 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                 </div>
               </div>
               <div ref={scrollerRef} className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-50">
-                {activeThread.messages.map((m) => {
-                  const out = m.direction === 'outbound';
-                  return (
-                    <div key={m.id} className={`flex ${out ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[78%] rounded-2xl px-3.5 py-2 text-sm ${
-                        out ? 'bg-slate-900 text-white' : 'bg-white text-slate-900 border border-slate-200'
-                      }`}>
-                        {m.subject && <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${out ? 'text-white/60' : 'text-slate-400'}`}>{m.subject}</div>}
-                        <div className="whitespace-pre-wrap break-words">{m.body}</div>
-                        <div className={`text-[10px] mt-1 flex items-center gap-1.5 ${out ? 'text-white/60' : 'text-slate-400'}`}>
-                          {m.channel === 'sms' ? <MessageSquare className="w-2.5 h-2.5" /> : <Mail className="w-2.5 h-2.5" />}
-                          {timeAgo(m.timestamp)}
-                          {m.automated && <span>· auto</span>}
-                          {out && m.channel === 'email' && m.clickedAt && (
-                            <span title={`Clicked link ${new Date(m.clickedAt).toLocaleString()}`}>· ✓✓ clicked</span>
-                          )}
-                          {out && m.channel === 'email' && m.openedAt && !m.clickedAt && (
-                            <span title={`Opened ${new Date(m.openedAt).toLocaleString()}`}>· ✓✓ opened</span>
-                          )}
-                          {out && m.channel === 'email' && !m.openedAt && m.deliveryStatus === 'delivered' && (
-                            <span>· ✓ delivered</span>
-                          )}
-                          {m.status && out && !m.openedAt && m.channel !== 'email' && <span>· {m.status}</span>}
+                {(() => {
+                  // Group messages by day with a subtle date divider so long
+                  // threads stay scannable. Within each day we show timestamps
+                  // as "2:34 PM"; the day header carries the date context.
+                  const dayLabel = (iso) => {
+                    if (!iso) return '';
+                    const d = new Date(iso);
+                    const now = new Date();
+                    const startOfDay = (x) => { const y = new Date(x); y.setHours(0,0,0,0); return y.getTime(); };
+                    const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
+                    if (diffDays === 0) return 'Today';
+                    if (diffDays === 1) return 'Yesterday';
+                    if (diffDays < 7) return d.toLocaleDateString('en-US', { weekday: 'long' });
+                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: now.getFullYear() === d.getFullYear() ? undefined : 'numeric' });
+                  };
+                  const timeLabel = (iso) => iso
+                    ? new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                    : '';
+                  let lastDay = null;
+                  const out = [];
+                  for (const m of activeThread.messages) {
+                    const thisDay = m.timestamp ? new Date(m.timestamp).toDateString() : '';
+                    if (thisDay && thisDay !== lastDay) {
+                      out.push(
+                        <div key={`day-${m.id}`} className="flex items-center gap-3 my-3">
+                          <div className="flex-1 h-px bg-slate-200" />
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2">
+                            {dayLabel(m.timestamp)}
+                          </div>
+                          <div className="flex-1 h-px bg-slate-200" />
+                        </div>
+                      );
+                      lastDay = thisDay;
+                    }
+                    const isOut = m.direction === 'outbound';
+                    // Highlight messages received in the last 60s with a
+                    // gentle pulse so new realtime arrivals catch the eye.
+                    const isFresh = m.timestamp && (Date.now() - new Date(m.timestamp).getTime()) < 60000;
+                    out.push(
+                      <div key={m.id} className={`flex ${isOut ? 'justify-end' : 'justify-start'} ${isFresh ? 'animate-fade-in' : ''}`}>
+                        <div className={`max-w-[78%] rounded-2xl px-3.5 py-2 text-sm shadow-sm ${
+                          isOut ? 'bg-slate-900 text-white' : 'bg-white text-slate-900 border border-slate-200'
+                        }`}>
+                          {m.subject && <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${isOut ? 'text-white/60' : 'text-slate-400'}`}>{m.subject}</div>}
+                          <div className="whitespace-pre-wrap break-words leading-relaxed">{m.body}</div>
+                          <div className={`text-[10px] mt-1 flex items-center gap-1.5 ${isOut ? 'text-white/60' : 'text-slate-400'}`}>
+                            {m.channel === 'sms' ? <MessageSquare className="w-2.5 h-2.5" /> : <Mail className="w-2.5 h-2.5" />}
+                            <span title={m.timestamp ? new Date(m.timestamp).toLocaleString() : ''}>{timeLabel(m.timestamp)}</span>
+                            {m.automated && <span>· auto</span>}
+                            {isOut && m.channel === 'email' && m.clickedAt && (
+                              <span title={`Clicked link ${new Date(m.clickedAt).toLocaleString()}`}>· ✓✓ clicked</span>
+                            )}
+                            {isOut && m.channel === 'email' && m.openedAt && !m.clickedAt && (
+                              <span title={`Opened ${new Date(m.openedAt).toLocaleString()}`}>· ✓✓ opened</span>
+                            )}
+                            {isOut && m.channel === 'email' && !m.openedAt && m.deliveryStatus === 'delivered' && (
+                              <span>· ✓ delivered</span>
+                            )}
+                            {m.status && isOut && !m.openedAt && m.channel !== 'email' && <span>· {m.status}</span>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  }
+                  return out;
+                })()}
               </div>
               {/* AI SUGGESTED REPLY — appears above composer when the last
                   message is inbound. */}

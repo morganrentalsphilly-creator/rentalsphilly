@@ -64,12 +64,13 @@ export async function POST(request, ctx) {
 
     // Log activity
     const firstAddr = (tour.listings || []).map((l) => l.address).filter(Boolean)[0] || 'their tour';
-    await db.from('activities').insert({
+    const { error: reschedActErr } = await db.from('activities').insert({
       id: `a_${Date.now()}`,
       lead_id: lead.id,
       type: 'tour-rescheduled',
       message: `Lead rescheduled ${firstAddr} from ${oldDate} ${oldTime} → ${slotDate} ${slotTime}`,
     });
+    if (reschedActErr) console.error('[reschedule] activity insert FAILED', { leadId: lead.id, error: reschedActErr.message });
 
     // Confirm to the lead by SMS.
     await sendSms({

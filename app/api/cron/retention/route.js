@@ -88,12 +88,13 @@ export async function GET(request) {
         if (result.ok) {
           sent++;
           log.push({ id: lead.id, kind: 'post-lease-review' });
-          await db.from('leads').update({
+          const { error: histErr } = await db.from('leads').update({
             raw: {
               ...(lead.raw || {}),
               retention_history: { ...history, post_lease_review: new Date().toISOString() },
             },
           }).eq('id', lead.id);
+          if (histErr) console.error('[retention] post-lease retention_history write FAILED — may re-fire', { leadId: lead.id, error: histErr.message });
         } else { errors++; }
       } catch (err) { errors++; console.error('[retention post-lease]', err); }
       continue;
@@ -113,12 +114,13 @@ export async function GET(request) {
           if (result.ok) {
             sent++;
             log.push({ id: lead.id, kind: 'anniversary', year: yearsSinceMoveIn });
-            await db.from('leads').update({
+            const { error: annivHistErr } = await db.from('leads').update({
               raw: {
                 ...(lead.raw || {}),
                 retention_history: { ...history, [annivKey]: new Date().toISOString() },
               },
             }).eq('id', lead.id);
+            if (annivHistErr) console.error('[retention] anniversary retention_history write FAILED — may re-fire', { leadId: lead.id, annivKey, error: annivHistErr.message });
           } else { errors++; }
         } catch (err) { errors++; console.error('[retention anniv]', err); }
       }

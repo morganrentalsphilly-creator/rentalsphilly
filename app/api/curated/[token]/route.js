@@ -143,7 +143,7 @@ export async function POST(request, ctx) {
         return NextResponse.json({ ok: true, phase: 'awaiting-scheduling', idempotent: true });
       }
 
-      await db.from('leads').update({
+      const { error: phase1LeadErr } = await db.from('leads').update({
         stage: 'tour-requested',
         raw: {
           ...(lead.raw || {}),
@@ -152,13 +152,15 @@ export async function POST(request, ctx) {
           curated_submitted_at: new Date().toISOString(),
         },
       }).eq('id', lead.id);
+      if (phase1LeadErr) console.error('[curated POST phase 1] lead.update FAILED', { leadId: lead.id, error: phase1LeadErr.message, code: phase1LeadErr.code });
 
-      await db.from('activities').insert({
+      const { error: phase1ActErr } = await db.from('activities').insert({
         id: `a_${Date.now()}`,
         lead_id: lead.id,
         type: 'curated-properties-picked',
         message: `Lead picked ${addresses.length} ${addresses.length === 1 ? 'property' : 'properties'}: ${addresses.slice(0, 3).join(', ')}${addresses.length > 3 ? ` +${addresses.length - 3} more` : ''}${note ? ' · Note: ' + note.slice(0, 80) : ''}`,
       });
+      if (phase1ActErr) console.error('[curated POST phase 1] activity insert FAILED', { leadId: lead.id, error: phase1ActErr.message });
 
       // Confirm to the lead so they know we got it.
       await sendSms({
@@ -212,7 +214,7 @@ export async function POST(request, ctx) {
         inserted.push(row);
       }
 
-      await db.from('leads').update({
+      const { error: phase2LeadErr } = await db.from('leads').update({
         stage: 'tour-booked',
         raw: {
           ...(lead.raw || {}),
@@ -220,13 +222,15 @@ export async function POST(request, ctx) {
           times_submitted_at: new Date().toISOString(),
         },
       }).eq('id', lead.id);
+      if (phase2LeadErr) console.error('[curated POST phase 2] lead.update FAILED — idempotency lost, tour-booked stage not set', { leadId: lead.id, error: phase2LeadErr.message, code: phase2LeadErr.code });
 
-      await db.from('activities').insert({
+      const { error: phase2ActErr } = await db.from('activities').insert({
         id: `a_${Date.now()}`,
         lead_id: lead.id,
         type: 'tour-times-picked',
         message: `Lead picked ${inserted.length} tour ${inserted.length === 1 ? 'time' : 'times'}${note ? ' · Note: ' + note.slice(0, 80) : ''}`,
       });
+      if (phase2ActErr) console.error('[curated POST phase 2] activity insert FAILED', { leadId: lead.id, error: phase2ActErr.message });
 
       // Confirm to lead.
       const summary = picks.map((p) => `• ${p.address} — ${p.slotDate} ${p.slotTime}`).join('\n');

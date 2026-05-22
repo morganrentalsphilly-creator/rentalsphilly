@@ -28,6 +28,15 @@
 .text-brand-ink { color: var(--brand-ink); }
 .hover\:bg-brand-gold-hover:hover { background-color: var(--brand-gold-hover); }
 
+/* Used by the inbox message bubble for newly-arrived messages (last 60s).
+   A short, soft scale + fade so the live realtime push feels alive without
+   being distracting. */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-fade-in { animation: fade-in 0.25s ease-out; }
+
 /* Force light theme — admin views weren't designed for dark mode and the
    media query was making them illegible on devices with dark mode on. */
 html, body {

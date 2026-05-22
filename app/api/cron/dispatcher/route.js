@@ -147,7 +147,14 @@ async function runReminders(db) {
       if (result.ok) {
         sent++;
         const next = { ...reminders, [t.flag]: new Date().toISOString() };
-        await db.from('tours').update({ reminders_sent: next }).eq('id', tour.id);
+        const { error: flagErr } = await db.from('tours').update({ reminders_sent: next }).eq('id', tour.id);
+        if (flagErr) {
+          // CRITICAL: if this fails we'll re-fire the same reminder on the
+          // next cron tick. Loud-log so it surfaces in Vercel logs.
+          console.error('[cron] reminders_sent flag write FAILED — reminder may re-fire', {
+            tourId: tour.id, flag: t.flag, error: flagErr.message, code: flagErr.code,
+          });
+        }
         await sleep(PER_MESSAGE_DELAY_MS);
       } else {
         errors++;
@@ -210,10 +217,11 @@ async function runBlastDrain(db) {
     .eq('status', 'queued')
     .limit(5);
   for (const b of (queued || [])) {
-    await db
+    const { error: queueErr } = await db
       .from('sms_blasts')
       .update({ status: 'sending', started_at: new Date().toISOString() })
       .eq('id', b.id);
+    if (queueErr) console.error('[cron] sms_blasts queued→sending update FAILED — blast stuck', { blastId: b.id, error: queueErr.message });
   }
 
   // Drain active blasts.
@@ -258,11 +266,12 @@ async function runBlastDrain(db) {
           else if (r.status === 'failed') tally.failed_count++;
           else if (r.status === 'opted_out') tally.opted_out_count++;
         }
-        await db.from('sms_blasts').update({
+        const { error: doneErr } = await db.from('sms_blasts').update({
           status: 'done',
           completed_at: new Date().toISOString(),
           ...tally,
         }).eq('id', blast.id);
+        if (doneErr) console.error('[cron] sms_blasts mark-done update FAILED — blast stuck in sending', { blastId: blast.id, error: doneErr.message });
       }
       continue;
     }
@@ -395,12 +404,20 @@ async function runStageNudges(db) {
         });
         if (result.ok) sent++;
         // Mark as nudged regardless of opt-out outcome (we don't want to retry).
-        await db.from('leads').update({
+        const { error: nudgeFlagErr } = await db.from('leads').update({
           raw: {
             ...(lead.raw || {}),
             nudge_history: { ...history, [rule.key]: new Date().toISOString() },
           },
         }).eq('id', lead.id);
+        if (nudgeFlagErr) {
+          // If we don't capture this, the same lead gets the same nudge
+          // every cron tick until the row finally writes — a brutal UX
+          // and a TCPA exposure.
+          console.error('[cron] nudge_history write FAILED — nudge may re-fire', {
+            leadId: lead.id, rule: rule.key, error: nudgeFlagErr.message, code: nudgeFlagErr.code,
+          });
+        }
         await sleep(PER_MESSAGE_DELAY_MS);
       } catch (err) {
         console.error('[cron stage nudge] failed', { leadId: lead.id, rule: rule.key, err: err.message });
