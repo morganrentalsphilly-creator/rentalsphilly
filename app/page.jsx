@@ -9832,6 +9832,278 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
   );
 }
 
+// ============================================================
+// APPLICATION LINK PANEL
+// ============================================================
+// Post-tour, the lead picks a property they want to apply to. There are two
+// distinct workflows:
+//
+//   • OUR LISTING (default) — RentSpree application. Lead applies through
+//     our agency's RentSpree account, we get the screening report directly,
+//     then submit the package to the landlord.
+//
+//   • EXTERNAL LISTING — another agent's property. We send the lead an
+//     external application link (Zillow, the building's portal, the agent's
+//     own system) and coordinate with the listing agent ourselves. We track
+//     the listing agent's contact info for follow-ups.
+//
+// State lives in lead.raw.application_link so it survives without a new
+// schema column. Auto-shows only for stages where apps make sense:
+// post-tour, applied, leased, paid.
+function ApplicationLinkPanel({ lead, updateLead, showToast, settings }) {
+  const existing = lead.raw?.application_link || {};
+  const eligibleStages = ['post-tour', 'applied', 'leased', 'paid'];
+  const [mode, setMode] = useState(existing.mode || 'rentspree');
+  const [externalUrl, setExternalUrl] = useState(existing.external_url || '');
+  const [listingAgent, setListingAgent] = useState({
+    name: existing.listing_agent?.name || '',
+    email: existing.listing_agent?.email || '',
+    phone: existing.listing_agent?.phone || '',
+    brokerage: existing.listing_agent?.brokerage || '',
+  });
+  const [busy, setBusy] = useState(false);
+  const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+  const rentSpreeUrl = settings?.rentSpree?.dashboardUrl || 'https://app.rentspree.com/dashboard';
+  const sentAt = existing.sent_at;
+  const sentMode = existing.mode;
+
+  // Hide entirely for stages before/after the application window so the
+  // Overview tab isn't cluttered with irrelevant action panels.
+  if (!eligibleStages.includes(lead.stage)) return null;
+
+  // Compose the message body for each mode. The RentSpree flow sends a
+  // hand-rolled SMS/email pointing to our RentSpree agent link; the external
+  // flow uses the URL the agent paste in.
+  const buildMessages = () => {
+    if (mode === 'rentspree') {
+      const sms =
+        `Rentals Philly: Ready to apply for the place? Tap this link to start your RentSpree application — credit + background takes 5-10 min: ${rentSpreeUrl}`;
+      const emailSubject = 'Your rental application — let\'s get started';
+      const emailBody =
+        `Hi ${firstName},\n\nReady to lock in the place you saw? Tap below to fill out your RentSpree application — credit + background screening, takes 5-10 minutes:\n\n${rentSpreeUrl}\n\n` +
+        `Once you submit, I'll review and send your application to the landlord. Any questions, just text.\n\n— Morgan`;
+      return { sms, emailSubject, emailBody };
+    }
+    // External mode
+    const sms =
+      `Rentals Philly: To apply for that place${listingAgent.name ? ` (listed by ${listingAgent.name})` : ''}, use this link: ${externalUrl}. Let me know once you've submitted — I'll coordinate with the listing agent.`;
+    const emailSubject = 'Application link for the place you saw';
+    const emailBody =
+      `Hi ${firstName},\n\nHere's the application link for the place you toured${listingAgent.name ? ` — listed by ${listingAgent.name}${listingAgent.brokerage ? ` at ${listingAgent.brokerage}` : ''}` : ''}:\n\n${externalUrl}\n\n` +
+      `Once you submit, let me know — I'll follow up with the listing agent on your behalf and keep you posted.\n\n— Morgan`;
+    return { sms, emailSubject, emailBody };
+  };
+
+  const canSend =
+    mode === 'rentspree'
+      ? !!rentSpreeUrl
+      : !!externalUrl.trim() && /^https?:\/\//.test(externalUrl.trim());
+
+  const onSend = async () => {
+    if (!canSend) {
+      showToast({ message: mode === 'rentspree' ? 'Set your RentSpree dashboard URL in Settings → Integrations first.' : 'Paste a valid application URL first.', kind: 'error' });
+      return;
+    }
+    setBusy(true);
+    const { sms, emailSubject, emailBody } = buildMessages();
+    try {
+      const smsResult = await sendSMS({
+        leadId: lead.id,
+        body: sms,
+        kind: 'application_link',
+        idempotencyKey: `app-link-${lead.id}-${Date.now()}`,
+        automated: false,
+      });
+      if (!smsResult.ok && smsResult.error !== 'opted_out') {
+        showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
+        setBusy(false);
+        return;
+      }
+      await sendEmail({
+        leadId: lead.id,
+        subject: emailSubject,
+        body: emailBody,
+        kind: 'application_link',
+        idempotencyKey: `app-link-email-${lead.id}-${Date.now()}`,
+        automated: false,
+      });
+      // Persist the link state inside lead.raw so this survives reloads and
+      // shows the "already sent" UI when the panel re-renders.
+      await updateLead(lead.id, {
+        raw: {
+          ...(lead.raw || {}),
+          application_link: {
+            mode,
+            external_url: mode === 'external' ? externalUrl.trim() : null,
+            listing_agent: mode === 'external' ? listingAgent : null,
+            sent_at: new Date().toISOString(),
+          },
+        },
+        activities: [...(lead.activities || []), {
+          id: `a_${Date.now()}`,
+          type: 'application-link-sent',
+          timestamp: new Date().toISOString(),
+          message: mode === 'rentspree'
+            ? 'RentSpree application link sent'
+            : `External application link sent${listingAgent.name ? ` (${listingAgent.name})` : ''}`,
+        }],
+      });
+      showToast('Application link sent');
+    } catch (err) {
+      console.error('[application link]', err);
+      showToast({ message: `Send failed: ${err.message}`, kind: 'error' });
+    }
+    setBusy(false);
+  };
+
+  const updateAgent = (k, v) => setListingAgent((prev) => ({ ...prev, [k]: v }));
+
+  return (
+    <Card className="p-5 space-y-4 bg-violet-50/40 border-violet-200">
+      <div className="flex items-start gap-3">
+        <div className="w-8 h-8 rounded-lg bg-violet-200 text-violet-900 flex items-center justify-center shrink-0">
+          <FileCheck className="w-4 h-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-slate-900">
+            {sentAt ? 'Re-send application link' : 'Send application link'}
+          </div>
+          <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+            After the tour. Pick the right flow depending on whose listing it is.
+            {sentAt && (
+              <span className="ml-2 text-violet-700 font-medium">
+                Last sent {timeAgo(sentAt)}{sentMode ? ` · ${sentMode === 'rentspree' ? 'RentSpree' : 'External'}` : ''}.
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Mode picker — RentSpree (our listings) vs External (other agents') */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode('rentspree')}
+          className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-colors ${
+            mode === 'rentspree'
+              ? 'border-violet-500 bg-white text-violet-900'
+              : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400'
+          }`}
+        >
+          <div className="text-sm">RentSpree</div>
+          <div className="text-[10px] font-normal text-slate-500 mt-0.5">Our listing — full screening</div>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('external')}
+          className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border-2 transition-colors ${
+            mode === 'external'
+              ? 'border-violet-500 bg-white text-violet-900'
+              : 'border-slate-200 bg-white text-slate-600 hover:border-slate-400'
+          }`}
+        >
+          <div className="text-sm">External link</div>
+          <div className="text-[10px] font-normal text-slate-500 mt-0.5">Another agent's property</div>
+        </button>
+      </div>
+
+      {/* RentSpree mode body */}
+      {mode === 'rentspree' && (
+        <div className="text-xs text-slate-600 leading-relaxed bg-white border border-slate-200 rounded-lg p-3">
+          Sends {firstName} a link to your RentSpree dashboard so they can fill out the
+          credit + background screening. The screening report lands back in your
+          dashboard once they submit.
+          {!rentSpreeUrl && (
+            <div className="mt-2 text-amber-700 font-medium">
+              ⚠ Set your RentSpree dashboard URL in Settings → Integrations first.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* External mode body — URL + listing agent contact info */}
+      {mode === 'external' && (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+              Application URL
+            </label>
+            <input
+              type="url"
+              value={externalUrl}
+              onChange={(e) => setExternalUrl(e.target.value)}
+              placeholder="https://..."
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500 font-mono"
+            />
+            <div className="text-[11px] text-slate-500 mt-1">
+              Paste the listing agent's application link (Zillow, their portal, building website, etc.).
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+              Listing agent (for your records + follow-up)
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                type="text"
+                value={listingAgent.name}
+                onChange={(e) => updateAgent('name', e.target.value)}
+                placeholder="Agent name"
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+              />
+              <input
+                type="text"
+                value={listingAgent.brokerage}
+                onChange={(e) => updateAgent('brokerage', e.target.value)}
+                placeholder="Brokerage"
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+              />
+              <input
+                type="email"
+                value={listingAgent.email}
+                onChange={(e) => updateAgent('email', e.target.value)}
+                placeholder="agent@brokerage.com"
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                autoCapitalize="off"
+                inputMode="email"
+              />
+              <input
+                type="tel"
+                value={listingAgent.phone}
+                onChange={(e) => updateAgent('phone', formatUsPhone(e.target.value))}
+                placeholder="(215) 555-0123"
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                inputMode="tel"
+                maxLength={14}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] text-slate-500">
+          Sends to: <span className="font-mono">{lead.phone}</span> · <span className="font-mono">{lead.email}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {mode === 'external' && listingAgent.email && (
+            <a
+              href={`mailto:${listingAgent.email}?subject=${encodeURIComponent(`Inquiry about your listing — applicant ${lead.fullName}`)}`}
+              className="text-[11px] font-medium text-violet-700 hover:text-violet-900 underline inline-flex items-center gap-1"
+              title="Email the listing agent directly"
+            >
+              <Mail className="w-3 h-3" /> Email agent
+            </a>
+          )}
+          <Button onClick={onSend} disabled={busy || !canSend}>
+            {busy ? 'Sending…' : sentAt ? 'Re-send link' : 'Send to lead'}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function CuratedLinkPanel({ lead, updateLead, showToast }) {
   const [url, setUrl] = useState(lead.raw?.curated_portal_url || '');
   const [busy, setBusy] = useState(false);
@@ -10454,6 +10726,7 @@ function LeadActivityTimeline({ lead }) {
     if (type === 'message-out') return { icon: Send, color: 'text-blue-600 bg-blue-50' };
     if (type === 'lead-created') return { icon: Sparkles, color: 'text-emerald-600 bg-emerald-50' };
     if (type === 'note') return { icon: Edit3, color: 'text-slate-700 bg-slate-100' };
+    if (type === 'application-link-sent') return { icon: FileCheck, color: 'text-violet-700 bg-violet-100' };
     if (type?.startsWith('stage-')) return { icon: Activity, color: 'text-violet-600 bg-violet-50' };
     if (type?.includes('tour-')) return { icon: CalendarDays, color: 'text-blue-600 bg-blue-50' };
     if (type?.includes('task')) return { icon: CheckCircle2, color: 'text-slate-600 bg-slate-100' };
@@ -10927,6 +11200,9 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
               <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+              {/* Phase 3: post-tour, send application link — RentSpree (our
+                  listings) or external link (other agents' properties). */}
+              <ApplicationLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} settings={settings} />
               {/* Commission tracking (only after stage >= applied). */}
               <CommissionPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
