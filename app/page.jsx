@@ -2652,6 +2652,60 @@ const PHILLY_ZIPS = [
   { zip: '19154', lat: 40.0967, lng: -74.9920, name: 'Far Northeast / Parkwood' },
 ];
 
+// Region quick-pick groupings — most renters think in neighborhoods, not ZIPs.
+// Each region is a curated bundle of ZIPs that map to a recognizable area.
+// Tapping a region toggles every ZIP in it on/off as a group.
+const PHILLY_REGIONS = [
+  {
+    id: 'center-city',
+    label: 'Center City',
+    desc: 'Rittenhouse, Logan Sq, Old City, Wash Sq',
+    zips: ['19102', '19103', '19106', '19107', '19130'],
+  },
+  {
+    id: 'fishtown',
+    label: 'Fishtown & NoLibs',
+    desc: 'Fishtown, Northern Liberties, Kensington',
+    zips: ['19122', '19123', '19125', '19134'],
+  },
+  {
+    id: 'south-philly',
+    label: 'South Philly',
+    desc: 'Grad Hospital, Queen Village, Passyunk',
+    zips: ['19145', '19146', '19147', '19148'],
+  },
+  {
+    id: 'west-philly',
+    label: 'West Philly',
+    desc: 'University City, Cedar Park, Powelton',
+    zips: ['19104', '19139', '19143'],
+  },
+  {
+    id: 'fairmount-mlb',
+    label: 'Fairmount & Brewerytown',
+    desc: 'Art Museum, Fairmount, Brewerytown',
+    zips: ['19121', '19130', '19131'],
+  },
+  {
+    id: 'manayunk-eastfalls',
+    label: 'Manayunk & East Falls',
+    desc: 'Manayunk, Roxborough, East Falls',
+    zips: ['19127', '19128', '19129'],
+  },
+  {
+    id: 'chestnut-mtairy',
+    label: 'NW Philly',
+    desc: 'Chestnut Hill, Mt Airy, Germantown',
+    zips: ['19118', '19119', '19144', '19150'],
+  },
+  {
+    id: 'northeast',
+    label: 'Northeast Philly',
+    desc: 'Fox Chase, Bustleton, Mayfair, Rhawnhurst',
+    zips: ['19111', '19114', '19115', '19116', '19135', '19136', '19149', '19152', '19154'],
+  },
+];
+
 // Interactive Philly ZIP map picker. Renders Leaflet inside a modal. Loads
 // Leaflet's JS via CDN on demand so it doesn't bloat the initial bundle.
 function ZipMapPicker({ selected, onChange, onClose }) {
@@ -2674,9 +2728,50 @@ function ZipMapPicker({ selected, onChange, onClose }) {
     });
   };
 
+  // Bulk-apply a region. If EVERY zip in the region is already selected,
+  // toggling clears them all (acts like an "unpick this region" button).
+  // Otherwise, adds any missing ones — never removes user's prior unrelated picks.
+  const toggleRegion = (region) => {
+    setSelSet((prev) => {
+      const next = new Set(prev);
+      const allOn = region.zips.every((z) => next.has(z));
+      for (const z of region.zips) {
+        if (allOn) next.delete(z);
+        else next.add(z);
+        const m = markersRef.current[z];
+        if (m && typeof m.setStyle === 'function') {
+          m.setStyle(markerStyle(next.has(z)));
+        }
+      }
+      return next;
+    });
+  };
+
+  // "Anywhere in Philly" — select every ZIP. Or, if all are already selected,
+  // clear everything.
+  const toggleAll = () => {
+    setSelSet((prev) => {
+      const allOn = PHILLY_ZIPS.length === prev.size;
+      const next = new Set(allOn ? [] : PHILLY_ZIPS.map((z) => z.zip));
+      for (const z of PHILLY_ZIPS) {
+        const m = markersRef.current[z.zip];
+        if (m && typeof m.setStyle === 'function') {
+          m.setStyle(markerStyle(next.has(z.zip)));
+        }
+      }
+      return next;
+    });
+  };
+
+  // Count selected per region for the chip-rail label.
+  const regionCount = (region) => region.zips.filter((z) => selSet.has(z)).length;
+
+  // Selected = brand gold fill + bigger + heavier border. Unselected = white
+  // fill with subtle slate border. High contrast across both — and the size
+  // bump means selected markers visibly pop out of the cluster.
   const markerStyle = (isSelected) => isSelected
-    ? { color: '#0f172a', fillColor: '#0f172a', fillOpacity: 0.7, weight: 2, radius: 14 }
-    : { color: '#64748b', fillColor: '#e2e8f0', fillOpacity: 0.7, weight: 2, radius: 12 };
+    ? { color: '#b58e54', fillColor: '#b58e54', fillOpacity: 0.85, weight: 3, radius: 16 }
+    : { color: '#94a3b8', fillColor: '#ffffff', fillOpacity: 0.9, weight: 1.5, radius: 13 };
 
   useEffect(() => {
     // Dynamically load Leaflet JS if not already present.
@@ -2696,7 +2791,17 @@ function ZipMapPicker({ selected, onChange, onClose }) {
       PHILLY_ZIPS.forEach((z) => {
         const isSel = selSet.has(z.zip);
         const marker = L.circleMarker([z.lat, z.lng], markerStyle(isSel));
-        marker.bindTooltip(`${z.zip} · ${z.name}`, { direction: 'top', offset: [0, -8] });
+        // Permanent ZIP label centered on the marker — saves a hover.
+        marker.bindTooltip(z.zip.slice(-3), {
+          permanent: true,
+          direction: 'center',
+          className: 'zip-marker-label',
+        });
+        // Hover tooltip shows the neighborhood name (richer context).
+        const namePopup = L.popup({ closeButton: false, autoPan: false, offset: [0, -10] })
+          .setContent(`<strong>${z.zip}</strong> · ${z.name}`);
+        marker.on('mouseover', (ev) => namePopup.setLatLng(ev.latlng).openOn(map));
+        marker.on('mouseout', () => map.closePopup(namePopup));
         marker.on('click', () => toggle(z.zip));
         marker.addTo(map);
         markersRef.current[z.zip] = marker;
@@ -2741,22 +2846,91 @@ function ZipMapPicker({ selected, onChange, onClose }) {
 
   const sortedSelected = Array.from(selSet).sort();
 
+  const allSelected = selSet.size === PHILLY_ZIPS.length;
+  const noneSelected = selSet.size === 0;
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-stretch md:items-center justify-center p-0 md:p-6" onClick={onClose}>
       <div className="bg-white w-full md:max-w-4xl md:rounded-2xl flex flex-col h-full md:h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        {/* HEADER */}
         <div className="border-b border-slate-200 px-5 py-3.5 flex items-center justify-between shrink-0">
-          <div>
-            <div className="font-semibold text-slate-900 text-sm">Pick neighborhoods on the map</div>
-            <div className="text-xs text-slate-500">Tap a ZIP to select / deselect. {selSet.size} selected.</div>
+          <div className="min-w-0">
+            <div className="font-semibold text-slate-900 text-sm">Where do you want to live?</div>
+            <div className="text-xs text-slate-500 truncate">
+              {noneSelected
+                ? 'Tap a region below, or any circle on the map. Skip to see anywhere.'
+                : allSelected
+                ? 'All Philly neighborhoods selected.'
+                : `${selSet.size} ZIP${selSet.size === 1 ? '' : 's'} selected.`}
+            </div>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center shrink-0"><X className="w-4 h-4" /></button>
         </div>
+
+        {/* REGION QUICK-PICKS — most renters think in neighborhoods, not ZIPs */}
+        <div className="border-b border-slate-200 px-5 py-2.5 bg-slate-50 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={toggleAll}
+              className={`px-2.5 py-1.5 rounded-full text-[11px] font-semibold transition-colors ${
+                allSelected
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:border-slate-400'
+              }`}
+            >
+              {allSelected ? '✓ Anywhere in Philly' : 'Anywhere in Philly'}
+            </button>
+            {PHILLY_REGIONS.map((r) => {
+              const n = regionCount(r);
+              const allOn = n === r.zips.length;
+              const some = n > 0 && !allOn;
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => toggleRegion(r)}
+                  title={r.desc}
+                  className={`px-2.5 py-1.5 rounded-full text-[11px] font-medium transition-colors inline-flex items-center gap-1 ${
+                    allOn
+                      ? 'bg-amber-50 text-amber-900 border-2 border-amber-400'
+                      : some
+                      ? 'bg-amber-50 text-amber-800 border-2 border-dashed border-amber-300'
+                      : 'bg-white text-slate-700 border border-slate-200 hover:border-slate-400'
+                  }`}
+                >
+                  {r.label}
+                  {n > 0 && (
+                    <span className={`text-[10px] tabular-nums ${allOn ? 'text-amber-700' : 'text-amber-700'}`}>
+                      {n}/{r.zips.length}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            {!noneSelected && (
+              <button
+                type="button"
+                onClick={toggleAll}
+                className="ml-auto text-[11px] text-slate-500 hover:text-slate-900 underline"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* MAP */}
         <div className="flex-1 relative">
           <div ref={mapDivRef} className="absolute inset-0" />
         </div>
+
+        {/* SELECTED PILLS */}
         {sortedSelected.length > 0 && (
           <div className="border-t border-slate-200 px-5 py-3 bg-slate-50 max-h-32 overflow-y-auto shrink-0">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">Selected ZIPs</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">
+              {sortedSelected.length} selected · click to remove
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {sortedSelected.map((z) => {
                 const info = PHILLY_ZIPS.find((p) => p.zip === z);
@@ -2766,18 +2940,44 @@ function ZipMapPicker({ selected, onChange, onClose }) {
                     onClick={() => toggle(z)}
                     className="px-2.5 py-1 rounded-full bg-slate-900 text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-slate-700"
                   >
-                    {z}{info ? ` · ${info.name.split(' / ')[0]}` : ''} <X className="w-3 h-3" />
+                    {info ? `${info.name.split(' / ')[0]} (${z})` : z} <X className="w-3 h-3" />
                   </button>
                 );
               })}
             </div>
           </div>
         )}
+
+        {/* FOOTER */}
         <div className="border-t border-slate-200 px-5 py-3 flex items-center justify-end gap-2 shrink-0">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={onSave}>Use {selSet.size} {selSet.size === 1 ? 'ZIP' : 'ZIPs'}</Button>
+          <Button onClick={onSave}>
+            {noneSelected
+              ? 'Skip — I\'m open anywhere'
+              : allSelected
+              ? 'Use anywhere in Philly'
+              : `Use ${selSet.size} neighborhood${selSet.size === 1 ? '' : 's'}`}
+          </Button>
         </div>
       </div>
+
+      {/* Permanent ZIP label styling — small white text centered on each marker */}
+      <style>{`
+        .zip-marker-label {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          color: #ffffff;
+          font-size: 9px;
+          font-weight: 700;
+          font-family: -apple-system, system-ui, sans-serif;
+          padding: 0;
+          margin: 0;
+          pointer-events: none;
+          text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+        }
+        .zip-marker-label::before { display: none !important; }
+      `}</style>
     </div>
   );
 }
