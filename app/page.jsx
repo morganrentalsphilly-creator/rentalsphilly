@@ -9388,8 +9388,9 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
 // chronological feed with iconFor() styling matching the global activity view.
 function LeadActivityTimeline({ lead }) {
   const firstName = (lead.fullName || '').split(' ')[0] || 'They';
+  const [filter, setFilter] = useState('all');
 
-  const events = useMemo(() => {
+  const allEvents = useMemo(() => {
     const out = [];
     for (const a of (lead.activities || [])) {
       out.push({
@@ -9415,6 +9416,30 @@ function LeadActivityTimeline({ lead }) {
     }
     return out.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   }, [lead, firstName]);
+
+  // Counts per filter — used to render the chip labels with "(N)" suffixes.
+  const counts = useMemo(() => {
+    const c = { all: allEvents.length, messages: 0, stages: 0, tasks: 0, tours: 0 };
+    for (const e of allEvents) {
+      if (e.type === 'message-in' || e.type === 'message-out' || e.type?.includes('message-sent')) c.messages++;
+      else if (e.type?.startsWith('stage-')) c.stages++;
+      else if (e.type?.includes('task')) c.tasks++;
+      else if (e.type?.includes('tour-') || e.type?.includes('curated') || e.type?.includes('scheduling')) c.tours++;
+    }
+    return c;
+  }, [allEvents]);
+
+  // Apply the selected filter. "All" shows everything; others narrow by type.
+  const events = useMemo(() => {
+    if (filter === 'all') return allEvents;
+    return allEvents.filter((e) => {
+      if (filter === 'messages') return e.type === 'message-in' || e.type === 'message-out' || e.type?.includes('message-sent');
+      if (filter === 'stages') return e.type?.startsWith('stage-');
+      if (filter === 'tasks') return e.type?.includes('task');
+      if (filter === 'tours') return e.type?.includes('tour-') || e.type?.includes('curated') || e.type?.includes('scheduling');
+      return true;
+    });
+  }, [allEvents, filter]);
 
   // Group events by day so a long timeline collapses into scannable date buckets.
   // The header is "Today" / "Yesterday" / "Mon Jul 14" depending on recency.
@@ -9462,12 +9487,67 @@ function LeadActivityTimeline({ lead }) {
     return { icon: Activity, color: 'text-slate-600 bg-slate-100' };
   };
 
+  // Filter chip rail — always renders above the timeline (even when empty)
+  // so the active filter is always visible. Disabled chips for zero-count
+  // categories so Morgan doesn't tap into a dead end.
+  const FILTER_OPTIONS = [
+    { id: 'all',      label: 'All',      count: counts.all },
+    { id: 'messages', label: 'Messages', count: counts.messages },
+    { id: 'stages',   label: 'Stages',   count: counts.stages },
+    { id: 'tasks',    label: 'Tasks',    count: counts.tasks },
+    { id: 'tours',    label: 'Tours',    count: counts.tours },
+  ];
+  const filterRail = (
+    <div className="flex flex-wrap gap-1.5 mb-4">
+      {FILTER_OPTIONS.map((f) => {
+        const isActive = filter === f.id;
+        const isEmpty = f.count === 0 && f.id !== 'all';
+        return (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => !isEmpty && setFilter(f.id)}
+            disabled={isEmpty}
+            className={`px-3 py-1 rounded-full text-[11px] font-semibold transition-colors ${
+              isActive ? 'bg-slate-900 text-white' :
+              isEmpty ? 'bg-slate-50 text-slate-300 cursor-not-allowed' :
+              'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {f.label}
+            <span className={`ml-1.5 tabular-nums ${isActive ? 'text-white/70' : 'text-slate-400'}`}>{f.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (allEvents.length === 0) {
+    return (
+      <>
+        {filterRail}
+        <EmptyState icon={Activity} title="No activity yet" desc="Messages, stage changes, and tasks will appear here as they happen." />
+      </>
+    );
+  }
+
   if (events.length === 0) {
-    return <EmptyState icon={Activity} title="No activity yet" desc="Messages, stage changes, and tasks will appear here as they happen." />;
+    // Has activity, but filter excludes everything. Distinct empty state so
+    // Morgan understands his filter is the reason it's blank, not the lead.
+    return (
+      <>
+        {filterRail}
+        <div className="text-center text-sm text-slate-400 py-8">
+          No <span className="text-slate-600">{filter}</span> events for this lead.
+          <button onClick={() => setFilter('all')} className="ml-2 underline text-slate-700 hover:text-slate-900">Show all</button>
+        </div>
+      </>
+    );
   }
 
   return (
     <div className="space-y-5">
+      {filterRail}
       {groups.map((group) => (
         <div key={group.label} className="space-y-2">
           <div className="sticky top-0 bg-white z-10 -mx-1 px-1 py-1 border-b border-slate-100">
