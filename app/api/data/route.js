@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { requireAdmin } from '@/lib/auth.server';
 
 // GET /api/data?resource=leads  → load everything (or a filtered slice)
 export async function GET(request) {
@@ -12,6 +13,7 @@ export async function GET(request) {
     if (resource === 'public') {
       // Lightweight load for landing / intake / listings flow. Skips all the
       // heavy CRM tables (leads, messages, activities, tasks, etc).
+      // INTENTIONALLY unauthenticated — used by the public landing page.
       const [properties, settingsRow] = await Promise.all([
         db.from('properties').select('*').eq('status', 'active').order('created_at', { ascending: false }),
         db.from('settings').select('*').eq('id', 1).single(),
@@ -34,6 +36,10 @@ export async function GET(request) {
     }
 
     if (resource === 'all') {
+      // Every CRM-level table — STRICTLY admin only. Without this gate, anyone
+      // hitting /api/data?resource=all would dump the whole database.
+      const auth = await requireAdmin(request);
+      if (!auth.ok) return auth.response;
       // Load everything needed to hydrate the admin CRM.
       const [leads, tours, slots, waitlist, messages, activities, tasks, submissions, nudges, properties, settingsRow] =
         await Promise.all([
@@ -74,11 +80,24 @@ export async function GET(request) {
 
 // POST /api/data  body: { action, ...payload }
 // Central write endpoint. Routes to the right handler based on `action`.
+//
+// Auth model:
+//   - `create_lead` is INTENTIONALLY public — the intake form has to be able
+//     to hit it without a login. We rely on the anti-spam guards in the form
+//     (honeypot + min-time) to keep junk out.
+//   - Every other action requires a valid admin session via requireAdmin().
 export async function POST(request) {
   try {
     const body = await request.json();
     const { action } = body;
     const db = supabaseAdmin();
+
+    // Gate non-public actions behind the admin auth check. Doing this up front
+    // means a single check covers every write besides intake-form lead creation.
+    if (action !== 'create_lead') {
+      const auth = await requireAdmin(request);
+      if (!auth.ok) return auth.response;
+    }
 
     switch (action) {
       case 'create_lead': {

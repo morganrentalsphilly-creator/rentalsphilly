@@ -8761,19 +8761,20 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
           reader.onerror = reject;
           reader.readAsDataURL(file);
         });
-        const res = await fetch('/api/data', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'upload_document',
+        let data;
+        try {
+          const db = await import('@/lib/db');
+          data = await db.uploadDocument({
             leadId: lead.id,
             filename: file.name,
             base64,
             contentType: file.type || 'application/octet-stream',
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.path) {
+          });
+        } catch (err) {
+          showToast(`Couldn't upload ${file.name}`);
+          continue;
+        }
+        if (!data?.path) {
           showToast(`Couldn't upload ${file.name}`);
           continue;
         }
@@ -8808,11 +8809,8 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
   const removeDoc = async (doc) => {
     if (!confirm(`Delete "${doc.filename}"? This is permanent.`)) return;
     try {
-      await fetch('/api/data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete_document', path: doc.path }),
-      });
+      const db = await import('@/lib/db');
+      await db.deleteDocument(doc.path);
     } catch (err) {
       console.warn('[doc delete] storage delete failed', err?.message);
     }
