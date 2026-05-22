@@ -7,6 +7,13 @@ const nextConfig: NextConfig = {
   // Without this, a barrel import like `import { Home } from 'lucide-react'`
   // can pull the entire icon set into the bundle (~tens of MB) — which
   // tanks first-load performance.
+  //
+  // NOTE: we deliberately do NOT also set
+  // `experimental.optimizePackageImports: ["lucide-react"]`. That option does
+  // the same tree-shaking job at a different layer, and on Next 16 the two
+  // overlapping pipelines collided and produced a generic
+  //   TypeError: The "path" argument must be of type string. Received undefined
+  // during `next build`. Stick to ONE optimizer for lucide-react.
   modularizeImports: {
     "lucide-react": {
       transform: "lucide-react/dist/esm/icons/{{ kebabCase member }}",
@@ -17,11 +24,6 @@ const nextConfig: NextConfig = {
       // stays as a named import and breaks since the icon files don't have
       // a named `Zap` export — they have `export default Zap`.
     },
-  },
-
-  // Tell Next.js which packages are safe to optimize on the server too.
-  experimental: {
-    optimizePackageImports: ["lucide-react"],
   },
 };
 
