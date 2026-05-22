@@ -4458,6 +4458,42 @@ function BookingView({ lead, listings, slots, onConfirm, onJoinWaitlist, onBack 
   const [selected, setSelected] = useState(null);
   const [waitlistMode, setWaitlistMode] = useState(false);
   const [waitlistDates, setWaitlistDates] = useState([]);
+  // Sync re-entry guards for both submit paths. onConfirm creates a tour
+  // row, onJoinWaitlist creates a waitlist row + sends a confirmation
+  // email — double-taps on a customer-facing button (often a phone) are
+  // very plausible and would corrupt Morgan's tour calendar.
+  const [confirming, setConfirming] = useState(false);
+  const confirmInFlightRef = useRef(false);
+  const waitlistInFlightRef = useRef(false);
+  const [joiningWaitlist, setJoiningWaitlist] = useState(false);
+  const handleConfirm = async () => {
+    if (!selected || confirming) return;
+    if (confirmInFlightRef.current) return;
+    confirmInFlightRef.current = true;
+    setConfirming(true);
+    try {
+      await onConfirm(selected);
+      // Parent navigates to booking-confirmed; component unmounts.
+    } catch (err) {
+      console.error('[booking confirm] failed', err);
+      confirmInFlightRef.current = false;
+      setConfirming(false);
+    }
+  };
+  const handleJoinWaitlist = async () => {
+    if (waitlistDates.length === 0 || joiningWaitlist) return;
+    if (waitlistInFlightRef.current) return;
+    waitlistInFlightRef.current = true;
+    setJoiningWaitlist(true);
+    try {
+      await onJoinWaitlist(waitlistDates);
+      // Parent navigates to waitlist-confirmed; component unmounts.
+    } catch (err) {
+      console.error('[join waitlist] failed', err);
+      waitlistInFlightRef.current = false;
+      setJoiningWaitlist(false);
+    }
+  };
 
   const bookableSlots = slots.filter(slotIsBookable).sort((a, b) => parseSlotDateTime(a) - parseSlotDateTime(b));
   const grouped = bookableSlots.reduce((acc, s) => { (acc[s.date] = acc[s.date] || []).push(s); return acc; }, {});
@@ -4515,8 +4551,8 @@ function BookingView({ lead, listings, slots, onConfirm, onJoinWaitlist, onBack 
             <EmptyState icon={Hourglass} title="No open slots right now" desc="Join the waitlist and we'll notify you the moment one opens." />
           )}
           <div className="flex gap-3">
-            <button onClick={() => selected && onConfirm(selected)} disabled={!selected} className="flex-1 bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 disabled:opacity-30 transition-colors">
-              {selected ? `Confirm ${fmtDate(selected.date)} · ${selected.time}` : 'Select a time'}
+            <button onClick={handleConfirm} disabled={!selected || confirming} className="flex-1 bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 disabled:opacity-30 transition-colors">
+              {confirming ? 'Confirming…' : selected ? `Confirm ${fmtDate(selected.date)} · ${selected.time}` : 'Select a time'}
             </button>
             <Button variant="outline" size="lg" onClick={() => setWaitlistMode(true)}>Join waitlist</Button>
           </div>
@@ -4538,8 +4574,8 @@ function BookingView({ lead, listings, slots, onConfirm, onJoinWaitlist, onBack 
               );
             })}
           </div>
-          <button onClick={() => waitlistDates.length > 0 && onJoinWaitlist(waitlistDates)} disabled={waitlistDates.length === 0} className="w-full bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 disabled:opacity-30 transition-colors">
-            Join waitlist for {waitlistDates.length} {waitlistDates.length === 1 ? 'date' : 'dates'}
+          <button onClick={handleJoinWaitlist} disabled={waitlistDates.length === 0 || joiningWaitlist} className="w-full bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 disabled:opacity-30 transition-colors">
+            {joiningWaitlist ? 'Joining…' : `Join waitlist for ${waitlistDates.length} ${waitlistDates.length === 1 ? 'date' : 'dates'}`}
           </button>
         </>
       )}
@@ -4559,12 +4595,34 @@ function WaitlistConfirmed({ lead, onDone }) {
 }
 
 function VirtualTourRequest({ lead, listings, onConfirm, onBack }) {
+  // Sync re-entry guard. onConfirm fires requestVirtualTour, which generates
+  // a fresh tour ID + idempotencyKey from Date.now() on each call. A
+  // double-tap would create two pending-video tour rows + send two SMS +
+  // two emails to the lead. The ref flips synchronously so the second tap
+  // returns immediately.
+  const [submitting, setSubmitting] = useState(false);
+  const submitInFlightRef = useRef(false);
+  const handleConfirm = async () => {
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+    setSubmitting(true);
+    try {
+      await onConfirm();
+      // Parent navigates to virtual-confirmed on success; component unmounts.
+    } catch (err) {
+      console.error('[virtual tour request] failed', err);
+      submitInFlightRef.current = false;
+      setSubmitting(false);
+    }
+  };
   return (
     <div className="max-w-2xl mx-auto px-6 md:px-8 py-12">
       <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={onBack} className="mb-6 -ml-2">Back</Button>
       <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 tracking-tight mb-3">Videos coming your way, {lead.fullName.split(' ')[0]}.</h1>
       <p className="text-slate-600 leading-relaxed mb-8">Walkthrough videos for {listings.length} properties within 24 hours.</p>
-      <button onClick={onConfirm} className="w-full bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 transition-colors">Request videos</button>
+      <button onClick={handleConfirm} disabled={submitting} className="w-full bg-slate-900 text-white py-3.5 rounded-full font-medium hover:bg-slate-800 disabled:opacity-50 transition-colors">
+        {submitting ? 'Sending…' : 'Request videos'}
+      </button>
     </div>
   );
 }
@@ -9513,6 +9571,14 @@ function ScreeningPasteModal({ lead, onClose, onSave, settings }) {
     agentNotes: existing?.agentNotes || '',
   });
   const [livePreview, setLivePreview] = useState(null);
+  // Submit guard for the Save button. Without this, a double-tap would
+  // re-call onSave -> saveScreeningReport, which generates a fresh reportId
+  // each time (Date.now() + random), giving each call a different
+  // idempotencyKey and sending the client SMS twice. Modal is also
+  // destroyed by the parent after success, so leaking the lock on success
+  // is fine.
+  const [saving, setSaving] = useState(false);
+  const saveInFlightRef = useRef(false);
 
   useEffect(() => {
     setLivePreview(interpretScreeningReport(form, lead));
@@ -9520,6 +9586,22 @@ function ScreeningPasteModal({ lead, onClose, onSave, settings }) {
 
   const update = (k, v) => setForm({ ...form, [k]: v });
   const canSave = form.creditScore || form.residenceScore;
+
+  const handleSave = async () => {
+    if (!canSave || saving) return;
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
+    setSaving(true);
+    try {
+      await onSave(form);
+      // Parent unmounts the modal on success; no need to release the lock.
+    } catch (err) {
+      console.error('[screening modal save] failed', err);
+      // Release the lock so the user can retry on failure.
+      saveInFlightRef.current = false;
+      setSaving(false);
+    }
+  };
 
   const toneMap = { approve: 'positive', conditional: 'warning', flag: 'danger' };
   const labelMap = { approve: 'Approve', conditional: 'Conditional', flag: 'Flag for review' };
@@ -9656,8 +9738,8 @@ function ScreeningPasteModal({ lead, onClose, onSave, settings }) {
           )}
           <div className="flex gap-2">
             <Button variant="outline" size="lg" onClick={onClose} className="flex-1">Cancel</Button>
-            <button onClick={() => onSave(form)} disabled={!canSave} className="flex-1 py-3 rounded-full bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors">
-              <Shield className="w-4 h-4" /> Save & notify client
+            <button onClick={handleSave} disabled={!canSave || saving} className="flex-1 py-3 rounded-full bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors">
+              <Shield className="w-4 h-4" /> {saving ? 'Saving…' : 'Save & notify client'}
             </button>
           </div>
         </div>
