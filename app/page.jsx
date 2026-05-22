@@ -2998,6 +2998,7 @@ function AreasPicker({ value, onChange }) {
 function IntakeForm({ onSubmit, onBack }) {
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
     moveInDate: '', budgetMin: '', budgetMax: '',
@@ -3122,6 +3123,14 @@ function IntakeForm({ onSubmit, onBack }) {
               value={data.fullName}
               onChange={(e) => update('fullName', e.target.value)}
               onBlur={() => markTouched('fullName')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  markTouched('fullName');
+                  const next = e.currentTarget.closest('form, .space-y-4')?.querySelector('input[type="email"]');
+                  if (next) next.focus();
+                }
+              }}
               placeholder="Alex Morgan"
               className={`form-input ${fieldHint('fullName') ? 'border-red-300' : ''}`}
             />
@@ -3134,6 +3143,14 @@ function IntakeForm({ onSubmit, onBack }) {
               value={data.email}
               onChange={(e) => update('email', e.target.value)}
               onBlur={() => markTouched('email')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  markTouched('email');
+                  const next = e.currentTarget.closest('form, .space-y-4')?.querySelector('input[type="tel"]');
+                  if (next) next.focus();
+                }
+              }}
               placeholder="alex@example.com"
               className={`form-input ${fieldHint('email') ? 'border-red-300' : ''}`}
             />
@@ -3146,6 +3163,17 @@ function IntakeForm({ onSubmit, onBack }) {
               value={data.phone}
               onChange={(e) => update('phone', formatUsPhone(e.target.value))}
               onBlur={() => markTouched('phone')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  markTouched('fullName');
+                  markTouched('email');
+                  markTouched('phone');
+                  // Advance the step if everything is valid; otherwise blur
+                  // so the error hints render and the user can correct.
+                  e.currentTarget.blur();
+                }
+              }}
               placeholder="(215) 555-0123"
               className={`form-input ${fieldHint('phone') ? 'border-red-300' : ''}`}
               maxLength={14}
@@ -3182,8 +3210,9 @@ function IntakeForm({ onSubmit, onBack }) {
     },
     {
       title: 'Where do you want to live?',
-      subtitle: 'Tap ZIPs on the map, or type neighborhood names.',
+      subtitle: 'Tap ZIPs on the map, or type neighborhood names. Skip if you\'re open anywhere in Philly.',
       valid: () => true,
+      optional: true,
       fields: (
         <AreasPicker
           value={data.areas}
@@ -3241,6 +3270,7 @@ function IntakeForm({ onSubmit, onBack }) {
       title: 'How did you hear about us?',
       subtitle: 'Optional — helps us know what works.',
       valid: () => true,
+      optional: true,
       fields: (
         <div className="grid grid-cols-2 gap-2">
           {['Zillow', 'Apartments.com', 'Google', 'Instagram', 'Facebook', 'Referral', 'Walked in', 'Other'].map((s) => (
@@ -3278,13 +3308,14 @@ function IntakeForm({ onSubmit, onBack }) {
     if (!s.valid() || submitting) return;
     if (!isLastStep) { setStep(step + 1); return; }
     setSubmitting(true);
+    setSubmitError(null);
     try {
       await onSubmit(data);
       // Clear draft on success
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
     } catch (err) {
       console.error('[intake submit] failed', err);
-      alert("Something went wrong sending your info. Please try again.");
+      setSubmitError(err?.message || 'Network error');
       setSubmitting(false);
     }
   };
@@ -3331,9 +3362,20 @@ function IntakeForm({ onSubmit, onBack }) {
       {/* STICKY CTA — fixed to bottom of viewport on mobile, easy thumb reach */}
       <div className="fixed bottom-0 left-0 right-0 z-10 bg-white border-t border-slate-200 shadow-[0_-4px_24px_-12px_rgba(0,0,0,0.12)]">
         <div className="max-w-xl mx-auto px-5 md:px-8 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+          {/* Submit-failed banner — replaces the old window.alert. Draft stays
+              in localStorage so the user just taps Send again. Reassuring tone
+              so a network blip doesn't feel like the platform broke. */}
+          {submitError && (
+            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5">
+              <div className="text-sm font-semibold text-red-800 mb-0.5">Couldn&apos;t send just yet</div>
+              <div className="text-xs text-red-700 leading-relaxed">
+                Your answers are saved on this device. Check your connection and tap Send to my agent again.
+              </div>
+            </div>
+          )}
           {/* Inline hint when Continue is disabled — tells the user exactly
               what's needed to unlock it. Hidden once the step is valid. */}
-          {blockingHint && (
+          {blockingHint && !submitError && (
             <div className="text-center text-xs text-slate-500 mb-2">
               {blockingHint}
             </div>
@@ -3351,7 +3393,19 @@ function IntakeForm({ onSubmit, onBack }) {
               </>
             ) : (
               <>
-                {isLastStep ? 'Send to my agent' : 'Continue'}
+                {(() => {
+                  // Optional step + no value yet → "Skip" reads more honestly
+                  // than "Continue" since the user hasn't picked anything.
+                  if (isLastStep) {
+                    if (s.optional && !data.source) return 'Skip & send to my agent';
+                    return 'Send to my agent';
+                  }
+                  if (s.optional) {
+                    if (step === 4 && !data.areas) return 'Skip — I\'m open anywhere';
+                    if (s.optional) return 'Continue';
+                  }
+                  return 'Continue';
+                })()}
                 <ArrowRight className="w-5 h-5" />
               </>
             )}
