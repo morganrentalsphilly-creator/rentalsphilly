@@ -1227,7 +1227,27 @@ function hydrateLeads(data) {
       flags: t.flags,
     })),
 
-    submissions: subsByLead[lead.id] || [],
+    // Submissions go to DB snake_case but the lead detail UI reads camelCase
+    // (sub.landlordEmail, sub.landlordName, sub.emailSubject, sub.emailBody,
+    // sub.submittedAt, sub.followUps). Without this translation, every page
+    // refresh wipes those fields out of view — the row is still in the DB but
+    // the UI renders "undefined" for landlord email/name/subject/body and the
+    // follow-up log appears empty.
+    submissions: (subsByLead[lead.id] || []).map((s) => ({
+      id: s.id,
+      listing: s.listing,
+      status: s.status,
+      notes: s.notes || '',
+      // Original snake_case stays in case some code reads it directly.
+      ...s,
+      // camelCase aliases the UI actually reads.
+      landlordEmail: s.landlord_email ?? s.landlordEmail,
+      landlordName:  s.landlord_name  ?? s.landlordName,
+      emailSubject:  s.email_subject  ?? s.emailSubject,
+      emailBody:     s.email_body     ?? s.emailBody,
+      submittedAt:   s.submitted_at   ?? s.submittedAt   ?? s.created_at,
+      followUps:     Array.isArray(s.follow_ups) ? s.follow_ups : (s.followUps || []),
+    })),
     scheduledNudges: nudgesByLead[lead.id] || [],
   }));
 }
@@ -1239,7 +1259,13 @@ function hydrateProperties(rows) {
   return (rows || []).map((p) => ({
     id: p.id,
     mls: p.mls || '',
+    // `address` is the concatenated form for display surfaces (40+ callsites
+    // expect this shape). PropertyFormModal also reads `unit` separately so
+    // the edit form can populate the Unit input correctly — and its submit
+    // handler strips the trailing ", ${unit}" off address before saving so
+    // the DB keeps a clean street address + a separate unit column.
     address: p.unit ? `${p.address}, ${p.unit}` : p.address,
+    unit: p.unit || '',
     neighborhood: p.neighborhood || '',
     zip: p.zip || '',
     price: Number(p.price),
@@ -15084,8 +15110,24 @@ function PropertyFormModal({ property, onClose, onSave, onDelete }) {
   const isNew = !property.id;
   const submit = async () => {
     if (!form.address || !form.price) return;
+    // hydrateProperties concatenates `unit` into `address` for display, so the
+    // form opens with address="123 Main, Apt 5" + unit="" (or unit="Apt 5"
+    // if the form was previously saved separately). Without this strip, each
+    // edit-save would re-concatenate the unit into address ("123 Main, Apt 5,
+    // Apt 5") on the next hydrate. Strip the trailing `, ${unit}` if present
+    // so the DB always holds a clean street address.
+    let cleanAddress = (form.address || '').trim();
+    const unit = (form.unit || '').trim();
+    if (unit) {
+      const suffix = `, ${unit}`;
+      if (cleanAddress.endsWith(suffix)) {
+        cleanAddress = cleanAddress.slice(0, -suffix.length).trim();
+      }
+    }
     await onSave({
       ...form,
+      address: cleanAddress,
+      unit,
       price: Number(form.price),
       beds: Number(form.beds),
       baths: Number(form.baths),
