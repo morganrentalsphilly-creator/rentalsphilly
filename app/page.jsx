@@ -9899,11 +9899,19 @@ function StageDropdown({ lead, updateLead, showToast }) {
       ...(newTasks.length > 0 ? { tasks: [...(lead.tasks || []), ...newTasks] } : {}),
     };
     if (closeData) {
-      updates.raw = { ...(lead.raw || {}), close_data: { ...closeData, recorded_at: new Date().toISOString() } };
-      // If leased, also seed commission amount if provided.
+      // CRITICAL HISTORY: commission was being written to `updates.commission`
+      // (top-level) BUT the lead-update server allowlist only persists
+      // `stage / application / applicationStatus / screening / bucket / raw`.
+      // The commission amount Morgan typed in the close-lease modal was
+      // silently dropped on every save. CommissionPanel later opened empty.
+      // Fix: stash everything inside updates.raw which IS in the allowlist.
+      updates.raw = {
+        ...(lead.raw || {}),
+        close_data: { ...closeData, recorded_at: new Date().toISOString() },
+      };
       if (newStageId === 'leased' && closeData.commissionAmount) {
-        updates.commission = {
-          ...(lead.commission || {}),
+        updates.raw.commission = {
+          ...(lead.raw?.commission || {}),
           amount: closeData.commissionAmount,
           lease_signed_at: new Date().toISOString(),
         };
