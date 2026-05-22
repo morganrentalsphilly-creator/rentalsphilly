@@ -11807,6 +11807,17 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
   // is mounted. Ignored when the user is typing in an input/textarea/select
   // so the shortcuts don't break editing. ESC closes the drawer (existing
   // App-level handler).
+  //
+  // Shortcuts:
+  //   j / →   next lead
+  //   k / ←   previous lead
+  //   t       open SMS composer (skipped if opted out)
+  //   e       open email composer
+  //   1-4     switch tabs (Overview / Messages / Pipeline / Activity)
+  //
+  // Power-user goal: never have to take your hand off the keyboard while
+  // working a lead. Combined with the Inbox shortcuts (j/k/c/r/e), Morgan
+  // can clear an entire pipeline without ever picking up the mouse.
   useEffect(() => {
     const isTyping = (el) => {
       if (!el) return false;
@@ -11823,11 +11834,32 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
       } else if ((e.key === 'ArrowLeft' || e.key === 'k') && onPrev) {
         e.preventDefault();
         onPrev();
+      } else if (e.key === 't' && !lead.opted_out) {
+        // Open SMS composer. Skipped if opted out so we don't bait an SMS
+        // to someone who said STOP.
+        e.preventDefault();
+        onCompose('sms-custom');
+      } else if (e.key === 'e') {
+        // Open email composer.
+        e.preventDefault();
+        onCompose('email-custom');
+      } else if (e.key === '1') {
+        e.preventDefault();
+        setTab('overview');
+      } else if (e.key === '2') {
+        e.preventDefault();
+        setTab('messages');
+      } else if (e.key === '3' && (!!lead.application || !!lead.screening || submissionCount > 0)) {
+        e.preventDefault();
+        setTab('pipeline');
+      } else if (e.key === '4') {
+        e.preventDefault();
+        setTab('activity');
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onPrev, onNext]);
+  }, [onPrev, onNext, onCompose, lead.opted_out, lead.application, lead.screening, submissionCount]);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
