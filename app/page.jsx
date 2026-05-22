@@ -7171,6 +7171,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
         return (
           <LeadDetailCRM
             lead={selectedLead}
+            allLeads={leads}
             onClose={() => setSelectedLeadId(null)}
             updateLead={updateLead}
             removeLead={removeLead}
@@ -9850,7 +9851,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
 // State lives in lead.raw.application_link so it survives without a new
 // schema column. Auto-shows only for stages where apps make sense:
 // post-tour, applied, leased, paid.
-function ApplicationLinkPanel({ lead, updateLead, showToast, settings }) {
+function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads = [] }) {
   const existing = lead.raw?.application_link || {};
   const eligibleStages = ['post-tour', 'applied', 'leased', 'paid'];
   const [mode, setMode] = useState(existing.mode || 'rentspree');
@@ -9861,7 +9862,40 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings }) {
     phone: existing.listing_agent?.phone || '',
     brokerage: existing.listing_agent?.brokerage || '',
   });
+  const [agentSuggestOpen, setAgentSuggestOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Build an address book from every lead's prior application_link.listing_agent.
+  // De-dup by lowercased email (or name+brokerage if no email). Sorted by most-
+  // recent use first so repeat collaborators surface quickly.
+  const agentBook = useMemo(() => {
+    const seen = new Map();
+    for (const l of allLeads) {
+      const a = l.raw?.application_link?.listing_agent;
+      if (!a || !a.name) continue;
+      const key = (a.email || `${a.name}::${a.brokerage || ''}`).toLowerCase();
+      const sentAt = l.raw?.application_link?.sent_at || 0;
+      const prior = seen.get(key);
+      if (!prior || new Date(sentAt) > new Date(prior.sentAt)) {
+        seen.set(key, { ...a, sentAt });
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt));
+  }, [allLeads]);
+
+  // Suggestions = agents whose name/email/brokerage matches the current name input.
+  // Empty input + book has entries → show top 5 recently used.
+  const suggestions = useMemo(() => {
+    const q = (listingAgent.name || '').trim().toLowerCase();
+    if (!q) return agentBook.slice(0, 5);
+    return agentBook
+      .filter((a) =>
+        (a.name || '').toLowerCase().includes(q) ||
+        (a.email || '').toLowerCase().includes(q) ||
+        (a.brokerage || '').toLowerCase().includes(q)
+      )
+      .slice(0, 6);
+  }, [agentBook, listingAgent.name]);
   const firstName = (lead.fullName || '').split(' ')[0] || 'there';
   const rentSpreeUrl = settings?.rentSpree?.dashboardUrl || 'https://app.rentspree.com/dashboard';
   const sentAt = existing.sent_at;
@@ -10119,15 +10153,59 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings }) {
           <div>
             <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
               Listing agent (for your records + follow-up)
+              {agentBook.length > 0 && (
+                <span className="ml-2 text-slate-400 font-normal normal-case tracking-normal">
+                  · {agentBook.length} prior contact{agentBook.length === 1 ? '' : 's'}
+                </span>
+              )}
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="text"
-                value={listingAgent.name}
-                onChange={(e) => updateAgent('name', e.target.value)}
-                placeholder="Agent name"
-                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
-              />
+              {/* Agent name with autocomplete dropdown — auto-fills all 4
+                  fields when a prior agent is picked. */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={listingAgent.name}
+                  onChange={(e) => { updateAgent('name', e.target.value); setAgentSuggestOpen(true); }}
+                  onFocus={() => setAgentSuggestOpen(true)}
+                  onBlur={() => setTimeout(() => setAgentSuggestOpen(false), 150)}
+                  placeholder="Agent name"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                  autoComplete="off"
+                />
+                {agentSuggestOpen && suggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                    {!listingAgent.name && (
+                      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold px-3 pt-2 pb-1">
+                        Recent listing agents
+                      </div>
+                    )}
+                    {suggestions.map((a, i) => (
+                      <button
+                        key={`${a.email || a.name}-${i}`}
+                        type="button"
+                        onMouseDown={(e) => {
+                          // Prevent input blur from firing before we set state.
+                          e.preventDefault();
+                          setListingAgent({
+                            name: a.name || '',
+                            brokerage: a.brokerage || '',
+                            email: a.email || '',
+                            phone: a.phone || '',
+                          });
+                          setAgentSuggestOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 text-sm border-t border-slate-100 first:border-t-0"
+                      >
+                        <div className="font-medium text-slate-900 truncate">{a.name}</div>
+                        <div className="text-[11px] text-slate-500 truncate">
+                          {[a.brokerage, a.email, a.phone].filter(Boolean).join(' · ')}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <input
                 type="text"
                 value={listingAgent.brokerage}
@@ -11191,7 +11269,7 @@ function QuickNoteBar({ lead, updateLead, showToast }) {
   );
 }
 
-function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus, onPrev, onNext, position }) {
+function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus, onPrev, onNext, position, allLeads }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
   const initials = lead.fullName.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase();
@@ -11359,7 +11437,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 3: post-tour, send application link — RentSpree (our
                   listings) or external link (other agents' properties). */}
-              <ApplicationLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} settings={settings} />
+              <ApplicationLinkPanel lead={lead} allLeads={allLeads} updateLead={updateLead} showToast={showToast} settings={settings} />
               {/* Commission tracking (only after stage >= applied). */}
               <CommissionPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
