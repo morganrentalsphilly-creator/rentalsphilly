@@ -133,6 +133,16 @@ export async function POST(request, ctx) {
         return NextResponse.json({ error: 'no_addresses' }, { status: 400 });
       }
 
+      // Idempotency guard. If the lead has already submitted phase 1
+      // (curated_submitted_at is set), don't write a new activity row and
+      // don't fire the confirmation SMS again. We still 200 so the client
+      // navigates to the awaiting-scheduling phase. Covers double-submit
+      // races the client lock can't (network retry, refresh+resubmit,
+      // browser back-button replays).
+      if (lead.raw?.curated_submitted_at) {
+        return NextResponse.json({ ok: true, phase: 'awaiting-scheduling', idempotent: true });
+      }
+
       await db.from('leads').update({
         stage: 'tour-requested',
         raw: {
@@ -168,6 +178,15 @@ export async function POST(request, ctx) {
 
       if (picks.length === 0) {
         return NextResponse.json({ error: 'no_picks' }, { status: 400 });
+      }
+
+      // Idempotency guard. Without this, a network retry, page refresh, or
+      // browser back-button replay would create a SECOND set of tour rows
+      // for the same picks — and fire a second confirmation SMS + email.
+      // The client-side sync ref only catches same-tab same-render races.
+      // If times_submitted_at is set, we treat this as a no-op success.
+      if (lead.raw?.times_submitted_at) {
+        return NextResponse.json({ ok: true, created: 0, idempotent: true });
       }
 
       const inserted = [];

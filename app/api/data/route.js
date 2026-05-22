@@ -102,6 +102,35 @@ export async function POST(request) {
     switch (action) {
       case 'create_lead': {
         const { lead } = body;
+        // Server-side dedup. The intake form already has a client-side
+        // sync-ref lock + 3-second honeypot timer, but a network retry,
+        // refresh-and-resubmit, or accidental form re-render could still
+        // POST twice. If a lead with the same phone (last 10 digits, which
+        // is how we normalize) was created in the last 60 seconds, return
+        // the existing row instead of inserting a duplicate. The 60-second
+        // window is short enough that a genuine "different person, same
+        // number" (rare — usually only when a couple shares a phone)
+        // still goes through after a brief wait, and tight enough to
+        // catch retry storms.
+        const rawPhone = (lead?.phone || '').replace(/\D/g, '');
+        const last10 = rawPhone.slice(-10);
+        if (last10.length === 10) {
+          const sixtySecondsAgo = new Date(Date.now() - 60_000).toISOString();
+          const { data: recent } = await db
+            .from('leads')
+            .select('*')
+            .gte('created_at', sixtySecondsAgo)
+            .order('created_at', { ascending: false })
+            .limit(20);
+          const dup = (recent || []).find((r) => {
+            const rPhone = (r.phone || '').replace(/\D/g, '').slice(-10);
+            return rPhone === last10;
+          });
+          if (dup) {
+            console.warn('[create_lead] dedup hit — returning existing lead', { phone: last10, dupId: dup.id });
+            return NextResponse.json({ lead: dup, deduped: true });
+          }
+        }
         const { data, error } = await db.from('leads').insert(lead).select().single();
         if (error) throw error;
         return NextResponse.json({ lead: data });

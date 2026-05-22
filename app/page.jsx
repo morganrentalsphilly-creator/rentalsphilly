@@ -13175,17 +13175,31 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           inbox_dismissed_at: new Date().toISOString(),
         },
       });
-      setComposerBody('');
-      setComposerSubject('');
+      // Clear the composer only if the user is STILL on the lead we just
+      // sent to. If they switched threads mid-send and started typing for
+      // a different lead, blindly clearing setComposerBody('') would wipe
+      // their new draft AND trigger the empty-draft effect that deletes
+      // the new lead's saved draft from localStorage. Always remove the
+      // just-sent lead's saved draft though — the send succeeded so the
+      // draft is no longer relevant.
+      if (draftsRef.current[lead.id]) {
+        delete draftsRef.current[lead.id];
+        persistDrafts();
+      }
+      if (activeLeadId === lead.id) {
+        setComposerBody('');
+        setComposerSubject('');
+      }
       showToast(`${composerChannel === 'sms' ? 'SMS' : 'Email'} sent`);
 
       // ---- AUTO-ADVANCE TO NEXT NEEDS-REPLY THREAD ----
       // After a successful send, jump to the next thread that still needs
       // a reply (inbound > outbound, not yet handled). Lets Morgan clear
       // an inbox in a steady rhythm without manually picking each thread.
-      // Skips silently if there isn't a next thread or if she's not on the
-      // "needs-reply" filter (would be disorienting on the "all" filter).
-      if (filter === 'needs-reply') {
+      // Skips silently if she's not on the "needs-reply" filter (would be
+      // disorienting on "all"), or if she has manually navigated away
+      // from the lead we just sent to (don't yank her thread selection).
+      if (filter === 'needs-reply' && activeLeadId === lead.id) {
         const next = visibleThreads.find(
           (t) => t.lead.id !== lead.id && t.needsReply
         );
@@ -13828,7 +13842,13 @@ function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOp
         rows={rows}
         onKeyDown={(e) => {
           if (e.key === 'Escape' && paletteOpen) { e.preventDefault(); setPaletteOpen(false); return; }
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSubmit?.();
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            // preventDefault so the textarea doesn't also insert a newline
+            // on Cmd+Enter (varies by browser/OS), which would briefly show
+            // the line break before the send completes.
+            e.preventDefault();
+            onSubmit?.();
+          }
         }}
         className="w-full text-sm px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 resize-none"
       />
