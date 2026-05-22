@@ -27,7 +27,7 @@ const MAX_TOKENS = 600;
 // ---- AI welcome-draft logic (extracted from /api/ai/welcome-draft) so this
 // route can call it without an external fetch + token. Returns null on any
 // failure so the caller falls back to the static template.
-async function aiWelcomeDraft(lead, agentName) {
+async function aiWelcomeDraft(lead, agentName, applicationUrl) {
   if (!process.env.ANTHROPIC_API_KEY) return null;
 
   const firstName = (lead.full_name || '').split(' ')[0] || 'there';
@@ -37,24 +37,35 @@ async function aiWelcomeDraft(lead, agentName) {
   const moveIn = lead.move_in_date ? new Date(lead.move_in_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric' }) : null;
   const bucket = lead.bucket || '';
   const isSoon = bucket === 'GCMS' || bucket === 'BCMS';
-  const isGoodCredit = bucket === 'GCMS' || bucket === 'GCM75+';
+  const needsApp = bucket === 'BCMS' || bucket === 'BC75+';
 
+  // NOTE: deliberately NOT including credit profile in the prompt context.
+  // We treat credit as a private bucket signal that drives WORKFLOW (which
+  // template to use, whether to ask for an application) — never as
+  // language the lead sees. Mentioning credit in customer-facing copy is
+  // a non-starter for tone + fairness reasons.
   const profile = [
     firstName ? `Name: ${firstName}` : null,
     budget ? `Budget: ${budget}` : null,
     beds ? `Wants: ${beds}` : null,
     areas ? `Neighborhoods: ${areas}` : null,
     moveIn ? `Move-in: ${moveIn}` : null,
-    `Credit profile: ${isGoodCredit ? 'good (650+)' : 'limited (<650)'}`,
     `Move timeline: ${isSoon ? 'soon (next ~75 days)' : 'further out (75+ days)'}`,
   ].filter(Boolean).join('\n');
 
-  const strategyNote = isSoon
-    ? 'They are moving SOON. We will hand-pick rentals immediately and send a personalized link soon.'
-    : 'They are moving LATER. We will reach out about 75 days before their move-in date with hand-picked options. Until then, light touch.';
-  const creditNote = isGoodCredit
-    ? ''
-    : 'Their credit is limited — be supportive, mention we work across credit profiles, and that flexible buildings, cosigners, and alternate deposit structures can help.';
+  // Bucket-specific strategy. ZERO credit mentions.
+  let strategyNote;
+  if (bucket === 'GCMS') {
+    strategyNote = 'They are moving SOON. Tell them you are hand-picking rentals NOW and will send a personalized link with photos shortly. Warm and direct — they should expect to hear back fast.';
+  } else if (bucket === 'GCM75+') {
+    strategyNote = 'They are moving LATER (75+ days out). Tell them you will reach out about 75 days before their move-in date with hand-picked rentals. Set expectations: light touch until then.';
+  } else if (bucket === 'BCMS') {
+    strategyNote = `They are moving SOON and we want them to complete a rental application BEFORE we start hunting (so we can move fast when the right place comes up). Include this application link prominently and ask them to fill it out as the next step: ${applicationUrl || '[application link will be added by agent]'}`;
+  } else if (bucket === 'BC75+') {
+    strategyNote = 'They are moving LATER (75+ days out). Tell them you will reach out about 75 days before their move-in date with a quick application link to get the ball rolling. Set expectations: light touch until then.';
+  } else {
+    strategyNote = 'Acknowledge what they are looking for and tell them you will follow up shortly.';
+  }
 
   const prompt = `You are ${agentName || 'Morgan'}, a Philadelphia rental agent. A new lead just submitted your intake form. Write a personalized welcome SMS AND a personalized welcome email referencing their actual criteria — not a generic template.
 
@@ -62,7 +73,6 @@ Lead profile:
 ${profile}
 
 Strategy: ${strategyNote}
-${creditNote}
 
 Output STRICTLY as JSON with three fields:
 {
@@ -72,9 +82,10 @@ Output STRICTLY as JSON with three fields:
 }
 
 Constraints:
-- SMS: <= 280 chars. Start with "Rentals Philly:" so they know who it's from. Reference 1-2 specifics (their neighborhood, budget, or timing). End with "Reply STOP to opt out." End the SMS itself; no signature.
+- SMS: <= 320 chars. Start with "Rentals Philly:" so they know who it's from. Reference 1-2 specifics (their neighborhood, budget, or timing). End with "Reply STOP to opt out." End the SMS itself; no signature.
 - emailSubject: <= 60 chars. Conversational, references their specific situation.
 - email: 3-5 short sentences (body only — no "Hi {name}" since we add the greeting separately, no sign-off since we add the signature). Warm, specific, acknowledges what they're looking for, sets expectations for what happens next.
+- NEVER mention credit, credit score, credit profile, financial situation, or anything similar. Credit is private and never referenced in customer-facing copy.
 - NEVER make up specific listings or addresses or prices.
 - Use the lead's first name once or twice — naturally, not in every sentence.
 - No emoji.
@@ -109,6 +120,19 @@ Constraints:
 
 // Default static bucket templates. Match the shape used in addLead so the
 // fallback experience is identical when AI is off / down.
+//
+// RULES (these are PRODUCT POLICY, not just copy choices):
+//   1. NEVER mention credit, credit score, or any financial-profile language
+//      in customer-facing copy. Bucket is a private workflow signal only.
+//   2. BCMS leads MUST receive the general rental application link in the
+//      welcome so they can submit before we schedule tours.
+//   3. BC75+ leads MUST be told we'll send the application link 75 days
+//      before move-in (so they're not surprised when it arrives).
+//   4. GCM75+ leads MUST be told we'll start curating 75 days before
+//      move-in (so they understand why it's quiet now).
+//
+// {applicationUrl} is the only token that depends on settings; the rest are
+// derived from the lead. fill() resolves all of them before send.
 const DEFAULT_TEMPLATES = {
   GCMS: {
     sms: `Rentals Philly: Got it, {firstName} — I'm hand-picking rentals for you now. You'll get a personalized link with photos soon. Reply STOP to opt out.`,
@@ -116,9 +140,9 @@ const DEFAULT_TEMPLATES = {
     email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,\n— {agentName}`,
   },
   BCMS: {
-    sms: `Rentals Philly: Got it, {firstName} — I'll come back soon with options. I work with all credit profiles. Reply STOP to opt out.`,
-    emailSubject: `Welcome to Rentals Philly — let's find the right fit`,
-    email: `Hi {firstName},\n\nThanks for reaching out. I work with renters across all credit profiles, and there are good options out there — landlords with flexible criteria, units that accept cosigners, and alternate deposit structures that can unlock more buildings.\n\nGive me a bit and I'll come back with a hand-picked list that fits your situation. We'll talk through any cosigner or deposit options if they help.\n\nTalk soon,\n— {agentName}`,
+    sms: `Rentals Philly: Got it, {firstName}! To get you ready fast, please submit a quick application here so we can move when the right place comes up: {applicationUrl} — Reply STOP to opt out.`,
+    emailSubject: `One quick step before we start hunting`,
+    email: `Hi {firstName},\n\nThanks for reaching out. To make sure we can move fast when the right place comes up, the first step is a quick rental application:\n\n{applicationUrl}\n\nOnce I have that on file, I'll start hand-picking rentals that match your budget and neighborhoods, and we'll schedule tours from there. The application takes about 10 minutes.\n\nTalk soon,\n— {agentName}`,
   },
   'GCM75+': {
     sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked rentals. Save my number for the meantime. Reply STOP to opt out.`,
@@ -126,9 +150,9 @@ const DEFAULT_TEMPLATES = {
     email: `Hi {firstName},\n\nThanks for letting me know what you're looking for. Since your move-in is further out, I'll start curating about 75 days before {moveInDate}. That's when listings for your window will actually be on the market.\n\nIn the meantime, save my contact — if your timeline shifts or you have questions, text me anytime.\n\n— {agentName}`,
   },
   'BC75+': {
-    sms: `Rentals Philly: Thanks {firstName}! I'll reach out about 75 days before {moveInDate}. If you can work on credit in the meantime, it opens up more options. Save my number. Reply STOP to opt out.`,
+    sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll send you a quick application link about 75 days before {moveInDate} so we can hit the ground running. Save my number for the meantime. Reply STOP to opt out.`,
     emailSubject: `Planning ahead for {moveInDate}`,
-    email: `Hi {firstName},\n\nThanks for reaching out. Since your move is further out, I'll plan to come back to you about 75 days before {moveInDate} with hand-picked rentals.\n\nOne thing to think about between now and then: any progress on your credit will widen the range of buildings available to you. Even getting current on a card or paying down a small balance can make a real difference.\n\nIf your timeline shifts or you have questions, text me anytime.\n\n— {agentName}`,
+    email: `Hi {firstName},\n\nThanks for reaching out. Since your move-in is further out, here's how I'll work with you:\n\nAbout 75 days before {moveInDate}, I'll send a quick application link to get started — that's the first step so we can move fast when the right place comes up. After that, I'll hand-pick rentals and we'll schedule tours.\n\nIf your timeline shifts or you have questions before then, text me anytime.\n\n— {agentName}`,
   },
 };
 
@@ -187,10 +211,21 @@ export async function POST(request) {
     const moveInLabel = lead.move_in_date ? new Date(lead.move_in_date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'your move date';
     const agentName = settings.agentName || settings.agent_name || 'Morgan';
     const agentEmail = settings.agentEmail || settings.agent_email;
+    // The general RentSpree application URL Morgan sends to BCMS leads
+    // up-front, and to BC75+ leads 75 days before move-in. Resolves from
+    // settings.rentSpree.applicationUrl OR settings.rentspree_application_url
+    // (DB column name), with a fallback that still produces a clickable line
+    // — but the BCMS/BC75+ templates aren't very useful without this set.
+    const applicationUrl =
+      settings.rentSpree?.applicationUrl ||
+      settings.rentspree_application_url ||
+      settings.application_url ||
+      '';
     const fill = (s) => String(s || '')
       .replace(/\{firstName\}/g, firstName)
       .replace(/\{moveInDate\}/g, moveInLabel)
-      .replace(/\{agentName\}/g, agentName);
+      .replace(/\{agentName\}/g, agentName)
+      .replace(/\{applicationUrl\}/g, applicationUrl || '[application link — set in Settings → Integrations]');
 
     const settingsTemplates = settings.welcomeMessages || settings.welcome_messages || {};
     const t = settingsTemplates[bucket] || DEFAULT_TEMPLATES[bucket] || DEFAULT_TEMPLATES.GCMS;
@@ -198,11 +233,18 @@ export async function POST(request) {
     let emailSubject = fill(t.emailSubject || t.subject);
     let emailBody = fill(t.email);
 
+    // Loud warning when a BCMS / BC75+ welcome would be missing the
+    // application URL — without it, the most important next step in the
+    // workflow is just a placeholder string.
+    if ((bucket === 'BCMS' || bucket === 'BC75+') && !applicationUrl) {
+      console.warn('[intake/welcome] no general application URL in settings — BCMS/BC75+ welcome will ship with placeholder', { leadId, bucket });
+    }
+
     // ---- OPTIONAL AI PERSONALIZATION ----
     // Gated by settings.automation.aiWelcome (default on) AND the master switch.
     const aiOn = settings.automation?.enabled !== false && settings.automation?.aiWelcome !== false;
     if (aiOn) {
-      const ai = await aiWelcomeDraft(lead, agentName);
+      const ai = await aiWelcomeDraft(lead, agentName, applicationUrl);
       if (ai) {
         smsBody = ai.sms;
         emailSubject = ai.emailSubject || emailSubject;

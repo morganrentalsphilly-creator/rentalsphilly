@@ -221,14 +221,21 @@ const DEFAULT_AGENT_SETTINGS = {
       email: `Hi {firstName},\n\nThanks for letting me know what you're looking for. Since your move-in is further out, the rental market won't have what you need quite yet — but we'll be ready when it does.\n\nI'll reach out about 75 days before {moveInDate} with hand-picked options. In the meantime, save my number — if your timeline shifts or you have questions, text me anytime.\n\nTalk soon,\n— {agentName}`,
     },
     BCMS: {
-      sms: `Rentals Philly: Got it, {firstName} — I'll come back soon with options. I work with all credit profiles. Reply STOP to opt out.`,
-      emailSubject: 'Welcome to Rentals Philly — let\'s find the right fit',
-      email: `Hi {firstName},\n\nThanks for reaching out. I work with renters across all credit profiles, and there are good options out there — landlords with flexible criteria, units that accept cosigners, and alternate deposit structures that can unlock more buildings.\n\nGive me a bit and I'll come back with a hand-picked list that fits your situation. We'll talk through any cosigner or deposit options if they help.\n\nTalk soon,\n— {agentName}`,
+      // BCMS welcome: leads we want to qualify with a general rental
+      // application BEFORE we start scheduling tours. {applicationUrl}
+      // resolves from settings.rentSpree.applicationUrl at send time.
+      // NEVER mention credit — bucket is private workflow data.
+      sms: `Rentals Philly: Got it, {firstName}! To get you ready fast, please submit a quick application here so we can move when the right place comes up: {applicationUrl} — Reply STOP to opt out.`,
+      emailSubject: 'One quick step before we start hunting',
+      email: `Hi {firstName},\n\nThanks for reaching out. To make sure we can move fast when the right place comes up, the first step is a quick rental application:\n\n{applicationUrl}\n\nOnce I have that on file, I'll start hand-picking rentals that match your budget and neighborhoods, and we'll schedule tours from there. The application takes about 10 minutes.\n\nTalk soon,\n— {agentName}`,
     },
     'BC75+': {
-      sms: `Rentals Philly: Thanks {firstName}! I'll reach out about 75 days before {moveInDate}. If you can work on credit in the meantime, it opens up more options. Save my number. Reply STOP to opt out.`,
+      // BC75+ welcome: leads moving 75+ days out, queued for an
+      // application-link outreach 75 days before move-in. Set expectations
+      // now, no credit language.
+      sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll send you a quick application link about 75 days before {moveInDate} so we can hit the ground running. Save my number for the meantime. Reply STOP to opt out.`,
       emailSubject: 'Planning ahead for {moveInDate}',
-      email: `Hi {firstName},\n\nThanks for reaching out. Since your move is further out, I'll plan to come back to you about 75 days before {moveInDate} with hand-picked rentals.\n\nOne thing to think about between now and then: any progress on your credit will widen the range of buildings available to you. Even getting current on a card or paying down a small balance can make a real difference.\n\nIf your timeline shifts or you have questions, text me anytime.\n\nTalk soon,\n— {agentName}`,
+      email: `Hi {firstName},\n\nThanks for reaching out. Since your move-in is further out, here's how I'll work with you:\n\nAbout 75 days before {moveInDate}, I'll send a quick application link to get started — that's the first step so we can move fast when the right place comes up. After that, I'll hand-pick rentals and we'll schedule tours.\n\nIf your timeline shifts or you have questions before then, text me anytime.\n\nTalk soon,\n— {agentName}`,
     },
   },
 };
@@ -819,6 +826,14 @@ function mergeSettingsRow(row) {
   // rentSpree.dashboardUrl is nested in form shape but flat in DB.
   if (row.rentspree_dashboard_url != null) {
     merged.rentSpree = { ...(merged.rentSpree || {}), dashboardUrl: row.rentspree_dashboard_url };
+  }
+  // The general application URL Morgan shares with BCMS / BC75+ leads.
+  // Migration 0008 adds this column; older deployments stash it in raw
+  // until they apply that migration.
+  if (row.rentspree_application_url != null) {
+    merged.rentSpree = { ...(merged.rentSpree || {}), applicationUrl: row.rentspree_application_url };
+  } else if (row.raw && row.raw.rentspree_application_url) {
+    merged.rentSpree = { ...(merged.rentSpree || {}), applicationUrl: row.raw.rentspree_application_url };
   }
 
   // ---- raw.agent_availability fallback (pre-migration 0004 installs) ----
@@ -1854,6 +1869,7 @@ export default function App() {
         agent_phone: newSettings.agentPhone,
         twilio_number: newSettings.twilioNumber,
         rentspree_dashboard_url: newSettings.rentSpree?.dashboardUrl,
+        rentspree_application_url: newSettings.rentSpree?.applicationUrl,
 
         // jsonb columns (pass through, no transform)
         automation: newSettings.automation,
@@ -2384,15 +2400,24 @@ export default function App() {
 
     const tasks = [];
     if (bucket === 'GCM75+' || bucket === 'BC75+') {
+      // 75-day pre-move-in outreach. Task title is bucket-specific so
+      // Morgan knows what to do on the day it fires:
+      //   GCM75+  → send curated link (no application yet, good qualifier)
+      //   BC75+   → send the general rental application link first
+      // Both fire as a pending task 75 days before move-in.
       const followUpDate = new Date(lead.moveInDate);
       followUpDate.setDate(followUpDate.getDate() - 75);
+      const taskTitle = bucket === 'BC75+'
+        ? `Send application link to ${firstName} (75-day outreach)`
+        : `Send curated link to ${firstName} (75-day outreach)`;
       tasks.push({
         id: `t_${Date.now()}`,
         lead_id: id,
-        title: `75-day outreach to ${firstName}`,
+        title: taskTitle,
         due_date: followUpDate.toISOString().split('T')[0],
         status: 'pending',
         auto: true,
+        flags: bucket === 'BC75+' ? ['75day-app-outreach'] : ['75day-curate-outreach'],
       });
     } else {
       // Moving-soon leads: agent needs to curate an MLS portal link.
@@ -6081,6 +6106,14 @@ function HotProspectsCard({ leads, onSelectLead }) {
   // One-line "next move" hint per lead — picks the action that aligns with stage.
   const nextMove = (lead) => {
     const stage = lead.stage || 'new';
+    // BCMS leads (limited credit, moving soon) require an application
+    // BEFORE we start curating. Their welcome already includes the
+    // application link — we wait for the lead to fill it out and only
+    // then move to the curation step. If we already have an application
+    // on file, fall through to the normal "send curated link" path.
+    if (stage === 'new' && lead.bucket === 'BCMS' && !lead.application && !lead.applicationStatus) {
+      return 'Waiting on application';
+    }
     if (stage === 'new' && !lead.curatedLinkSentAt) return 'Send curated link';
     if (stage === 'tour-requested') return 'Send scheduling link';
     if (stage === 'tour-booked') {
@@ -9853,9 +9886,17 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
         <div className="text-sm text-slate-600 leading-relaxed mb-4">
           When a client completes screening on RentSpree, open their report on the RentSpree dashboard, then paste the key fields into the lead's Screening tab in about 30 seconds.
         </div>
-        <FormField label="RentSpree dashboard URL">
-          <input value={form.rentSpree?.dashboardUrl || ''} onChange={e => update('rentSpree', { ...form.rentSpree, dashboardUrl: e.target.value })} className="form-input" placeholder="https://app.rentspree.com/dashboard" />
-        </FormField>
+        <div className="space-y-3">
+          <FormField label="RentSpree dashboard URL">
+            <input value={form.rentSpree?.dashboardUrl || ''} onChange={e => update('rentSpree', { ...form.rentSpree, dashboardUrl: e.target.value })} className="form-input" placeholder="https://app.rentspree.com/dashboard" />
+          </FormField>
+          <FormField label="General rental application URL">
+            <input value={form.rentSpree?.applicationUrl || ''} onChange={e => update('rentSpree', { ...form.rentSpree, applicationUrl: e.target.value })} className="form-input" placeholder="https://apply.rentspree.com/..." />
+            <div className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+              The public link you'd share with anyone to start an application. Sent automatically in the welcome message to leads with limited credit (moving soon), and included in the 75-day-before-move-in outreach to leads with limited credit (moving later). Without this set, those welcomes ship with a placeholder.
+            </div>
+          </FormField>
+        </div>
       </Card>
 
       <Card className="p-5">
