@@ -67,14 +67,20 @@ function fmtSlotDate(dateStr) {
   });
 }
 
-const Header = ({ firstName }) => (
+// Header subtitle defaults to "your hand-picked rentals" (the most common
+// landing) but callers can pass a context-specific subtitle so the page
+// title matches what the user is actually doing — reschedule, confirmation,
+// time-picking, etc. Without this, the page header always read "your
+// hand-picked rentals" even on the reschedule-a-tour and tour-confirmed
+// screens, which felt off.
+const Header = ({ firstName, subtitle }) => (
   <header className="bg-white border-b border-slate-200 px-5 md:px-8 py-4 sticky top-0 z-20">
     <div className="max-w-3xl mx-auto">
       <div className="text-[10px] font-bold uppercase tracking-[0.15em]" style={{ color: 'var(--brand-gold)' }}>
         Rentals Philly
       </div>
       <h1 className="text-xl md:text-2xl font-semibold text-slate-900">
-        Hi {firstName} — your hand-picked rentals
+        Hi {firstName} — {subtitle || 'your hand-picked rentals'}
       </h1>
     </div>
   </header>
@@ -276,7 +282,7 @@ export default function CuratedPage() {
     if (rescheduleDone) {
       return (
         <div className="min-h-screen flex flex-col bg-slate-50">
-          <Header firstName={firstName} />
+          <Header firstName={firstName} subtitle="your tour is rescheduled" />
           {noticeBanner}
           <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-12 text-center">
             <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
@@ -292,7 +298,7 @@ export default function CuratedPage() {
 
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
-        <Header firstName={firstName} />
+        <Header firstName={firstName} subtitle="reschedule your tour" />
         {noticeBanner}
         <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-6 pb-28">
           <div className="rounded-2xl bg-white border border-slate-200 p-5">
@@ -502,7 +508,7 @@ export default function CuratedPage() {
   if (phase === 'awaiting-scheduling') {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
-        <Header firstName={firstName} />
+        <Header firstName={firstName} subtitle="we got your picks" />
         {noticeBanner}
         <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-16 text-center">
           <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
@@ -584,7 +590,7 @@ export default function CuratedPage() {
 
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
-        <Header firstName={firstName} />
+        <Header firstName={firstName} subtitle="pick your tour times" />
         {noticeBanner}
 
         {/* Sticky progress strip — shows the lead exactly how close they are
@@ -737,7 +743,7 @@ export default function CuratedPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
-      <Header firstName={firstName} />
+      <Header firstName={firstName} subtitle="your tour is booked" />
       {noticeBanner}
       <main className="flex-1 max-w-2xl w-full mx-auto px-5 md:px-8 py-8 md:py-12 space-y-6">
         {/* Hero confirmation */}
