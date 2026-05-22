@@ -12933,6 +12933,13 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   // draftsRef + localStorage. Means Morgan can switch between two leads
   // mid-conversation without losing what she had typed in either.
   const activeLeadId = activeThread?.lead.id;
+  // Mirror activeLeadId into a ref so async handlers (handleSend) can read
+  // the LIVE value after an await, not the value captured in the closure
+  // at click time. Without this, a thread switch mid-send is invisible to
+  // the post-send "are we still on this lead?" check and we'd wipe the
+  // new thread's draft.
+  const activeLeadIdRef = useRef(activeLeadId);
+  useEffect(() => { activeLeadIdRef.current = activeLeadId; }, [activeLeadId]);
   useEffect(() => {
     if (!activeLeadId) {
       setComposerBody('');
@@ -13181,12 +13188,15 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       // their new draft AND trigger the empty-draft effect that deletes
       // the new lead's saved draft from localStorage. Always remove the
       // just-sent lead's saved draft though — the send succeeded so the
-      // draft is no longer relevant.
+      // draft is no longer relevant. Read activeLeadIdRef (live), NOT
+      // activeLeadId (closure-stale) — they may have diverged during the
+      // await.
       if (draftsRef.current[lead.id]) {
         delete draftsRef.current[lead.id];
         persistDrafts();
       }
-      if (activeLeadId === lead.id) {
+      const stillOnSameLead = activeLeadIdRef.current === lead.id;
+      if (stillOnSameLead) {
         setComposerBody('');
         setComposerSubject('');
       }
@@ -13199,7 +13209,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       // Skips silently if she's not on the "needs-reply" filter (would be
       // disorienting on "all"), or if she has manually navigated away
       // from the lead we just sent to (don't yank her thread selection).
-      if (filter === 'needs-reply' && activeLeadId === lead.id) {
+      if (filter === 'needs-reply' && stillOnSameLead) {
         const next = visibleThreads.find(
           (t) => t.lead.id !== lead.id && t.needsReply
         );
