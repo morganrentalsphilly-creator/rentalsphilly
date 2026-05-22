@@ -441,7 +441,7 @@ export async function GET(request) {
   // Outbound transactional sends like blast drain still flow because those are
   // user-initiated, not automated nudges. Default is "enabled" if the setting
   // hasn't been written yet (back-compat with installs predating these toggles).
-  const { data: settingsRow } = await db.from('settings').select('automation').eq('id', 1).single();
+  const { data: settingsRow } = await db.from('settings').select('automation, raw').eq('id', 1).single();
   const auto = settingsRow?.automation || {};
   const automationOn = auto.enabled !== false;
   const remindersOn = automationOn && auto.tourReminders !== false;
@@ -452,6 +452,27 @@ export async function GET(request) {
   const blast = await runBlastDrain(db);
   const nudges = nudgesOn ? await runStageNudges(db) : { skipped: 'autoNudgeNoResponse disabled' };
   const tourOutcomes = autoCompleteOn ? await runTourOutcomePrompts(db) : { skipped: 'autoCompleteTours disabled' };
+
+  // Heartbeat — stash the tick timestamp + last-run summary into settings.raw
+  // so /api/health can confirm the cron is actually firing. If this stops
+  // updating, the dispatcher has died and you need to investigate Vercel cron.
+  try {
+    await db.from('settings').update({
+      raw: {
+        ...(settingsRow?.raw || {}),
+        last_cron_tick: new Date().toISOString(),
+        last_cron_summary: {
+          reminders: reminders?.sent ?? reminders?.skipped ?? 0,
+          nudges: nudges?.sent ?? nudges?.skipped ?? 0,
+          tour_outcomes: tourOutcomes?.created ?? tourOutcomes?.skipped ?? 0,
+          blast: blast?.sent ?? 0,
+        },
+      },
+    }).eq('id', 1);
+  } catch (heartbeatErr) {
+    console.warn('[cron] heartbeat write failed', heartbeatErr?.message);
+  }
+
   console.log('[cron] dispatcher tick', { automationOn, reminders, blast, nudges, tourOutcomes });
   return NextResponse.json({ ok: true, automationOn, reminders, blast, nudges, tourOutcomes });
 }
