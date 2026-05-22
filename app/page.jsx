@@ -4857,7 +4857,7 @@ function PipelineFunnelCard({ leads, onJumpToStage }) {
       </div>
       <div className="space-y-1.5">
         {activeStages.length === 0 ? (
-          <div className="text-xs text-slate-400 italic py-2">No active leads — they\'ll appear here once you add some.</div>
+          <div className="text-xs text-slate-400 italic py-2">No active leads — they&apos;ll appear here once you add some.</div>
         ) : (
           activeStages.map((s) => {
             const pct = (s.count / maxCount) * 100;
@@ -4903,6 +4903,98 @@ function PipelineFunnelCard({ leads, onJumpToStage }) {
           })}
         </div>
       )}
+    </Card>
+  );
+}
+
+// Hot Prospects — top 5 active leads by composite score. Distinct from
+// Focus Now (which is urgency-ranked: who needs a reply *right now*). This
+// is quality-ranked: who's most likely to actually close.
+//
+// Excludes closed states (leased/paid/lost/archived) and snoozed leads.
+// Ranks by leadScore() (which already factors in bucket × stage × engagement
+// × freshness × health) and breaks ties by recency of last activity.
+function HotProspectsCard({ leads, onSelectLead }) {
+  const ranked = useMemo(() => {
+    return leads
+      .filter((l) => !['leased', 'paid', 'lost', 'archived'].includes(l.stage || ''))
+      .filter((l) => !isLeadSnoozed(l))
+      .map((l) => {
+        const sc = leadScore(l);
+        const msgs = (l.messages || []).filter((m) => !m.internal);
+        const last = msgs[msgs.length - 1];
+        return {
+          lead: l,
+          score: sc.score,
+          grade: sc.label,
+          lastActivityAt: last?.timestamp || l.createdAt || 0,
+          lastInbound: last && last.direction === 'inbound' ? last : null,
+        };
+      })
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return new Date(b.lastActivityAt) - new Date(a.lastActivityAt);
+      })
+      .slice(0, 5);
+  }, [leads]);
+
+  if (ranked.length === 0) return null;
+
+  const gradeTone = (g) => ({
+    A: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+    B: 'bg-blue-100 text-blue-800 border-blue-300',
+    C: 'bg-slate-100 text-slate-700 border-slate-300',
+  }[g] || 'bg-slate-50 text-slate-500 border-slate-200');
+
+  // One-line "next move" hint per lead — picks the action that aligns with stage.
+  const nextMove = (lead) => {
+    const stage = lead.stage || 'new';
+    if (stage === 'new' && !lead.curatedLinkSentAt) return 'Send curated link';
+    if (stage === 'tour-requested') return 'Send scheduling link';
+    if (stage === 'tour-booked') {
+      const upcoming = (lead.tours || []).find((t) => t.date >= new Date().toISOString().slice(0, 10) && t.status !== 'cancelled');
+      return upcoming ? `Tour ${fmtDate(upcoming.date)}` : 'Confirm tour details';
+    }
+    if (stage === 'post-tour') return 'Push toward application';
+    if (stage === 'applied') return 'Follow up with landlord';
+    return 'Check in';
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-base">🔥</span>
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Hot prospects</div>
+            <div className="text-[11px] text-slate-500">Most likely to close · ranked by score + engagement</div>
+          </div>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {ranked.map(({ lead, score, grade }, i) => {
+          const stage = PIPELINE_STAGES.find((s) => s.id === (lead.stage || 'new'));
+          return (
+            <button
+              key={lead.id}
+              onClick={() => onSelectLead(lead.id)}
+              className="w-full text-left flex items-center gap-3 p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 transition-colors"
+            >
+              <div className="text-[10px] font-bold tabular-nums text-slate-400 w-4 text-right shrink-0">{i + 1}</div>
+              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border shrink-0 ${gradeTone(grade)}`} title={`Score ${score}/100`}>
+                {grade} · {score}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-slate-900 truncate">{lead.fullName}</div>
+                <div className="text-[11px] text-slate-500 truncate">
+                  {stage?.label || lead.stage} · {nextMove(lead)}
+                </div>
+              </div>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+            </button>
+          );
+        })}
+      </div>
     </Card>
   );
 }
@@ -5901,6 +5993,10 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
           click-to-drill behavior. Jumping to a stage opens Pipeline view
           (TODO: wire stage filter so clicking a stage pre-filters Pipeline). */}
       <PipelineFunnelCard leads={leads} onJumpToStage={() => setSubview('pipeline')} />
+
+      {/* HOT PROSPECTS — top 5 by score + engagement. Quality-ranked
+          counterpart to Focus Now (which is urgency-ranked). */}
+      <HotProspectsCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* FOCUS NOW — the single source-of-truth ranked queue */}
       <FocusNowCard
