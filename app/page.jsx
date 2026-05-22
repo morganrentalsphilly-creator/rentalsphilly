@@ -15960,6 +15960,12 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
   const [body, setBody] = useState(prefill ? String(prefill) : fill(tpl.body));
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
+  // CRITICAL: track sending state to prevent double-clicks from firing
+  // duplicate SMS/email. The previous synchronous `send` returned immediately
+  // and left the modal open while the parent's async onSend ran — a fast
+  // second click would call onSend again before the first resolved, sending
+  // the same message twice. Now Send disables the moment it's clicked.
+  const [sending, setSending] = useState(false);
 
   // Detect if the last non-internal message is inbound — i.e., a reply is owed
   // and the AI draft button is worth offering.
@@ -15989,9 +15995,19 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
     setAiLoading(false);
   };
 
-  const send = () => {
-    if (!body.trim()) return;
-    onSend({ channel, subject, body });
+  const send = async () => {
+    if (!body.trim() || sending) return;
+    setSending(true);
+    try {
+      await onSend({ channel, subject, body });
+      // Parent typically closes the modal on success via setComposeModal(null).
+      // If we're still mounted (rare — error caught silently in parent), drop
+      // the sending flag so the user can retry.
+    } catch (err) {
+      console.error('[compose modal] send threw', err);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -16046,10 +16062,10 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
             <span className="text-[10px] text-slate-400 hidden md:inline">⌘+Enter to send</span>
             <button
               onClick={send}
-              disabled={!body.trim()}
+              disabled={!body.trim() || sending}
               className="ml-auto px-5 py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-30"
             >
-              <Send className="w-4 h-4" /> Send {channel === 'sms' ? 'text' : 'email'}
+              <Send className="w-4 h-4" /> {sending ? 'Sending…' : `Send ${channel === 'sms' ? 'text' : 'email'}`}
             </button>
           </div>
         </div>
