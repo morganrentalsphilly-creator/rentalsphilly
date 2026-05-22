@@ -980,15 +980,37 @@ const STAGE_CADENCE_DAYS = {
 // "Last touch" = last OUTBOUND message (we did something) OR createdAt.
 // "Is due" = daysSinceTouch >= cadence for the stage (and cadence > 0).
 function leadTouchState(lead) {
-  const msgs = (lead.messages || []).filter((m) => !m.internal && m.direction === 'outbound');
-  const lastTouch = msgs[msgs.length - 1];
-  const lastTouchAt = lastTouch
-    ? new Date(lastTouch.timestamp).getTime()
+  // Defensively pick the MAX timestamp instead of the array-tail message.
+  // hydrate() sorts messages on initial load, but optimistic UI prepends /
+  // appends and realtime UPDATE/INSERT can land in arbitrary order — so
+  // msgs[msgs.length - 1] isn't guaranteed to be the most recent. Using
+  // Math.max(...timestamps) is bulletproof and cheap at typical message
+  // counts (single lead, dozens of messages).
+  const outboundTimes = (lead.messages || [])
+    .filter((m) => !m.internal && m.direction === 'outbound' && m.timestamp)
+    .map((m) => new Date(m.timestamp).getTime())
+    .filter((t) => Number.isFinite(t));
+  const lastTouchAt = outboundTimes.length
+    ? Math.max(...outboundTimes)
     : new Date(lead.createdAt || Date.now()).getTime();
   const daysSinceTouch = Math.floor((Date.now() - lastTouchAt) / 86400000);
   const cadenceDays = STAGE_CADENCE_DAYS[lead.stage] ?? 0;
   const isDue = cadenceDays > 0 && daysSinceTouch >= cadenceDays;
   return { lastTouchAt, daysSinceTouch, cadenceDays, isDue };
+}
+
+// Pick the most-recent non-internal message for a lead by max timestamp.
+// Used by every "what's the latest message?" surface (Today overdue-reply
+// filter, Focus Now queue, Hot Prospects sort, Inbox tab badge, Pipeline
+// preview). Array-tail isn't safe — optimistic UI prepends and realtime
+// INSERT/UPDATE can land out of order, and we don't want a stale message
+// driving needs-reply decisions.
+function lastNonInternalMessage(lead) {
+  const msgs = (lead?.messages || []).filter((m) => !m.internal && m.timestamp);
+  if (msgs.length === 0) return null;
+  return msgs.reduce((latest, m) =>
+    !latest || new Date(m.timestamp) > new Date(latest.timestamp) ? m : latest,
+  null);
 }
 
 // True when the lead is snoozed and the snooze hasn't expired yet. Used to
@@ -5311,8 +5333,7 @@ function HeadsUpBanner({ leads, overdueTasks, setSubview, onSelectLead }) {
     const overdueReplies = leads.filter((l) => {
       if (isLeadSnoozed(l)) return false;
       if (['leased', 'paid', 'lost', 'archived'].includes(l.stage)) return false;
-      const msgs = (l.messages || []).filter((m) => !m.internal);
-      const last = msgs[msgs.length - 1];
+      const last = lastNonInternalMessage(l);
       if (!last || last.direction !== 'inbound') return false;
       const dismissedAt = l.raw?.inbox_dismissed_at;
       if (dismissedAt && new Date(dismissedAt) >= new Date(last.timestamp)) return false;
@@ -5660,8 +5681,7 @@ function HotProspectsCard({ leads, onSelectLead }) {
       .filter((l) => !isLeadSnoozed(l))
       .map((l) => {
         const sc = leadScore(l);
-        const msgs = (l.messages || []).filter((m) => !m.internal);
-        const last = msgs[msgs.length - 1];
+        const last = lastNonInternalMessage(l);
         return {
           lead: l,
           score: sc.score,
@@ -5691,7 +5711,16 @@ function HotProspectsCard({ leads, onSelectLead }) {
     if (stage === 'new' && !lead.curatedLinkSentAt) return 'Send curated link';
     if (stage === 'tour-requested') return 'Send scheduling link';
     if (stage === 'tour-booked') {
-      const upcoming = (lead.tours || []).find((t) => t.date >= new Date().toISOString().slice(0, 10) && t.status !== 'cancelled');
+      // Sort by date ASC to pick the EARLIEST upcoming tour. .find() on the
+      // raw array would pick whichever happens to be first in storage —
+      // probably the right answer, but optimistic UI + realtime can land
+      // tours out of order, and we don't want to show "Tour Aug 10" on the
+      // Hot Prospects card when the actual next tour is tomorrow.
+      const today = new Date().toISOString().slice(0, 10);
+      const upcoming = (lead.tours || [])
+        .filter((t) => t.date >= today && t.status !== 'cancelled')
+        .slice()
+        .sort((a, b) => `${a.date} ${a.time || ''}`.localeCompare(`${b.date} ${b.time || ''}`))[0];
       return upcoming ? `Tour ${fmtDate(upcoming.date)}` : 'Confirm tour details';
     }
     if (stage === 'post-tour') return 'Push toward application';
@@ -6222,8 +6251,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
     for (const lead of leads) {
       if (isLeadSnoozed(lead)) continue;
       if (isClosed(lead)) continue;
-      const msgs = (lead.messages || []).filter((m) => !m.internal);
-      const last = msgs[msgs.length - 1];
+      const last = lastNonInternalMessage(lead);
       if (!last || last.direction !== 'inbound') continue;
       const ageMs = now - new Date(last.timestamp).getTime();
       const ageHrs = ageMs / 3600000;
@@ -7410,8 +7438,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
   const needsReplyBadge = useMemo(() => {
     let n = 0;
     for (const l of leads) {
-      const msgs = (l.messages || []).filter(m => !m.internal);
-      const last = msgs[msgs.length - 1];
+      const last = lastNonInternalMessage(l);
       if (last && last.direction === 'inbound') n++;
     }
     return n;
@@ -12595,9 +12622,20 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
     danger: 'bg-red-50 text-red-700 border-red-200',
   }[tone] || 'bg-slate-100 text-slate-700 border-slate-200');
 
-  const lastActivityLabel = (lead) => {
+  // Pick the message with the latest timestamp. Don't trust array order —
+  // optimistic UI prepends + realtime INSERTs can land out of order, and
+  // msgs[msgs.length-1] would otherwise return a stale message and the
+  // Pipeline card preview / needs-attention coloring would be wrong.
+  const latestMessage = (lead) => {
     const msgs = (lead.messages || []).filter((m) => !m.internal);
-    const last = msgs[msgs.length - 1];
+    if (msgs.length === 0) return null;
+    return msgs.reduce((latest, m) =>
+      !latest || new Date(m.timestamp) > new Date(latest.timestamp) ? m : latest,
+    null);
+  };
+
+  const lastActivityLabel = (lead) => {
+    const last = latestMessage(lead);
     if (last) return `${last.direction === 'inbound' ? 'They' : 'You'}: ${(last.body || '').slice(0, 36)}`;
     if (lead.createdAt) return `Created ${timeAgo(lead.createdAt)}`;
     return '';
@@ -12605,8 +12643,8 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
 
   const needsAttention = (lead) => {
     // Last message is inbound = needs reply
-    const msgs = (lead.messages || []).filter((m) => !m.internal);
-    return msgs.length > 0 && msgs[msgs.length - 1].direction === 'inbound';
+    const last = latestMessage(lead);
+    return last?.direction === 'inbound';
   };
 
   return (
@@ -12800,10 +12838,26 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
 // ============================================================
 // UNIFIED INBOX — split-pane: thread list + conversation + lead context
 // ============================================================
+// Pick the EARLIEST active tour for templating. .find() without sorting
+// can return a later tour if the array is out of order, which would put
+// the wrong date into a "{tourDate}" template variable — and Morgan
+// would send the lead a confirmation for the wrong day. Sort by
+// date+time ascending and pick the first active one.
+function pickNextTour(tours) {
+  return (tours || [])
+    .filter((t) => t.status !== 'cancelled' && t.status !== 'completed')
+    .slice()
+    .sort((a, b) => {
+      const ak = `${a.date || ''} ${a.time || ''}`;
+      const bk = `${b.date || ''} ${b.time || ''}`;
+      return ak.localeCompare(bk);
+    })[0];
+}
+
 function fillTemplate(tpl, lead, settings) {
   const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
   const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
-  const nextTour = (lead?.tours || []).find((t) => t.status !== 'cancelled' && t.status !== 'completed');
+  const nextTour = pickNextTour(lead?.tours);
   const tourDate = nextTour?.date ? new Date(nextTour.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
   const tourTime = nextTour?.time || '';
   return tpl
@@ -13005,9 +13059,10 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
         if (ta) ta.focus();
       } else if (e.key === 'r' && activeThread) {
         // Refresh AI suggestion: clear the cache entry for the current key
-        // so the auto-fetch effect re-runs.
-        const msgs = (activeThread.lead.messages || []).filter((m) => !m.internal);
-        const last = msgs[msgs.length - 1];
+        // so the auto-fetch effect re-runs. Use lastNonInternalMessage to
+        // pick by max timestamp (the cache key the auto-fetch effect uses
+        // is keyed off the latest inbound, and we want them to match).
+        const last = lastNonInternalMessage(activeThread.lead);
         if (last) {
           e.preventDefault();
           const key = `${activeThread.lead.id}::${last.id}`;
@@ -13787,7 +13842,9 @@ function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOp
   // Slash command definitions. Each one renders an insert into the textarea
   // when picked. {portalUrl} etc. resolve from the lead context.
   const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
-  const nextTour = (lead?.tours || []).find((t) => t.status !== 'cancelled' && t.status !== 'completed');
+  // Use pickNextTour so the slash-command tour template references the
+  // earliest active tour (not whatever happens to be first in the array).
+  const nextTour = pickNextTour(lead?.tours);
   const tourDate = nextTour?.date ? new Date(nextTour.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
   const tourTime = nextTour?.time || '';
   const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
@@ -16519,10 +16576,10 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
   const sendInFlightRef = useRef(false);
 
   // Detect if the last non-internal message is inbound — i.e., a reply is owed
-  // and the AI draft button is worth offering.
+  // and the AI draft button is worth offering. lastNonInternalMessage picks
+  // by max timestamp so unsorted message arrays don't hide a reply.
   const replyOwed = useMemo(() => {
-    const msgs = (lead.messages || []).filter((m) => !m.internal);
-    const last = msgs[msgs.length - 1];
+    const last = lastNonInternalMessage(lead);
     return last && last.direction === 'inbound';
   }, [lead]);
 
