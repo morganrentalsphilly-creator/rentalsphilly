@@ -3509,6 +3509,13 @@ function AreasPicker({ value, onChange }) {
 function IntakeForm({ onSubmit, onBack }) {
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  // Synchronous re-entry guard for the final submit. setSubmitting is async,
+  // so a fast double-tap on "Send to my agent" can pass the `submitting`
+  // check twice before React re-renders — which would create two leads and
+  // fire two welcome SMS. The ref flips synchronously so the second tap
+  // exits immediately. Without this guard, we rely on the user not being
+  // anxious, which is exactly the wrong assumption for a submission button.
+  const submitInFlightRef = useRef(false);
   const [submitError, setSubmitError] = useState(null);
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
@@ -3826,6 +3833,10 @@ function IntakeForm({ onSubmit, onBack }) {
   const handleNext = async () => {
     if (!s.valid() || submitting) return;
     if (!isLastStep) { setStep(step + 1); return; }
+    // Sync guard: closes the window between two rapid taps where async
+    // setSubmitting hasn't yet re-rendered the disabled button.
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
 
     // ---- ANTI-SPAM CHECKS ----
     // Bots that fill every field they see will populate the honeypot.
@@ -3858,6 +3869,10 @@ function IntakeForm({ onSubmit, onBack }) {
       console.error('[intake submit] failed', err);
       setSubmitError(err?.message || 'Network error');
       setSubmitting(false);
+      // Release the in-flight lock so the user can retry. On success we
+      // intentionally leave it locked — the parent navigates away from
+      // the form, so further taps would never fire anyway.
+      submitInFlightRef.current = false;
     }
   };
 
@@ -4948,6 +4963,10 @@ function AddLeadModal({ onClose, onCreate, showToast }) {
     source: 'Referral',
   });
   const [submitting, setSubmitting] = useState(false);
+  // Sync re-entry lock — same pattern as IntakeForm / ComposeModal. setSubmitting
+  // is async, so a double-tap on Create can create two leads before the
+  // button rerenders to disabled.
+  const submitInFlightRef = useRef(false);
   const update = (k, v) => setData((d) => ({ ...d, [k]: v }));
 
   const isValid =
@@ -4959,6 +4978,8 @@ function AddLeadModal({ onClose, onCreate, showToast }) {
 
   const submit = async () => {
     if (!isValid || submitting) return;
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
     setSubmitting(true);
     try {
       await onCreate(data);
@@ -4966,6 +4987,7 @@ function AddLeadModal({ onClose, onCreate, showToast }) {
       console.error('[add lead]', err);
       showToast?.({ message: `Couldn't add lead: ${err.message}`, kind: 'error' });
       setSubmitting(false);
+      submitInFlightRef.current = false;
     }
   };
 
@@ -10082,8 +10104,16 @@ function CloseStageModal({ stageId, onClose, onConfirm, showToast }) {
   const [moveInDate, setMoveInDate] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // Sync re-entry lock. Without this, a double-tap on Confirm in the lost/
+  // leased modal could fire two stage transitions — the first would set
+  // commission + close-out fields, the second would log a duplicate
+  // activity row and overwrite the commission timestamp.
+  const submitInFlightRef = useRef(false);
 
   const submit = async () => {
+    if (submitting) return;
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
     setSubmitting(true);
     const finalReason = isLost && reason === 'Other' && reasonOther.trim() ? reasonOther.trim() : reason;
     const payload = isLost
@@ -10100,6 +10130,7 @@ function CloseStageModal({ stageId, onClose, onConfirm, showToast }) {
     } catch (err) {
       showToast?.({ message: `Couldn't save: ${err.message}`, kind: 'error' });
       setSubmitting(false);
+      submitInFlightRef.current = false;
     }
   };
 

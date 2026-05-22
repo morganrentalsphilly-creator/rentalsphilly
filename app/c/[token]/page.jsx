@@ -11,7 +11,7 @@
 // lead leaves the page after phase 1 and comes back via the scheduling SMS,
 // they automatically land in phase 2.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 
 // Helpers
@@ -105,6 +105,15 @@ export default function CuratedPage() {
   const [picksByAddr, setPicksByAddr] = useState({});  // { address: { slotDate, slotTime } }
   const [note2, setNote2] = useState('');
   const [submitting2, setSubmitting2] = useState(false);
+  // Sync in-flight locks for both phases. React's setSubmittingN is async,
+  // so a fast double-tap on the submit button (especially on mobile where
+  // there's no visual click feedback delay) can pass through `disabled`
+  // and fire the POST twice. Phase 2 double-fire = duplicate tour rows,
+  // which corrupts Morgan's calendar. The ref locks close that window
+  // synchronously.
+  const submit1InFlightRef = useRef(false);
+  const submit2InFlightRef = useRef(false);
+  const submitRescheduleInFlightRef = useRef(false);
   // Which address card is currently expanded in the time picker. null means
   // "auto" — the first un-picked address expands itself. Used to collapse
   // picked addresses to a one-line summary so the lead doesn't scroll past
@@ -218,6 +227,10 @@ export default function CuratedPage() {
         alert('Pick a new time first.');
         return;
       }
+      // Sync guard — double-tap could fire two reschedule POSTs and write
+      // duplicate activity rows.
+      if (submitRescheduleInFlightRef.current) return;
+      submitRescheduleInFlightRef.current = true;
       setRescheduleSubmitting(true);
       try {
         const res = await fetch(`/api/curated/${token}/reschedule`, {
@@ -238,6 +251,7 @@ export default function CuratedPage() {
         alert('Couldn\'t reschedule: ' + e.message);
       } finally {
         setRescheduleSubmitting(false);
+        submitRescheduleInFlightRef.current = false;
       }
     };
 
@@ -338,6 +352,8 @@ export default function CuratedPage() {
         alert('Tell us which properties you like — paste addresses from the listings tab, one per line.');
         return;
       }
+      if (submit1InFlightRef.current) return;
+      submit1InFlightRef.current = true;
       setSubmitting1(true);
       try {
         const res = await fetch(`/api/curated/${token}`, {
@@ -354,6 +370,7 @@ export default function CuratedPage() {
         alert('Something went wrong: ' + e.message);
       } finally {
         setSubmitting1(false);
+        submit1InFlightRef.current = false;
       }
     };
 
@@ -500,6 +517,10 @@ export default function CuratedPage() {
         alert('Pick a time for every property.');
         return;
       }
+      // Sync re-entry guard. Phase 2 creates tour rows in the DB, so a
+      // double-tap that fires the POST twice would create duplicate tours.
+      if (submit2InFlightRef.current) return;
+      submit2InFlightRef.current = true;
       setSubmitting2(true);
       try {
         const picks = selectedAddrs.map((address) => ({
@@ -521,6 +542,7 @@ export default function CuratedPage() {
         alert('Something went wrong: ' + e.message);
       } finally {
         setSubmitting2(false);
+        submit2InFlightRef.current = false;
       }
     };
 
