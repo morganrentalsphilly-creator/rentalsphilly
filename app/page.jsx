@@ -7720,6 +7720,22 @@ function ShiftEditor({ value, onChange, tours = [] }) {
                       {dayShifts.length > 2 && (
                         <div className="text-[9px] text-emerald-700">+{dayShifts.length - 2} more</div>
                       )}
+                      {/* Total hours summary — at a glance "how much capacity
+                          do I have on this day". Hides when 0 to keep cells clean. */}
+                      {(() => {
+                        const totalMin = dayShifts.reduce((sum, s) => {
+                          const [sh, sm] = s.start.split(':').map(Number);
+                          const [eh, em] = s.end.split(':').map(Number);
+                          return sum + Math.max(0, (eh * 60 + em) - (sh * 60 + sm));
+                        }, 0);
+                        if (totalMin === 0) return null;
+                        const totalHrs = totalMin / 60;
+                        return (
+                          <div className="text-[9px] font-semibold text-emerald-700 pt-0.5">
+                            {totalHrs % 1 === 0 ? totalHrs : totalHrs.toFixed(1)}h{dayTours.length > 0 ? ` · ${dayTours.length} booked` : ''}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </button>
@@ -12006,19 +12022,30 @@ function CalendarView({ settings, leads, onSelectLead }) {
               const dayShifts = shiftsByDate[dateStr] || [];
               const dayTours = (toursByDate[dateStr] || []).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
               const blocked = blockedDates.has(dateStr);
+              // Total available shift hours on this day — drives the at-a-glance
+              // capacity footer chip.
+              const totalShiftMin = dayShifts.reduce((sum, s) => {
+                const [sh, sm] = s.start.split(':').map(Number);
+                const [eh, em] = s.end.split(':').map(Number);
+                return sum + Math.max(0, (eh * 60 + em) - (sh * 60 + sm));
+              }, 0);
+              const totalHrs = totalShiftMin / 60;
               return (
                 <div
                   key={dateStr}
-                  className={`min-h-[110px] rounded-lg p-1.5 text-left border ${
+                  className={`min-h-[110px] rounded-lg p-1.5 text-left border flex flex-col ${
                     isPast ? 'bg-slate-50 border-slate-100 opacity-60' :
                     blocked ? 'bg-red-50 border-red-200' :
+                    isToday ? 'bg-white border-2' :
                     dayShifts.length > 0 ? 'bg-white border-emerald-200' :
                     'bg-white border-slate-200'
                   }`}
+                  style={isToday && !blocked ? { borderColor: 'var(--brand-gold)' } : undefined}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className={`text-[11px] font-semibold ${isToday ? 'text-brand-gold' : 'text-slate-700'}`}>
                       {d.toLocaleDateString('en-US', { month: 'short' })} {d.getDate()}
+                      {isToday && <span className="ml-1 text-[9px] uppercase tracking-wider" style={{ color: 'var(--brand-gold)' }}>Today</span>}
                     </span>
                   </div>
                   {blocked && <div className="text-[10px] text-red-700 mb-1">Off</div>}
@@ -12042,12 +12069,28 @@ function CalendarView({ settings, leads, onSelectLead }) {
                             t.status === 'no-show' ? 'bg-amber-200 text-amber-900' :
                             'bg-blue-600 text-white hover:bg-blue-700'
                           }`}
-                          title={`${t.time || ''} · ${t.lead.fullName}`}
+                          title={`${t.time || ''} · ${t.lead.fullName}${(t.listings || []).length > 0 ? ` · ${(t.listings || []).map((l) => l.address?.split(',')[0]).join(', ')}` : ''}`}
                         >
                           <span className="font-bold">{(t.time || '').replace(':00 ', '').replace(' ', '')}</span>
                           <span className="truncate">{t.lead.fullName.split(' ')[0]}</span>
                         </button>
                       ))}
+                    </div>
+                  )}
+                  {/* Footer chip: capacity at a glance. Only shows when there
+                      are shifts and/or tours so blank days stay quiet. */}
+                  {!blocked && !isPast && (totalShiftMin > 0 || dayTours.length > 0) && (
+                    <div className="mt-auto pt-1 text-[9px] text-slate-500 flex items-center justify-between border-t border-slate-100">
+                      {totalShiftMin > 0 && (
+                        <span className="font-medium text-emerald-700">
+                          {totalHrs % 1 === 0 ? totalHrs : totalHrs.toFixed(1)}h open
+                        </span>
+                      )}
+                      {dayTours.length > 0 && (
+                        <span className="font-medium text-blue-700">
+                          {dayTours.length} booked
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
