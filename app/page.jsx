@@ -15597,15 +15597,27 @@ ${settings.agentEmail || ''}` : '';
     setSending(false);
   };
 
-  const handleSubmit = () => {
-    if (!activeListing) return;
-    onSubmit({
-      listing: activeListing,
-      landlordEmail: activeListing.leasingContact || '',
-      landlordName: activeListing.listingAgent || activeListing.leasingOffice || '',
-      emailSubject: editedSubject,
-      emailBody: editedBody,
-    });
+  // Track submitting state so a fast double-click doesn't create two
+  // submission rows (each with its own 3-day + 7-day follow-up tasks → 4
+  // duplicate tasks in the lead's Today queue).
+  const [submitting, setSubmitting] = useState(false);
+  const handleSubmit = async () => {
+    if (!activeListing || submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit({
+        listing: activeListing,
+        landlordEmail: activeListing.leasingContact || '',
+        landlordName: activeListing.listingAgent || activeListing.leasingOffice || '',
+        emailSubject: editedSubject,
+        emailBody: editedBody,
+      });
+    } catch (err) {
+      console.error('[submit application] failed', err);
+      showToast?.({ message: `Couldn't log submission: ${err.message}`, kind: 'error' });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const canSubmit = activeListing && editedSubject && editedBody;
@@ -15729,10 +15741,10 @@ ${settings.agentEmail || ''}` : '';
             </button>
             <button
               onClick={handleSubmit}
-              disabled={!canSubmit}
+              disabled={!canSubmit || submitting}
               className="flex-1 min-w-[120px] py-3 rounded-full bg-slate-100 text-slate-900 text-sm font-medium hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transition-colors"
             >
-              Log only
+              {submitting ? 'Logging…' : 'Log only'}
             </button>
             <button
               onClick={handleSendEmail}
