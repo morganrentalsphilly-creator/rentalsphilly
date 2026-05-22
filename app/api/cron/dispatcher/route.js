@@ -322,7 +322,11 @@ async function runStageNudges(db) {
       stage: 'tour-requested',
       stuckHours: 48,
       check: (lead) => lead.raw?.scheduling_open_at && !lead.raw?.times_submitted_at,
-      message: (firstName) =>
+      // The closure used to reference `lead` from outer scope — but the
+      // arrow was defined OUTSIDE the for-of loop that declares `lead`,
+      // so it would throw ReferenceError at call time. Now we pass the
+      // lead in explicitly. Callers below: rule.message(firstName, lead).
+      message: (firstName, lead) =>
         `Rentals Philly: Hey ${firstName} — just a reminder, you can still pick tour times here: ${lead?.raw?.curated_link_url || '[link]'}`,
     },
     // 4. Post-tour silent at 48h
@@ -383,7 +387,10 @@ async function runStageNudges(db) {
         const result = await sendSms({
           leadId: lead.id,
           kind: 'nudge_48hr',
-          body: rule.message(firstName),
+          // Pass lead in so rules that need lead-specific data (like
+          // curated_link_url for the scheduling-link reminder) can access it.
+          // Other rule messages just ignore the second arg.
+          body: rule.message(firstName, lead),
           idempotencyKey: `nudge-${rule.key}-${lead.id}`,
         });
         if (result.ok) sent++;
