@@ -12858,8 +12858,13 @@ function fillTemplate(tpl, lead, settings) {
   const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
   const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
   const nextTour = pickNextTour(lead?.tours);
-  const tourDate = nextTour?.date ? new Date(nextTour.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
-  const tourTime = nextTour?.time || '';
+  // Fall back to visible [date] / [time] placeholders so Morgan SEES she
+  // needs to fill these in. An empty string would silently render as
+  // "Confirming your tour on  at ." — bad enough that the lead might
+  // get sent a clearly-broken message. The slash-command panel already
+  // uses this pattern; mirror it here.
+  const tourDate = nextTour?.date ? new Date(nextTour.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '[date]';
+  const tourTime = nextTour?.time || '[time]';
   return tpl
     .replace(/\{firstName\}/g, firstName)
     .replace(/\{portalUrl\}/g, portalUrl)
