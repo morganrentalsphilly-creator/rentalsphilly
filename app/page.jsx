@@ -2528,7 +2528,7 @@ function Landing({ onStart }) {
         <div className="space-y-2">
           {[
             { q: 'How much does this cost?', a: 'Free for renters. The landlord pays the agent commission when you sign a lease. You never pay us a fee.' },
-            { q: 'How fast will I hear back?', a: 'Usually within an hour or two during the day. Always within 24 hours. If your move-in is soon, you go to the top of the list.' },
+            { q: 'How fast will I hear back?', a: 'Usually within an hour or two during the day, and by the next morning if you submit overnight. If your move-in is soon, you go to the top of the list.' },
             { q: 'Do I have to use SMS?', a: 'Texts are the fastest way to stay in sync but you can reply by email if you prefer. No app to download either way.' },
             { q: 'Can you help if my credit isn\'t great?', a: 'Yes. We work across all credit profiles and know which buildings are flexible on requirements, cosigners, and deposits.' },
             { q: 'What neighborhoods do you cover?', a: 'All of Philadelphia — Center City, Fishtown, Fairmount, University City, South Philly, North Philly, Northeast, NW. If you can rent it, we can show it.' },
