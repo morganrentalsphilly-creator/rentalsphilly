@@ -12764,6 +12764,15 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   const [composerBody, setComposerBody] = useState('');
   const [composerSubject, setComposerSubject] = useState('');
   const [sending, setSending] = useState(false);
+  // Synchronous in-flight lock. Belt-and-suspenders alongside the `sending`
+  // state because setSending is async — a fast Cmd+Enter+Cmd+Enter (or
+  // double-click on the Send button before React re-renders to disable it)
+  // would otherwise pass through the `if (sending) return` check twice and
+  // fire two sendSMS calls. The idempotencyKey uses Date.now(), so two
+  // clicks ~50ms apart would generate two different keys and not dedupe at
+  // the API layer. A ref flips synchronously, so the second call exits
+  // immediately on the next event-loop tick.
+  const sendInFlightRef = useRef(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   // Mobile-only: tracks whether the user is "in" a thread (full-screen view)
   // or browsing the thread list. Ignored on desktop where both panes show.
@@ -13028,6 +13037,9 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   // closure on the current render.
   const handleSend = async (bodyOverride) => {
     if (!activeThread) return;
+    // Sync re-entry guard. See sendInFlightRef definition for why the state
+    // flag alone isn't enough.
+    if (sendInFlightRef.current) return;
     const lead = activeThread.lead;
     const body = (typeof bodyOverride === 'string' ? bodyOverride : composerBody).trim();
     if (!body) return;
@@ -13035,6 +13047,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       showToast({ message: 'Lead has opted out of SMS', kind: 'error' });
       return;
     }
+    sendInFlightRef.current = true;
     setSending(true);
     try {
       let newMsg;
@@ -13050,7 +13063,6 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           const reason = result.error === 'opted_out' ? 'lead has opted out' :
                          result.error === 'invalid_phone' ? 'invalid phone' : result.error || 'send failed';
           showToast({ message: `SMS not sent — ${reason}`, kind: 'error' });
-          setSending(false);
           return;
         }
         newMsg = {
@@ -13075,7 +13087,6 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
         });
         if (!result.ok) {
           showToast({ message: `Email not sent — ${result.error || 'send failed'}`, kind: 'error' });
-          setSending(false);
           return;
         }
         newMsg = result.message ? {
@@ -13130,8 +13141,13 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     } catch (err) {
       console.error('[inbox send]', err);
       showToast({ message: `Send failed — ${err.message}`, kind: 'error' });
+    } finally {
+      // finally so the in-flight lock always releases, even on early-return
+      // failure paths. Without this, a transient API failure would lock the
+      // composer until refresh.
+      sendInFlightRef.current = false;
+      setSending(false);
     }
-    setSending(false);
   };
 
   // Today action cards.
@@ -16393,7 +16409,12 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
   // and left the modal open while the parent's async onSend ran — a fast
   // second click would call onSend again before the first resolved, sending
   // the same message twice. Now Send disables the moment it's clicked.
+  //
+  // setSending is async, so a fast Cmd+Enter+Cmd+Enter (the keyboard equivalent
+  // of double-click) can still pass `if (sending) return` twice before React
+  // re-renders. The ref flips synchronously and closes that window.
   const [sending, setSending] = useState(false);
+  const sendInFlightRef = useRef(false);
 
   // Detect if the last non-internal message is inbound — i.e., a reply is owed
   // and the AI draft button is worth offering.
@@ -16425,6 +16446,8 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
 
   const send = async () => {
     if (!body.trim() || sending) return;
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSending(true);
     try {
       await onSend({ channel, subject, body });
@@ -16434,6 +16457,7 @@ function ComposeModal({ lead, template, prefill, onClose, onSend }) {
     } catch (err) {
       console.error('[compose modal] send threw', err);
     } finally {
+      sendInFlightRef.current = false;
       setSending(false);
     }
   };
