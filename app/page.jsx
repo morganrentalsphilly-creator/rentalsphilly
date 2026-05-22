@@ -1253,6 +1253,27 @@ function hydrateLeads(data) {
 }
 
 // ============================================================
+// WAITLIST HYDRATION — translate snake_case DB columns to the camelCase keys
+// the UI reads. Without this, every refresh breaks: (a) clicking a waitlist
+// entry calls onSelectLead(undefined) because w.leadId is missing,
+// (b) the leads list can't show the Waitlist pill, and (c) the auto-notify-
+// when-slot-opens flow throws because w.preferredDates is undefined.
+// ============================================================
+function hydrateWaitlist(rows) {
+  return (rows || []).map((w) => ({
+    // Keep the raw DB shape too in case any code reads it directly.
+    ...w,
+    // camelCase aliases the UI actually consumes.
+    leadId:         w.lead_id         ?? w.leadId,
+    preferredDates: Array.isArray(w.preferred_dates) ? w.preferred_dates
+                  : Array.isArray(w.preferredDates)  ? w.preferredDates
+                  : [],
+    status: w.status || 'waiting',
+    createdAt: w.created_at ?? w.createdAt,
+  }));
+}
+
+// ============================================================
 // PROPERTY HYDRATION — DB snake_case → UI camelCase (matches MOCK_LISTINGS shape)
 // ============================================================
 function hydrateProperties(rows) {
@@ -1382,7 +1403,7 @@ export default function App() {
         const data = await loadAll();
         setLeads(hydrateLeads(data));
         setSlots((data.slots || []).length > 0 ? data.slots : generateDefaultSlots());
-        setWaitlist(data.waitlist || []);
+        setWaitlist(hydrateWaitlist(data.waitlist || []));
         setProperties(hydrateProperties(data.properties || []));
         if (data.settings) setSettings((prev) => ({ ...DEFAULT_AGENT_SETTINGS, ...prev, ...mergeSettingsRow(data.settings) }));
         try {
@@ -1422,6 +1443,10 @@ export default function App() {
             // Skip if we already have this message (optimistic insert).
             if ((l.messages || []).some((m) => m.id === row.id)) return l;
             isNewInbound = row.direction === 'inbound' && !row.internal;
+            // Same shape hydrateLeads produces on regular load — keep the
+            // realtime row and the hydrated row in sync so messages that
+            // first arrive via Realtime don't lose engagement/internal/kind
+            // fields until the next refresh.
             const incoming = {
               id: row.id,
               channel: row.channel,
@@ -1431,8 +1456,14 @@ export default function App() {
               via: row.via,
               subject: row.subject,
               body: row.body,
-              timestamp: row.created_at || new Date().toISOString(),
               automated: !!row.automated,
+              internal: !!row.internal,
+              kind: row.kind,
+              deliveryStatus: row.delivery_status,
+              twilioSid: row.twilio_sid,
+              openedAt: row.opened_at,
+              clickedAt: row.clicked_at,
+              timestamp: row.created_at || new Date().toISOString(),
             };
             return { ...l, messages: [...(l.messages || []), incoming] };
           }));
@@ -1468,7 +1499,19 @@ export default function App() {
               ...l,
               messages: (l.messages || []).map((m) =>
                 m.id === row.id
-                  ? { ...m, status: row.status, body: row.body }
+                  ? {
+                      // Propagate everything webhooks can change. The Twilio
+                      // status webhook updates delivery_status; the Resend
+                      // webhook updates opened_at + clicked_at. Without these
+                      // aliases, email engagement chips stayed dark until the
+                      // next page refresh.
+                      ...m,
+                      status: row.status ?? m.status,
+                      body: row.body ?? m.body,
+                      deliveryStatus: row.delivery_status ?? m.deliveryStatus,
+                      openedAt: row.opened_at ?? m.openedAt,
+                      clickedAt: row.clicked_at ?? m.clickedAt,
+                    }
                   : m
               ),
             };
