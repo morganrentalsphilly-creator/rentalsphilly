@@ -6078,6 +6078,7 @@ function KeyboardShortcutHelp({ onClose }) {
     { keys: ['j', 'k'], label: 'Prev / Next lead or inbox thread' },
     { keys: ['c'],      label: 'Focus composer (Inbox)' },
     { keys: ['r'],      label: 'Refresh AI suggested reply (Inbox)' },
+    { keys: ['e'],      label: 'Mark thread handled (Inbox)' },
     { keys: ['⌘', 'Enter'], label: 'Send message in inbox composer' },
     { keys: ['Esc'],    label: 'Close drawer or overlay' },
     { keys: ['?'],      label: 'Toggle this help' },
@@ -6457,7 +6458,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
               result.error === 'opted_out' ? 'lead has opted out of SMS' :
               result.error === 'invalid_phone' ? 'invalid phone number' :
               result.error || 'send failed';
-            showToast(`SMS not sent — ${reason}`);
+            showToast({ message: `SMS not sent — ${reason}`, kind: 'error' });
             setComposeModal(null);
             return;
           }
@@ -6485,7 +6486,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
             automated: false,
           });
           if (!emailResult.ok) {
-            showToast(`Email not sent — ${emailResult.error || 'send failed'}`);
+            showToast({ message: `Email not sent — ${emailResult.error || 'send failed'}`, kind: 'error' });
             setComposeModal(null);
             return;
           }
@@ -8233,13 +8234,13 @@ function ApplicationUpload({ lead, onSave, onDelete, onToggleReviewed, showToast
         setUploading(false);
       };
       reader.onerror = () => {
-        showToast('Failed to read file');
+        showToast({ message: 'Failed to read file', kind: 'error' });
         setUploading(false);
       };
       reader.readAsDataURL(file);
     } catch (e) {
       setUploading(false);
-      showToast('Upload failed');
+      showToast({ message: 'Upload failed', kind: 'error' });
     }
   };
 
@@ -8764,7 +8765,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         automated: false,
       });
       if (!smsResult.ok && smsResult.error !== 'opted_out') {
-        showToast(`SMS not sent — ${smsResult.error || 'send failed'}`);
+        showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
         setBusy(false);
         return;
       }
@@ -8791,7 +8792,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
       showToast('Scheduling link sent');
     } catch (err) {
       console.error('[scheduling link] send failed', err);
-      showToast('Send failed');
+      showToast({ message: 'Send failed', kind: 'error' });
     } finally {
       setBusy(false);
     }
@@ -8902,7 +8903,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         automated: false,
       });
       if (!smsResult.ok && smsResult.error !== 'opted_out') {
-        showToast(`SMS not sent — ${smsResult.error || 'send failed'}`);
+        showToast({ message: `SMS not sent — ${smsResult.error || 'send failed'}`, kind: 'error' });
         setBusy(false);
         return;
       }
@@ -8942,7 +8943,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       showToast('Curated link sent — lead got SMS + email');
     } catch (err) {
       console.error('[curated link] send failed', err);
-      showToast('Send failed — check logs');
+      showToast({ message: 'Send failed — check logs', kind: 'error' });
     } finally {
       setBusy(false);
     }
@@ -9059,11 +9060,11 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
             contentType: file.type || 'application/octet-stream',
           });
         } catch (err) {
-          showToast(`Couldn't upload ${file.name}`);
+          showToast({ message: `Couldn't upload ${file.name}`, kind: 'error' });
           continue;
         }
         if (!data?.path) {
-          showToast(`Couldn't upload ${file.name}`);
+          showToast({ message: `Couldn't upload ${file.name}`, kind: 'error' });
           continue;
         }
         next.push({
@@ -9078,7 +9079,7 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
         });
       } catch (err) {
         console.error('[doc upload]', err);
-        showToast(`Upload failed: ${err.message}`);
+        showToast({ message: `Upload failed: ${err.message}`, kind: 'error' });
       }
     }
     await updateLead(lead.id, {
@@ -9575,7 +9576,7 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
       onClose();
     } catch (err) {
       console.error('[delete lead]', err);
-      showToast(`Delete failed: ${err.message}`);
+      showToast({ message: `Delete failed: ${err.message}`, kind: 'error' });
     }
     setOpen(false);
   };
@@ -10514,6 +10515,9 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   const userTemplates = settings?.quickReplyTemplates || DEFAULT_AGENT_SETTINGS.quickReplyTemplates;
 
   // Build a thread per lead = lead + sorted messages + lastMessage + unread flag.
+  // needsReply also honors `inbox_dismissed_at` — once Morgan marks a thread
+  // handled, it stays out of needs-reply until a new inbound arrives (and the
+  // new inbound's timestamp will exceed the dismissal, re-surfacing it).
   const threads = useMemo(() => {
     return leads
       .map((lead) => {
@@ -10521,14 +10525,19 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         const last = msgs[msgs.length - 1];
         const lastReadAt = lead.raw?.inbox_last_read_at;
+        const dismissedAt = lead.raw?.inbox_dismissed_at;
         const isUnread = last && last.direction === 'inbound' &&
           (!lastReadAt || new Date(last.timestamp) > new Date(lastReadAt));
+        const lastIsInbound = last?.direction === 'inbound';
+        const isHandled = lastIsInbound && dismissedAt &&
+          new Date(dismissedAt) >= new Date(last.timestamp);
         return {
           lead,
           messages: msgs,
           last,
           isUnread,
-          needsReply: last?.direction === 'inbound',
+          needsReply: lastIsInbound && !isHandled,
+          isHandled,
         };
       })
       .filter((t) => t.last) // only threads with messages
@@ -10615,6 +10624,14 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           setAiSuggestions((prev) => { const next = { ...prev }; delete next[key]; return next; });
           setAiDismissed((prev) => { const next = { ...prev }; delete next[key]; return next; });
         }
+      } else if (e.key === 'e' && activeThread && activeThread.needsReply) {
+        // Mark thread handled — drops it from needs-reply until a new inbound
+        // arrives. Useful when you're waiting on info before you can answer.
+        e.preventDefault();
+        updateLead(activeThread.lead.id, {
+          raw: { ...(activeThread.lead.raw || {}), inbox_dismissed_at: new Date().toISOString() },
+        });
+        showToast('Marked handled');
       }
     };
     window.addEventListener('keydown', handler);
@@ -10694,7 +10711,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     const lead = activeThread.lead;
     if (!composerBody.trim()) return;
     if (composerChannel === 'sms' && lead.opted_out) {
-      showToast('Lead has opted out of SMS');
+      showToast({ message: 'Lead has opted out of SMS', kind: 'error' });
       return;
     }
     setSending(true);
@@ -10711,7 +10728,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
         if (!result.ok) {
           const reason = result.error === 'opted_out' ? 'lead has opted out' :
                          result.error === 'invalid_phone' ? 'invalid phone' : result.error || 'send failed';
-          showToast(`SMS not sent — ${reason}`);
+          showToast({ message: `SMS not sent — ${reason}`, kind: 'error' });
           setSending(false);
           return;
         }
@@ -10734,7 +10751,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           kind: 'manual', idempotencyKey: `inbox-email-${lead.id}-${Date.now()}`, automated: false,
         });
         if (!result.ok) {
-          showToast(`Email not sent — ${result.error || 'send failed'}`);
+          showToast({ message: `Email not sent — ${result.error || 'send failed'}`, kind: 'error' });
           setSending(false);
           return;
         }
@@ -10763,7 +10780,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       showToast(`${composerChannel === 'sms' ? 'SMS' : 'Email'} sent`);
     } catch (err) {
       console.error('[inbox send]', err);
-      showToast(`Send failed — ${err.message}`);
+      showToast({ message: `Send failed — ${err.message}`, kind: 'error' });
     }
     setSending(false);
   };
@@ -10898,8 +10915,41 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                 </button>
                 <Pill tone="info">{activeThread.lead.stage}</Pill>
                 {activeThread.lead.opted_out && <Pill tone="danger">Opted out</Pill>}
+                {activeThread.isHandled && <Pill tone="neutral" icon={CheckCircle2}>Handled</Pill>}
                 <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
                   {activeThread.lead.phone && <span className="hidden md:inline">{activeThread.lead.phone}</span>}
+                  {/* Mark-handled toggle. Shows only when the thread has an
+                      unanswered inbound — otherwise nothing to dismiss. Once
+                      clicked, this thread drops out of "needs reply" until a
+                      new inbound arrives. Keyboard shortcut: `e`. */}
+                  {activeThread.needsReply && (
+                    <button
+                      onClick={async () => {
+                        await updateLead(activeThread.lead.id, {
+                          raw: { ...(activeThread.lead.raw || {}), inbox_dismissed_at: new Date().toISOString() },
+                        });
+                        showToast('Marked handled');
+                      }}
+                      title="Mark as handled — drops thread from needs-reply (`e`)"
+                      className="text-xs px-2.5 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1"
+                    >
+                      <CheckCircle2 className="w-3 h-3" /> Handled
+                    </button>
+                  )}
+                  {activeThread.isHandled && (
+                    <button
+                      onClick={async () => {
+                        await updateLead(activeThread.lead.id, {
+                          raw: { ...(activeThread.lead.raw || {}), inbox_dismissed_at: null },
+                        });
+                        showToast('Re-queued');
+                      }}
+                      title="Undo handled — return thread to needs-reply"
+                      className="text-xs px-2.5 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 inline-flex items-center gap-1"
+                    >
+                      Undo
+                    </button>
+                  )}
                   <button onClick={() => onSelectLead(activeThread.lead.id)} className="text-xs text-slate-500 hover:text-slate-900 underline whitespace-nowrap">
                     Open lead
                   </button>
@@ -11394,7 +11444,7 @@ function BlastView({ leads, showToast }) {
         body: JSON.stringify({ bodyTemplate, filter: { stages }, dryRun: true }),
       });
       const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Preview failed'); return; }
+      if (!res.ok) { showToast({ message: data.error || 'Preview failed', kind: 'error' }); return; }
       setPreview(data);
     } catch (e) {
       showToast(e.message);
@@ -11423,7 +11473,7 @@ function BlastView({ leads, showToast }) {
         body: JSON.stringify({ bodyTemplate, filter: { stages }, dryRun: false }),
       });
       const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Queue failed'); return; }
+      if (!res.ok) { showToast({ message: data.error || 'Queue failed', kind: 'error' }); return; }
       showToast(`Blast queued: ${data.queuedCount} recipients`);
       setPreview(null);
       // Refresh recent
