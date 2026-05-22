@@ -1981,6 +1981,9 @@ export default function App() {
       enteredAt: new Date().toISOString(),
       provider: 'RentSpree (manual entry)',
     };
+
+    // The agent-side audit email (stored in-memory only, marked internal so
+    // it doesn't appear in the lead's customer-facing thread).
     const internalEmail = {
       id: `m_${Date.now()}_rsd`, channel: 'email', direction: 'internal', status: 'sent',
       to: settings.agentEmail, via: 'gmail',
@@ -1988,22 +1991,59 @@ export default function App() {
       body: `Recommendation: ${interpretation.recommendation.toUpperCase()}\n\n${interpretation.flags.length > 0 ? `Flags:\n${interpretation.flags.map(f => `• ${f}`).join('\n')}\n\n` : ''}${interpretation.strengths.length > 0 ? `Strengths:\n${interpretation.strengths.map(s => `• ${s}`).join('\n')}\n\n` : ''}`,
       timestamp: new Date().toISOString(), automated: true, internal: true,
     };
-    const clientSms = {
-      id: `m_${Date.now()}_rsc`, channel: 'sms', direction: 'outbound', status: 'sent',
-      to: lead.phone, via: 'twilio',
-      body: interpretation.recommendation === 'approve'
-        ? `Haven: ${firstName}, your screening report looks great! I'll start submitting applications.`
-        : interpretation.recommendation === 'conditional'
-          ? `Haven: ${firstName}, got your report. A few items to discuss — I'll be in touch within 24hrs.`
-          : `Haven: ${firstName}, got your report. Want to talk through a few things — calling you shortly.`,
-      timestamp: new Date().toISOString(), automated: true,
-    };
+
+    // The actual SMS to the client.
+    //
+    // CRITICAL HISTORY: this function previously built a `clientSms` object
+    // and pushed it into the lead's messages array WITHOUT ever calling the
+    // sendSMS wrapper. The button label said "Save & notify client" but the
+    // client received nothing — only the agent saw a phantom "sent" row in
+    // the lead's thread. Also: the legacy brand prefix was "Haven:" instead
+    // of "Rentals Philly:".
+    const clientSmsBody = interpretation.recommendation === 'approve'
+      ? `Rentals Philly: ${firstName}, your screening report looks great! I'll start submitting applications.`
+      : interpretation.recommendation === 'conditional'
+      ? `Rentals Philly: ${firstName}, got your report. A few items to discuss — I'll be in touch within 24hrs.`
+      : `Rentals Philly: ${firstName}, got your report. Want to talk through a few things — calling you shortly.`;
+
+    let clientSmsRow = null;
+    try {
+      const smsResult = await sendSMS({
+        leadId,
+        body: clientSmsBody,
+        kind: 'screening_followup',
+        idempotencyKey: `screening-${leadId}-${report.reportId}`,
+        automated: false,
+      });
+      if (smsResult.ok && smsResult.message) {
+        // Use the real DB row so the UI matches what actually got sent.
+        clientSmsRow = {
+          id: smsResult.message.id,
+          channel: 'sms',
+          direction: 'outbound',
+          status: smsResult.message.status || 'sent',
+          to: smsResult.message.to,
+          via: 'twilio',
+          body: smsResult.message.body,
+          timestamp: smsResult.message.created_at || new Date().toISOString(),
+          automated: false,
+        };
+      } else if (!smsResult.ok && smsResult.error !== 'opted_out') {
+        showToast({ message: `Screening saved — SMS to client failed (${smsResult.error || 'send failed'})`, kind: 'error' });
+      }
+    } catch (err) {
+      console.error('[screening] client SMS send failed', err?.message);
+      showToast({ message: 'Screening saved — SMS to client failed', kind: 'error' });
+    }
+
     const newTasks = interpretation.recommendation === 'flag'
       ? [{ id: `t_${Date.now()}`, title: `Review ${firstName}'s screening report`, dueDate: new Date().toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', flags: interpretation.flags }]
       : [];
     await updateLead(leadId, {
       screening: { status: 'completed', enteredAt: new Date().toISOString(), provider: 'RentSpree (manual entry)', report, interpretation },
-      messages: [...(lead.messages || []), internalEmail, clientSms],
+      // Only include the SMS row if it actually sent — otherwise the lead's
+      // thread would show a message the client never received.
+      messages: [...(lead.messages || []), internalEmail, ...(clientSmsRow ? [clientSmsRow] : [])],
       activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'screening-logged', timestamp: new Date().toISOString(), message: `Screening logged — ${interpretation.summary}` }],
       tasks: [...(lead.tasks || []), ...newTasks],
     });
@@ -15779,7 +15819,24 @@ ${settings.agentEmail || ''}` : '';
 // ============================================================
 function LogFollowUpModal({ lead, submissionId, onClose, onLog }) {
   const [note, setNote] = useState('');
+  // Track busy state so a fast double-click on Log follow-up doesn't append
+  // the same note to the submission twice (each follow-up gets timestamped
+  // and shown in the submission tracker — duplicates look like real activity).
+  const [logging, setLogging] = useState(false);
   const submission = (lead.submissions || []).find(s => s.id === submissionId);
+
+  const handleLog = async () => {
+    const text = note.trim();
+    if (!text || logging) return;
+    setLogging(true);
+    try {
+      await onLog(text);
+    } catch (err) {
+      console.error('[follow-up log] failed', err);
+    } finally {
+      setLogging(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
@@ -15803,7 +15860,13 @@ function LogFollowUpModal({ lead, submissionId, onClose, onLog }) {
           />
           <div className="flex gap-2">
             <Button variant="outline" size="lg" onClick={onClose} className="flex-1">Cancel</Button>
-            <button onClick={() => note.trim() && onLog(note.trim())} disabled={!note.trim()} className="flex-1 py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed">Log follow-up</button>
+            <button
+              onClick={handleLog}
+              disabled={!note.trim() || logging}
+              className="flex-1 py-2.5 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              {logging ? 'Logging…' : 'Log follow-up'}
+            </button>
           </div>
         </div>
       </div>
