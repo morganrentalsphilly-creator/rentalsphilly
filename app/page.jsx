@@ -772,16 +772,49 @@ function timeAgo(iso) {
 }
 
 // Normalize a raw settings row from the DB into the shape the app expects.
-// Handles the case where `agent_availability` lives inside `raw` jsonb (when
-// migration 0004 hasn't been applied yet) by lifting it back out to the top
-// level. Future per-field fallbacks should be added here too.
+// Translate the raw settings row from Supabase into the camelCase shape the
+// React form + UI expect.
+//
+// The DB stores some columns snake_case (agent_name, agent_email, agent_phone,
+// twilio_number, rentspree_dashboard_url) and some quoted camelCase
+// (welcomeMessages, systemTemplates, quickReplyTemplates, emailSignature). The
+// React state shape is uniformly camelCase, with rentSpree nested as
+// { dashboardUrl }.
+//
+// Without this translation, the snake_case fields stay invisible to the form,
+// so on every refresh the form falls back to DEFAULT_AGENT_SETTINGS values
+// for agent name / email / phone / Twilio number / RentSpree URL — even
+// though the DB row has the real values. Bug Morgan reported: "everytime I
+// refresh some of the settings do not change".
+//
+// Also handles legacy installs where agent_availability lives inside `raw`
+// jsonb (pre-migration 0004) — lifts it back out to the top level.
 function mergeSettingsRow(row) {
   if (!row || typeof row !== 'object') return row || {};
+
+  // Start with the raw row, then layer camelCase aliases on top so the form
+  // can read either spelling. We keep the snake_case keys around too in case
+  // any code path reads them directly.
   const merged = { ...row };
-  // Prefer the top-level column when present; fall back to raw.agent_availability.
+
+  // ---- snake_case → camelCase shims ----
+  // `!= null` (loose) picks up real values (including empty string ""), but
+  // skips null / undefined so DEFAULT_AGENT_SETTINGS wins on fresh installs
+  // where the column has never been populated.
+  if (row.agent_name != null)    merged.agentName    = row.agent_name;
+  if (row.agent_email != null)   merged.agentEmail   = row.agent_email;
+  if (row.agent_phone != null)   merged.agentPhone   = row.agent_phone;
+  if (row.twilio_number != null) merged.twilioNumber = row.twilio_number;
+  // rentSpree.dashboardUrl is nested in form shape but flat in DB.
+  if (row.rentspree_dashboard_url != null) {
+    merged.rentSpree = { ...(merged.rentSpree || {}), dashboardUrl: row.rentspree_dashboard_url };
+  }
+
+  // ---- raw.agent_availability fallback (pre-migration 0004 installs) ----
   if (!merged.agent_availability && row.raw && row.raw.agent_availability) {
     merged.agent_availability = row.raw.agent_availability;
   }
+
   return merged;
 }
 
