@@ -12,8 +12,8 @@ import {
   onAuthChange,
 } from '@/lib/supabase.client';
 import { isAdminEmail } from '@/lib/auth';
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Home, ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, FastForward, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox, Archive } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox, Archive } from 'lucide-react';
 // ============================================================
 // DESIGN TOKENS — single source of truth for spacing/colors
 // ============================================================
@@ -7523,6 +7523,7 @@ function ShiftEditor({ value, onChange, tours = [] }) {
   const [editingDate, setEditingDate] = useState(null); // YYYY-MM-DD
   const [showTemplate, setShowTemplate] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
+  const [rangeBlockOpen, setRangeBlockOpen] = useState(false);
 
   const weeks = useMemo(() => buildCalendarWeeks(4, weekOffset), [weekOffset]);
   const rangeLabel = useMemo(() => calendarRangeLabel(weeks), [weeks]);
@@ -7558,6 +7559,19 @@ function ShiftEditor({ value, onChange, tours = [] }) {
   const toggleBlocked = (date) => {
     const next = isBlocked(date) ? blocked.filter((d) => d !== date) : [...blocked, date].sort();
     onChange({ ...value, blocked_dates: next });
+  };
+  // Block every date in [startDate, endDate] inclusive. Used by the vacation
+  // range picker — typical use is "block Jul 4 through Jul 8".
+  const blockRange = (startDate, endDate) => {
+    if (!startDate || !endDate || startDate > endDate) return;
+    const dates = new Set(blocked);
+    const cur = new Date(startDate + 'T12:00:00');
+    const stop = new Date(endDate + 'T12:00:00');
+    while (cur <= stop) {
+      dates.add(cur.toISOString().slice(0, 10));
+      cur.setDate(cur.getDate() + 1);
+    }
+    onChange({ ...value, blocked_dates: Array.from(dates).sort() });
   };
   const fillFromTemplate = () => {
     const next = applyWeeklyTemplate(template, shifts, 4);
@@ -7596,10 +7610,24 @@ function ShiftEditor({ value, onChange, tours = [] }) {
         <Button size="sm" variant="secondary" onClick={() => setShowTemplate(!showTemplate)}>
           {showTemplate ? 'Hide' : 'Edit'} weekly template
         </Button>
+        <Button size="sm" variant="secondary" icon={Bell} onClick={() => setRangeBlockOpen(true)}>
+          Block a range (vacation)
+        </Button>
         {shifts.some((s) => s.date >= todayStr) && (
           <Button size="sm" variant="secondary" onClick={clearFuture}>Clear all future shifts</Button>
         )}
       </div>
+
+      {rangeBlockOpen && (
+        <BlockRangeModal
+          minDate={todayStr}
+          onClose={() => setRangeBlockOpen(false)}
+          onConfirm={(start, end) => {
+            blockRange(start, end);
+            setRangeBlockOpen(false);
+          }}
+        />
+      )}
 
       {showTemplate && (
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
@@ -7717,21 +7745,38 @@ function ShiftEditor({ value, onChange, tours = [] }) {
   );
 }
 
+// Common shift presets — one tap = whole shift added. The custom time inputs
+// stay below for anything off-pattern.
+const SHIFT_PRESETS = [
+  { label: 'Morning', start: '10:00', end: '12:00', sub: '10am–12pm' },
+  { label: 'Afternoon', start: '12:00', end: '16:00', sub: '12–4pm' },
+  { label: 'Evening', start: '17:00', end: '19:00', sub: '5–7pm' },
+  { label: 'Late evening', start: '19:00', end: '21:00', sub: '7–9pm' },
+  { label: 'Full weekday', start: '17:00', end: '21:00', sub: '5–9pm' },
+  { label: 'Full weekend', start: '10:00', end: '18:00', sub: '10am–6pm' },
+];
+
 function DateShiftModal({ date, shifts, isBlocked, onClose, onAddShift, onRemoveShift, onToggleBlocked }) {
   const [start, setStart] = useState('17:00');
   const [end, setEnd] = useState('19:00');
   const dateLabel = new Date(date + 'T12:00:00').toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric',
   });
-  const add = () => {
-    if (!start || !end || start >= end) return;
-    onAddShift(start, end);
-    setStart(end);
-    setEnd('');
+  const add = (s, e) => {
+    const ss = s || start;
+    const ee = e || end;
+    if (!ss || !ee || ss >= ee) return;
+    onAddShift(ss, ee);
+    // Default the next custom add to start where this one ended.
+    if (!s) { setStart(ee); setEnd(''); }
   };
+  // Preset disabled if a shift with the exact same times already exists.
+  const isPresetActive = (p) =>
+    shifts.some((s) => s.start === p.start && s.end === p.end);
+
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-5 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-slate-900">{dateLabel}</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
@@ -7744,7 +7789,7 @@ function DateShiftModal({ date, shifts, isBlocked, onClose, onAddShift, onRemove
         <div>
           <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Shifts</div>
           {shifts.length === 0 ? (
-            <div className="text-sm italic text-slate-400 py-2">No shifts yet.</div>
+            <div className="text-sm italic text-slate-400 py-2">No shifts yet — pick a preset below or set a custom range.</div>
           ) : (
             <div className="space-y-1.5">
               {shifts.map((s) => (
@@ -7755,7 +7800,7 @@ function DateShiftModal({ date, shifts, isBlocked, onClose, onAddShift, onRemove
                       ({Math.max(0, Math.floor((parseInt(s.end.split(':')[0]) * 60 + parseInt(s.end.split(':')[1]) - parseInt(s.start.split(':')[0]) * 60 - parseInt(s.start.split(':')[1])) / 60))} hrs)
                     </span>
                   </div>
-                  <button onClick={() => onRemoveShift(s.id)} className="text-red-500 hover:text-red-700">
+                  <button onClick={() => onRemoveShift(s.id)} className="text-red-500 hover:text-red-700" title="Remove shift">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
@@ -7763,20 +7808,126 @@ function DateShiftModal({ date, shifts, isBlocked, onClose, onAddShift, onRemove
             </div>
           )}
         </div>
+        {/* Quick presets — one tap = full shift */}
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Add a shift</div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Quick add</div>
+          <div className="flex flex-wrap gap-1.5">
+            {SHIFT_PRESETS.map((p) => {
+              const active = isPresetActive(p);
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => !active && add(p.start, p.end)}
+                  disabled={active}
+                  title={active ? 'Already added' : `Add ${p.label} (${p.sub})`}
+                  className={`px-2.5 py-1.5 rounded-full text-[11px] font-medium border transition-colors ${
+                    active
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 cursor-default'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                  }`}
+                >
+                  {p.label}
+                  <span className={`ml-1.5 text-[10px] ${active ? 'text-emerald-500' : 'text-slate-400'}`}>{p.sub}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Custom range</div>
           <div className="flex items-center gap-2">
             <input type="time" value={start} onChange={(e) => setStart(e.target.value)} className="form-input flex-1" />
             <span className="text-xs text-slate-400">to</span>
             <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} className="form-input flex-1" />
-            <Button size="sm" onClick={add} disabled={!start || !end || start >= end}>Add</Button>
+            <Button size="sm" onClick={() => add()} disabled={!start || !end || start >= end}>Add</Button>
           </div>
         </div>
         <div className="border-t border-slate-100 pt-3 flex items-center justify-between">
-          <button onClick={onToggleBlocked} className={`text-xs font-medium px-3 py-1.5 rounded-full ${isBlocked ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+          <button onClick={onToggleBlocked} className={`text-xs font-medium px-3 py-1.5 rounded-full ${isBlocked ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}>
             {isBlocked ? 'Unblock this day' : 'Mark day off'}
           </button>
           <Button size="sm" variant="secondary" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Bulk-block a date range. Common use: pick vacation start + end → mark every
+// day in between as "off." Each blocked date is added to settings.agent_availability.blocked_dates.
+function BlockRangeModal({ minDate, onClose, onConfirm }) {
+  const [start, setStart] = useState(minDate);
+  const [end, setEnd] = useState('');
+  const days = useMemo(() => {
+    if (!start || !end || start > end) return 0;
+    const a = new Date(start + 'T12:00:00');
+    const b = new Date(end + 'T12:00:00');
+    return Math.round((b - a) / 86400000) + 1;
+  }, [start, end]);
+  const canConfirm = days > 0;
+
+  // Quick presets — common vacation lengths from "today" forward.
+  const setPreset = (numDays) => {
+    const startD = new Date();
+    startD.setHours(0, 0, 0, 0);
+    const endD = new Date(startD.getTime() + (numDays - 1) * 86400000);
+    setStart(startD.toISOString().slice(0, 10));
+    setEnd(endD.toISOString().slice(0, 10));
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-slate-900">Block a range of days</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="text-sm text-slate-600 leading-relaxed">
+          Every day in the range will show as &ldquo;off&rdquo; on your calendar and won&apos;t accept new tour bookings.
+          Existing tours on those days are not cancelled — you&apos;ll need to reschedule them manually.
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            { label: 'Weekend (Sat–Sun)', fn: () => {
+              const now = new Date(); now.setHours(0, 0, 0, 0);
+              const day = now.getDay();
+              const sat = new Date(now); sat.setDate(now.getDate() + ((6 - day) % 7));
+              const sun = new Date(sat); sun.setDate(sat.getDate() + 1);
+              setStart(sat.toISOString().slice(0, 10));
+              setEnd(sun.toISOString().slice(0, 10));
+            }},
+            { label: '3 days', fn: () => setPreset(3) },
+            { label: '7 days', fn: () => setPreset(7) },
+            { label: '14 days', fn: () => setPreset(14) },
+          ].map((p) => (
+            <button key={p.label} type="button" onClick={p.fn}
+              className="px-2.5 py-1.5 rounded-full text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 block mb-1">Start</label>
+            <input type="date" value={start} min={minDate} onChange={(e) => setStart(e.target.value)} className="form-input w-full" />
+          </div>
+          <div className="flex-1">
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 block mb-1">End</label>
+            <input type="date" value={end} min={start || minDate} onChange={(e) => setEnd(e.target.value)} className="form-input w-full" />
+          </div>
+        </div>
+        {canConfirm && (
+          <div className="text-xs text-slate-500">
+            Will block <span className="font-semibold text-slate-900">{days}</span> day{days === 1 ? '' : 's'}.
+          </div>
+        )}
+        <div className="border-t border-slate-100 pt-3 flex items-center justify-end gap-2">
+          <Button size="sm" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={() => onConfirm(start, end)} disabled={!canConfirm}>
+            Block {days > 0 ? `${days} day${days === 1 ? '' : 's'}` : 'range'}
+          </Button>
         </div>
       </div>
     </div>
@@ -11036,8 +11187,11 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                       isActive ? 'bg-slate-100' : 'hover:bg-slate-50'
                     }`}>
                     <div className="flex items-center gap-2 mb-0.5">
-                      {t.isUnread && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
-                      <div className={`font-medium text-sm truncate ${t.isUnread ? 'text-slate-900' : 'text-slate-700'}`}>
+                      {t.isUnread && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" title="Unread" />}
+                      {t.isHandled && !t.isUnread && (
+                        <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" title="Handled — will re-surface when they reply" />
+                      )}
+                      <div className={`font-medium text-sm truncate ${t.isUnread ? 'text-slate-900' : t.isHandled ? 'text-slate-500' : 'text-slate-700'}`}>
                         {t.lead.fullName}
                       </div>
                       <div className="text-[10px] text-slate-400 ml-auto shrink-0">{timeAgo(t.last.timestamp)}</div>
