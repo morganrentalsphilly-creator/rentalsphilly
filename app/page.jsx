@@ -12865,12 +12865,10 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
     if (scrollerRef.current) scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
   }, [activeThread?.lead.id, activeThread?.messages.length]);
 
-  // Reset composer when switching threads.
-  useEffect(() => {
-    setComposerBody('');
-    setComposerSubject('');
-    setComposerChannel('sms');
-  }, [activeThread?.lead.id]);
+  // NOTE: composer reset on thread-switch used to live here. It's been
+  // replaced by the draft-persistence pair of effects above (one loads the
+  // saved draft from localStorage, the other saves on every keystroke). The
+  // old behavior would have wiped restored drafts immediately.
 
   // Cache key for the current thread = leadId + last inbound message id.
   // Re-fetching only when the lead OR the last inbound message changes prevents
