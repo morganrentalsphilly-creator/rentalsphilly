@@ -225,7 +225,12 @@ export async function POST(request) {
     }
 
     // 4. Insert the inbound message row.
-    await db.from('messages').insert({
+    //
+    // CRITICAL: Supabase `.insert()` does NOT throw on error — it returns
+    // an { error } object. The previous code didn't check this, so insert
+    // failures (missing column, RLS, constraint) silently dropped messages.
+    // Always log the error so we can see what's wrong in Vercel logs.
+    const messageRow = {
       lead_id: lead.id,
       channel: 'sms',
       direction: 'inbound',
@@ -237,7 +242,41 @@ export async function POST(request) {
       kind: 'inbound',
       twilio_sid: messageSid,
       automated: false,
-    });
+    };
+    const { error: insertErr } = await db.from('messages').insert(messageRow);
+    if (insertErr) {
+      console.error('[twilio inbound] message INSERT failed', {
+        error: insertErr.message,
+        code: insertErr.code,
+        details: insertErr.details,
+        hint: insertErr.hint,
+        leadId: lead.id,
+      });
+      // Try the minimal row shape (no optional columns) in case a column
+      // from a later migration is missing on Morgan's schema.
+      const minimalRow = {
+        lead_id: lead.id,
+        channel: 'sms',
+        direction: 'inbound',
+        status: 'received',
+        to: to,
+        via: 'twilio',
+        body,
+      };
+      const { error: retryErr } = await db.from('messages').insert(minimalRow);
+      if (retryErr) {
+        console.error('[twilio inbound] minimal retry ALSO failed — message LOST', {
+          error: retryErr.message,
+          code: retryErr.code,
+          details: retryErr.details,
+          hint: retryErr.hint,
+        });
+      } else {
+        console.warn('[twilio inbound] saved via minimal-row fallback (column from migration missing)');
+      }
+    } else {
+      console.log('[twilio inbound] message stored', { leadId: lead.id, sid: messageSid });
+    }
 
     // 5. Handle compliance keywords.
     const keyword = classifyKeyword(body);

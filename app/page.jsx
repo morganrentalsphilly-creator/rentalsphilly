@@ -1484,8 +1484,14 @@ export default function App() {
   // authed in admin so notifications fire across any subview.
   useEffect(() => {
     if (!loaded) return;
-    if (view !== 'admin') return;
     if (!session) return;
+    // Note: we used to also gate on `view === 'admin'`, but that meant the
+    // subscription closed every time Morgan navigated to a non-admin view
+    // (the landing page, or anywhere the app switched `view`). Now: once
+    // logged in, the channel stays open for the entire session, regardless
+    // of which view is rendered. The handlers themselves are safe to fire
+    // on any view because they just update `leads` state — which is only
+    // consumed by admin components.
     const supa = createBrowserSupabase();
     if (!supa) return;
     // Fetch a single lead by id + hydrate it. Used when a Realtime message
@@ -1685,17 +1691,19 @@ export default function App() {
     return () => {
       try { supa.removeChannel(channel); } catch {}
     };
-    // CRITICAL: deps deliberately DO NOT include adminSubview or selectedLeadId
-    // even though `settings` is read inside via closure. Those values change
-    // on routine navigation (clicking Today → Pipeline, or opening different
-    // leads). If included, the channel tears down and rebuilds on every click
-    // — and any inbound SMS arriving during the brief CLOSED window is
-    // permanently lost. We want the channel to stay open for the entire
-    // admin session. Stale settings inside the handlers is acceptable:
-    // settings rarely change, and the worst case is a toast preference that's
-    // one render behind.
+    // CRITICAL: deps are ONLY [loaded, session]. We deliberately exclude
+    // `view`, `adminSubview`, and `selectedLeadId` — all change on routine
+    // navigation, and including them would tear down and rebuild the
+    // channel on every click. Any inbound SMS arriving during the
+    // ~100ms CLOSED window between teardown and resubscribe is permanently
+    // lost because Supabase Realtime doesn't queue missed events. With
+    // these deps, the channel stays open continuously from login to
+    // logout. `settings` is read inside the handlers via closure; if the
+    // user changes their notification preferences, the new value won't
+    // take effect until the next mount — acceptable tradeoff vs. losing
+    // a real inbound message.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, view, session]);
+  }, [loaded, session]);
 
   // In the Supabase world, we only call saveLeads for bulk operations.
   // The main bulk op is "clear all" from the leads list.
