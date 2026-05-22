@@ -13,7 +13,7 @@ import {
 } from '@/lib/supabase.client';
 import { isAdminEmail } from '@/lib/auth';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Home, ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, FastForward, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox } from 'lucide-react';
+import { Home, ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, FastForward, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox, Archive } from 'lucide-react';
 // ============================================================
 // DESIGN TOKENS — single source of truth for spacing/colors
 // ============================================================
@@ -6128,6 +6128,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
           waitlist={waitlist}
           allTasks={allTasks}
           updateLead={updateLead}
+          removeLead={removeLead}
           showToast={showToast}
         />
       )}
@@ -6599,7 +6600,7 @@ function ActivityIcon({ type }) {
 // ============================================================
 // LEADS LIST
 // ============================================================
-function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], allTasks, updateLead, showToast }) {
+function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], allTasks, updateLead, removeLead, showToast }) {
   const [bucketFilter, setBucketFilter] = useState('all');
   const [stageFilter, setStageFilter] = useState('active');  // 'active' = not leased/lost/archived
   const [hotOnly, setHotOnly] = useState(false);
@@ -6674,6 +6675,89 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
     showToast(`Sent ${sent} SMS${failed ? ` · ${failed} failed` : ''}`);
   };
 
+  // Bulk-archive the selected leads. Sets stage='archived' on each. Skips
+  // leads that are already leased/paid (closing them changes their meaning).
+  const bulkArchive = async () => {
+    const targets = filtered.filter((l) => selected.has(l.id) && !['leased', 'paid'].includes(l.stage));
+    if (targets.length === 0) {
+      showToast('Nothing to archive (leased/paid leads are skipped).');
+      return;
+    }
+    if (!confirm(`Archive ${targets.length} lead${targets.length === 1 ? '' : 's'}?\n\nArchived leads drop out of active views but remain in the database.`)) return;
+    setBulkBusy(true);
+    let done = 0;
+    for (const lead of targets) {
+      try {
+        await updateLead(lead.id, {
+          stage: 'archived',
+          activities: [...(lead.activities || []), {
+            id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            type: 'stage-changed',
+            timestamp: new Date().toISOString(),
+            message: 'Stage → Archived (bulk)',
+          }],
+        });
+        done++;
+      } catch (err) { console.warn('[bulk archive] failed', lead.id, err?.message); }
+    }
+    setBulkBusy(false);
+    clearSelected();
+    showToast(`Archived ${done} lead${done === 1 ? '' : 's'}`);
+  };
+
+  // Bulk-snooze the selected leads for a given number of days. Hides them
+  // from Today + Pipeline action surfaces until the date.
+  const bulkSnooze = async (days) => {
+    const targets = filtered.filter((l) => selected.has(l.id));
+    if (targets.length === 0) return;
+    const until = new Date(Date.now() + days * 86400000);
+    setBulkBusy(true);
+    let done = 0;
+    for (const lead of targets) {
+      try {
+        await updateLead(lead.id, {
+          raw: { ...(lead.raw || {}), snoozed_until: until.toISOString() },
+          activities: [...(lead.activities || []), {
+            id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            type: 'snoozed',
+            timestamp: new Date().toISOString(),
+            message: `Snoozed for ${days} day${days === 1 ? '' : 's'} (bulk)`,
+          }],
+        });
+        done++;
+      } catch (err) { console.warn('[bulk snooze] failed', lead.id, err?.message); }
+    }
+    setBulkBusy(false);
+    clearSelected();
+    showToast(`Snoozed ${done} lead${done === 1 ? '' : 's'} for ${days}d`);
+  };
+
+  // Bulk hard-delete. Highest-friction action — requires confirm + typed
+  // "DELETE" to commit. Each lead is removed individually so we can show
+  // partial progress if some fail.
+  const bulkDelete = async () => {
+    const targets = filtered.filter((l) => selected.has(l.id));
+    if (targets.length === 0) return;
+    if (!confirm(`Permanently delete ${targets.length} lead${targets.length === 1 ? '' : 's'} and every message, tour, task, and document tied to them?\n\nThis cannot be undone. You'll be asked to type DELETE to confirm.`)) return;
+    const word = prompt(`Type DELETE to confirm removing ${targets.length} lead${targets.length === 1 ? '' : 's'}:`);
+    if (word !== 'DELETE') {
+      showToast('Cancelled — confirmation did not match');
+      return;
+    }
+    setBulkBusy(true);
+    let done = 0;
+    let failed = 0;
+    for (const lead of targets) {
+      try {
+        await removeLead(lead.id);
+        done++;
+      } catch (err) { failed++; console.warn('[bulk delete] failed', lead.id, err?.message); }
+    }
+    setBulkBusy(false);
+    clearSelected();
+    showToast(`Deleted ${done} lead${done === 1 ? '' : 's'}${failed ? ` · ${failed} failed` : ''}`);
+  };
+
   return (
     <>
       <div className="flex flex-wrap gap-2 mb-3 items-center">
@@ -6713,9 +6797,10 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
         })}
       </div>
 
-      {/* Bulk-action bar — appears when ≥1 lead selected. */}
+      {/* Bulk-action bar — appears when ≥1 lead selected. Two rows on mobile:
+          the compose row up top, then a row of management actions below. */}
       {selected.size > 0 && (
-        <Card className="p-3 mb-3 bg-slate-900 text-white border-slate-900">
+        <Card className="p-3 mb-3 bg-slate-900 text-white border-slate-900 space-y-2">
           <div className="flex flex-wrap items-center gap-3">
             <div className="text-sm font-semibold">{selected.size} selected</div>
             <button onClick={clearSelected} className="text-xs text-slate-300 hover:text-white underline">Clear</button>
@@ -6732,6 +6817,39 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
               className="px-4 py-1.5 bg-white text-slate-900 rounded-full text-sm font-medium hover:bg-slate-100 disabled:opacity-30 inline-flex items-center gap-1.5"
             >
               <Send className="w-3.5 h-3.5" /> {bulkBusy ? 'Sending…' : `Send to ${selected.size}`}
+            </button>
+          </div>
+          {/* Management actions row — visually divided from the compose row */}
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
+            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mr-1">Actions</span>
+            <button
+              onClick={() => bulkSnooze(7)}
+              disabled={bulkBusy}
+              className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 inline-flex items-center gap-1"
+            >
+              <Bell className="w-3 h-3" /> Snooze 7d
+            </button>
+            <button
+              onClick={() => bulkSnooze(30)}
+              disabled={bulkBusy}
+              className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 inline-flex items-center gap-1"
+            >
+              <Bell className="w-3 h-3" /> Snooze 30d
+            </button>
+            <button
+              onClick={bulkArchive}
+              disabled={bulkBusy}
+              className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 inline-flex items-center gap-1"
+            >
+              <Archive className="w-3 h-3" /> Archive
+            </button>
+            <div className="ml-auto" />
+            <button
+              onClick={bulkDelete}
+              disabled={bulkBusy}
+              className="px-3 py-1 text-[11px] font-medium rounded-full bg-red-900/60 hover:bg-red-900 text-red-100 disabled:opacity-30 inline-flex items-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" /> Delete…
             </button>
           </div>
         </Card>
