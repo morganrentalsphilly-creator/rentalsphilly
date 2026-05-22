@@ -5860,9 +5860,171 @@ function AddTaskQuickForm({ leads, updateLead, showToast }) {
   );
 }
 
+// ⌘K command palette — fuzzy-jump to any lead by name / email / phone, and
+// quick-jump to top-level views. Opens with ⌘K (Mac) or Ctrl+K (Windows/Linux),
+// closes with Esc. Arrow keys navigate results, Enter opens.
+function CommandPalette({ leads, onClose, onSelectLead, setSubview }) {
+  const [query, setQuery] = useState('');
+  const [activeIdx, setActiveIdx] = useState(0);
+  const inputRef = useRef(null);
+
+  // Top-level views always available as quick jumps. These show first when
+  // the palette is empty (so opening + Enter goes to the first view).
+  const viewCommands = useMemo(() => ([
+    { type: 'view', id: 'today', label: 'Go to Today', hint: 'g t' },
+    { type: 'view', id: 'inbox', label: 'Go to Inbox', hint: 'g i' },
+    { type: 'view', id: 'pipeline', label: 'Go to Pipeline', hint: 'g p' },
+    { type: 'view', id: 'leads', label: 'Go to Leads', hint: 'g l' },
+    { type: 'view', id: 'tours', label: 'Go to Tours', hint: 'g c' },
+    { type: 'view', id: 'settings', label: 'Go to Settings', hint: 'g s' },
+  ]), []);
+
+  // Filter leads + commands against the query. Match name / email / phone.
+  // Score by where the match lands (start-of-name > start-of-word > substring).
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      // Empty query: show top 8 most recently-created leads + all views.
+      const recent = [...leads]
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+        .slice(0, 8)
+        .map((l) => ({ type: 'lead', lead: l }));
+      return [...recent, ...viewCommands];
+    }
+    const scored = [];
+    for (const l of leads) {
+      const name = (l.fullName || '').toLowerCase();
+      const email = (l.email || '').toLowerCase();
+      const phone = (l.phone || '').replace(/\D/g, '');
+      const qDigits = q.replace(/\D/g, '');
+      let score = -1;
+      if (name.startsWith(q)) score = 100;
+      else if (name.includes(' ' + q)) score = 90;
+      else if (name.includes(q)) score = 80;
+      else if (email.startsWith(q)) score = 70;
+      else if (email.includes(q)) score = 60;
+      else if (qDigits && phone.includes(qDigits)) score = 50;
+      if (score >= 0) scored.push({ type: 'lead', lead: l, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const leadResults = scored.slice(0, 10).map(({ type, lead }) => ({ type, lead }));
+
+    const viewResults = viewCommands.filter((v) => v.label.toLowerCase().includes(q));
+    return [...leadResults, ...viewResults];
+  }, [leads, query, viewCommands]);
+
+  // Reset active index when the query changes so the first result is always
+  // highlighted after typing.
+  useEffect(() => { setActiveIdx(0); }, [query]);
+
+  // Focus the input the moment the palette opens so the user can just type.
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // Keyboard nav inside the palette. Arrow keys move active selection,
+  // Enter triggers the action. Esc handled by the App-level handler.
+  const onKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIdx((i) => Math.min(results.length - 1, i + 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(0, i - 1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const r = results[activeIdx];
+      if (!r) return;
+      if (r.type === 'lead') {
+        onSelectLead(r.lead.id);
+      } else if (r.type === 'view') {
+        setSubview(r.id);
+      }
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-start justify-center p-4 pt-20" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200">
+          <Search className="w-4 h-4 text-slate-400 shrink-0" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Jump to a lead, or type a view name…"
+            className="flex-1 text-base outline-none placeholder-slate-400"
+          />
+          <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">esc</kbd>
+        </div>
+        <div className="max-h-96 overflow-y-auto py-1">
+          {results.length === 0 ? (
+            <div className="px-4 py-8 text-center text-sm text-slate-400">No matches for &ldquo;{query}&rdquo;</div>
+          ) : (
+            results.map((r, i) => {
+              const active = i === activeIdx;
+              const onMouseEnter = () => setActiveIdx(i);
+              const onClick = () => {
+                if (r.type === 'lead') onSelectLead(r.lead.id);
+                else if (r.type === 'view') setSubview(r.id);
+                onClose();
+              };
+              if (r.type === 'lead') {
+                const l = r.lead;
+                const stage = PIPELINE_STAGES.find((s) => s.id === (l.stage || 'new'))?.label || l.stage;
+                return (
+                  <button
+                    key={`lead-${l.id}`}
+                    onMouseEnter={onMouseEnter}
+                    onClick={onClick}
+                    className={`w-full text-left flex items-center gap-3 px-4 py-2.5 ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                  >
+                    <div className="w-7 h-7 rounded-full bg-slate-900 text-white flex items-center justify-center text-[10px] font-semibold shrink-0">
+                      {(l.fullName || '?').split(' ').map((s) => s[0]).join('').slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-900 truncate">{l.fullName}</div>
+                      <div className="text-[11px] text-slate-500 truncate">{l.email || l.phone || '—'}</div>
+                    </div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full shrink-0">{stage}</span>
+                  </button>
+                );
+              }
+              // View row
+              return (
+                <button
+                  key={`view-${r.id}`}
+                  onMouseEnter={onMouseEnter}
+                  onClick={onClick}
+                  className={`w-full text-left flex items-center gap-3 px-4 py-2.5 ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}
+                >
+                  <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center shrink-0">
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="flex-1 text-sm text-slate-900">{r.label}</div>
+                  <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded shrink-0">{r.hint}</kbd>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <div className="px-4 py-2 border-t border-slate-100 flex items-center gap-3 text-[10px] text-slate-400">
+          <span><kbd className="font-mono">↑↓</kbd> navigate</span>
+          <span><kbd className="font-mono">↵</kbd> open</span>
+          <span className="ml-auto">{results.length} result{results.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Keyboard shortcut help overlay — opened with "?" key.
 function KeyboardShortcutHelp({ onClose }) {
   const rows = [
+    { keys: ['⌘', 'K'],  label: 'Quick search — jump to any lead or view' },
     { keys: ['/'],      label: 'Focus global search' },
     { keys: ['g', 'i'], label: 'Go to Inbox' },
     { keys: ['g', 't'], label: 'Go to Today' },
@@ -5916,6 +6078,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
   const [addLeadModal, setAddLeadModal] = useState(false);
   const [search, setSearch] = useState('');
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
 
   // Keyboard shortcuts. Active anywhere in admin EXCEPT when the user is
   // typing in an input/textarea (so / doesn't break search inputs etc.).
@@ -5929,6 +6092,14 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
       return false;
     };
     const handler = (e) => {
+      // ⌘K / Ctrl+K opens the command palette. Works EVEN when an input is
+      // focused — this is the "jump to anything" shortcut and should be
+      // available from anywhere in the app.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowCommandPalette((v) => !v);
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTypingIn(document.activeElement) && e.key !== 'Escape') return;
       // "?" opens the shortcut help overlay
@@ -5943,6 +6114,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
       // Escape closes overlays
       if (e.key === 'Escape') {
         setShowShortcutHelp(false);
+        setShowCommandPalette(false);
         setSelectedLeadId(null);
         return;
       }
@@ -6205,6 +6377,15 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
       {followUpModal && <LogFollowUpModal lead={followUpModal.lead} submissionId={followUpModal.submissionId} onClose={() => setFollowUpModal(null)} onLog={async (note) => { await logSubmissionFollowUp(followUpModal.lead.id, followUpModal.submissionId, note); setFollowUpModal(null); }} />}
 
       {showShortcutHelp && <KeyboardShortcutHelp onClose={() => setShowShortcutHelp(false)} />}
+
+      {showCommandPalette && (
+        <CommandPalette
+          leads={leads}
+          onClose={() => setShowCommandPalette(false)}
+          onSelectLead={(id) => setSelectedLeadId(id)}
+          setSubview={setSubview}
+        />
+      )}
 
       {addLeadModal && (
         <AddLeadModal
