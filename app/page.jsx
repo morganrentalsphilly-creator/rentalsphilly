@@ -1582,37 +1582,55 @@ export default function App() {
       // a column that the caller didn't set (e.g. a partial save from a
       // narrow updater that only knows about one field).
       const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
-      // Try the full payload, then progressively drop optional columns if
-      // the DB rejects any of them. Both `agent_availability` (migration
-      // 0004) and `raw` (migration 0005) may be missing on installs that
-      // haven't applied the latest migrations — the save shouldn't blow
-      // up just because one optional column isn't there.
-      const tryUpdate = async (obj) => {
-        try {
-          await updateSettings(obj);
-          return { ok: true };
-        } catch (err) {
-          return { ok: false, err };
+
+      // Resilient save: if Postgres rejects an unknown column (because a
+      // migration hasn't been applied yet — 0004 added agent_availability,
+      // 0005 added raw, and the base table may not have welcomeMessages on
+      // older installs), parse the column name out of the error message,
+      // drop ONLY that key, and retry. We cap retries so a malformed error
+      // can't spin forever. Order of attempts: full → drop the rejected
+      // column → drop another → ... → give up after `maxRetries`.
+      //
+      // Postgres / PostgREST emit one of these phrasings when a column is
+      // missing:
+      //   "Could not find the 'foo' column of 'settings' in the schema cache"
+      //   "column \"foo\" of relation \"settings\" does not exist"
+      // The regex below catches both.
+      const extractMissingColumn = (err) => {
+        const msg = String(err?.message || err || '');
+        const m = msg.match(/['"]([\w-]+)['"]\s+(?:column|of)/i) || msg.match(/column\s+['"]?([\w-]+)['"]?\s+(?:of|does not exist)/i);
+        if (m && m[1]) return m[1];
+        // Last resort: scan known optional column names against the error.
+        for (const name of ['raw', 'agent_availability', 'welcomeMessages', 'systemTemplates', 'quickReplyTemplates', 'emailSignature', 'notifications', 'calendar_feed_token', 'rentspree_dashboard_url']) {
+          if (msg.includes(name) && (msg.includes('column') || msg.includes('does not exist') || msg.includes('schema cache'))) {
+            return name;
+          }
         }
+        return null;
       };
-      const missingColumnError = (err, name) => {
-        const msg = String(err?.message || '').toLowerCase();
-        return msg.includes(name) && (msg.includes('column') || msg.includes('does not exist') || msg.includes('schema cache'));
-      };
-      let attempt = await tryUpdate(cleaned);
-      if (!attempt.ok && missingColumnError(attempt.err, 'raw')) {
-        // No `raw` column → drop it and try again (migration 0005 missing).
-        console.warn('[settings] raw column missing — saving without it. Apply migration 0005.');
-        const { raw: _r, ...withoutRaw } = cleaned;
-        attempt = await tryUpdate(withoutRaw);
+
+      let payloadToSend = cleaned;
+      let lastErr = null;
+      const maxRetries = 6;
+      for (let i = 0; i <= maxRetries; i++) {
+        try {
+          await updateSettings(payloadToSend);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const missing = extractMissingColumn(err);
+          if (!missing || !(missing in payloadToSend)) {
+            // Not a missing-column error, or we already dropped that key
+            // (e.g. error message references a column we never sent). Stop.
+            break;
+          }
+          console.warn(`[settings] dropped unknown column "${missing}" — apply latest supabase migrations to persist it.`);
+          const { [missing]: _drop, ...rest } = payloadToSend;
+          payloadToSend = rest;
+        }
       }
-      if (!attempt.ok && missingColumnError(attempt.err, 'agent_availability')) {
-        // No `agent_availability` column → drop it (migration 0004 missing).
-        console.warn('[settings] agent_availability column missing — saving without it. Apply migration 0004.');
-        const { agent_availability: _a, raw: _r, ...withoutCols } = cleaned;
-        attempt = await tryUpdate(withoutCols);
-      }
-      if (!attempt.ok) throw attempt.err;
+      if (lastErr) throw lastErr;
     } catch (e) {
       console.error('[app] Failed to save settings', e);
       showToast({ message: `Couldn't save settings: ${e.message}`, kind: 'error' });

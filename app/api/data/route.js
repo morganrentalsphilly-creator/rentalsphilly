@@ -240,9 +240,37 @@ export async function POST(request) {
 
       case 'update_settings': {
         const { updates } = body;
-        const { data, error } = await db.from('settings').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', 1).select().single();
-        if (error) throw error;
-        return NextResponse.json({ settings: data });
+        // Resilient update: if Postgres rejects an unknown column (because a
+        // migration hasn't been applied yet — e.g. 0004 added agent_availability,
+        // 0005 added raw, or a future column hasn't been migrated), parse the
+        // missing column name out of the error and retry without it. We log a
+        // warning so the missing migration is visible in server logs without
+        // breaking the user's save. Capped at a handful of retries.
+        //
+        // Postgres / PostgREST emit one of these phrasings when a column is
+        // missing, so the regex covers both:
+        //   "Could not find the 'foo' column of 'settings' in the schema cache"
+        //   "column \"foo\" of relation \"settings\" does not exist"
+        const extractMissingColumn = (err) => {
+          const msg = String(err?.message || err || '');
+          const m = msg.match(/['"]([\w-]+)['"]\s+(?:column|of)/i)
+                 || msg.match(/column\s+['"]?([\w-]+)['"]?\s+(?:of|does not exist)/i);
+          return m && m[1] ? m[1] : null;
+        };
+        let payload = { ...updates, updated_at: new Date().toISOString() };
+        let lastErr = null;
+        for (let i = 0; i < 8; i++) {
+          const { data, error } = await db.from('settings').update(payload).eq('id', 1).select().single();
+          if (!error) {
+            return NextResponse.json({ settings: data });
+          }
+          lastErr = error;
+          const missing = extractMissingColumn(error);
+          if (!missing || !(missing in payload)) break;
+          console.warn(`[/api/data update_settings] dropped unknown column "${missing}" — apply latest supabase migration to persist it.`);
+          delete payload[missing];
+        }
+        throw lastErr;
       }
       case 'upload_application':
       case 'upload_document': {
