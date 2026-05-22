@@ -1036,6 +1036,42 @@ function SectionHeader({ icon: Icon, children, action }) {
   );
 }
 
+// "Feature panel" header — the bigger, badge-on-left pattern used by curated
+// link, scheduling, application, etc. Distinct from SectionHeader (the small
+// eyebrow style). Standardizing this means every action-panel on the lead
+// detail reads with the same visual hierarchy: rounded icon square (tone-
+// colored), title in slate-900 sm-semibold, optional subtitle below.
+//
+// Props:
+//   icon            — Lucide icon component (rendered inside the badge)
+//   iconClassName   — bg/text classes for the badge (default: slate)
+//   iconStyle       — inline style for the badge (used by gold-brand panels
+//                     which reference CSS vars like var(--brand-gold))
+//   title           — main label (string or node)
+//   subtitle        — optional secondary line (string or node)
+//   trailing        — optional right-side slot (status pill, stat, button)
+function PanelHeader({ icon: Icon, iconClassName, iconStyle, title, subtitle, trailing }) {
+  return (
+    <div className="flex items-start gap-3">
+      {Icon && (
+        <div
+          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${iconClassName || 'bg-slate-100 text-slate-700'}`}
+          style={iconStyle}
+        >
+          <Icon className="w-4 h-4" />
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold text-slate-900">{title}</div>
+        {subtitle && (
+          <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">{subtitle}</div>
+        )}
+      </div>
+      {trailing && <div className="shrink-0">{trailing}</div>}
+    </div>
+  );
+}
+
 function EmptyState({ icon: Icon, title, desc, action }) {
   return (
     <div className="border border-dashed border-slate-200 rounded-2xl p-12 text-center">
@@ -9778,19 +9814,13 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
 
   return (
     <Card className="p-5 space-y-4 border-2" style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
-      <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-white" style={{ backgroundColor: 'var(--brand-gold)' }}>
-          <CheckCircle2 className="w-4 h-4" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-slate-900">
-            {timesSubmitted ? 'Lead picked tour times' : schedulingSent ? 'Scheduling link sent · waiting on lead' : 'Lead picked properties — review & send scheduling link'}
-          </div>
-          <div className="text-xs text-slate-600 mt-0.5">
-            Submitted {lead.raw?.curated_submitted_at ? new Date(lead.raw.curated_submitted_at).toLocaleString() : 'recently'}
-          </div>
-        </div>
-      </div>
+      <PanelHeader
+        icon={CheckCircle2}
+        iconClassName="text-white"
+        iconStyle={{ backgroundColor: 'var(--brand-gold)' }}
+        title={timesSubmitted ? 'Lead picked tour times' : schedulingSent ? 'Scheduling link sent · waiting on lead' : 'Lead picked properties — review & send scheduling link'}
+        subtitle={`Submitted ${lead.raw?.curated_submitted_at ? new Date(lead.raw.curated_submitted_at).toLocaleString() : 'recently'}`}
+      />
 
       <div className="bg-white rounded-xl p-3 border border-slate-200">
         <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-2">
@@ -10073,24 +10103,21 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
 
   return (
     <Card className="p-5 space-y-4 bg-violet-50/40 border-violet-200">
-      <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-lg bg-violet-200 text-violet-900 flex items-center justify-center shrink-0">
-          <FileCheck className="w-4 h-4" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-slate-900">
-            {sentAt ? 'Re-send application link' : 'Send application link'}
-          </div>
-          <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+      <PanelHeader
+        icon={FileCheck}
+        iconClassName="bg-violet-200 text-violet-900"
+        title={sentAt ? 'Re-send application link' : 'Send application link'}
+        subtitle={
+          <>
             After the tour. Pick the right flow depending on whose listing it is.
             {sentAt && (
               <span className="ml-2 text-violet-700 font-medium">
                 Last sent {timeAgo(sentAt)}{sentMode ? ` · ${sentMode === 'rentspree' ? 'RentSpree' : 'External'}` : ''}.
               </span>
             )}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* Mode picker — RentSpree (our listings) vs External (other agents') */}
       <div className="flex gap-2">
@@ -10435,20 +10462,12 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
 
   return (
     <Card className="p-5 space-y-4 bg-amber-50 border-amber-200">
-      <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-lg bg-amber-200 text-amber-900 flex items-center justify-center shrink-0">
-          <Sparkles className="w-4 h-4" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-slate-900">
-            {alreadySent ? 'Update curated link' : 'Send curated link'}
-          </div>
-          <div className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-            Just paste your portal URL. Lead gets a branded page that opens the
-            portal for photos and lets them pick addresses + times to tour.
-          </div>
-        </div>
-      </div>
+      <PanelHeader
+        icon={Sparkles}
+        iconClassName="bg-amber-200 text-amber-900"
+        title={alreadySent ? 'Update curated link' : 'Send curated link'}
+        subtitle="Just paste your portal URL. Lead gets a branded page that opens the portal for photos and lets them pick addresses + times to tour."
+      />
 
       <div>
         <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
@@ -10619,7 +10638,7 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
   };
 
   return (
-    <Card className="p-4 space-y-3">
+    <Card className="p-5 space-y-3">
       <div className="flex items-center justify-between">
         <SectionHeader icon={Upload}>Documents</SectionHeader>
         {uploading && <span className="text-[10px] text-slate-400 italic">Uploading…</span>}
@@ -10773,7 +10792,7 @@ function NotesAndTagsPanel({ lead, updateLead, showToast }) {
   );
 
   return (
-    <Card className="p-4 space-y-3">
+    <Card className="p-5 space-y-3">
       <div className="flex items-center justify-between">
         <SectionHeader>Notes &amp; tags</SectionHeader>
         {savingNotes && <span className="text-[10px] text-slate-400 italic">Saving…</span>}
