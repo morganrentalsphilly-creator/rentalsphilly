@@ -10155,18 +10155,26 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         automated: false,
       });
       // Persist: token (if newly generated), the address picks (if entered
-      // manually), and the scheduling-open timestamp. We also auto-advance
-      // the stage to tour-requested so the pipeline reflects "scheduling
-      // link out, waiting on lead".
+      // manually), curated_link_url (so hydrate can re-derive lead.curatedLinkUrl
+      // after refresh — without this, CuratedLinkPanel would think the link
+      // was never sent), and the scheduling-open timestamp. Auto-advance the
+      // stage to tour-requested so the pipeline reflects "scheduling link
+      // out, waiting on lead".
       await updateLead(lead.id, {
         raw: {
           ...(lead.raw || {}),
           curated_token: token,
+          curated_link_url: lead.raw?.curated_link_url || curatedUrl,
+          curated_link_sent_at: lead.raw?.curated_link_sent_at || new Date().toISOString(),
           curated_address_picks: addressesToSend,
           curated_submitted_at: lead.raw?.curated_submitted_at || new Date().toISOString(),
           scheduling_open_at: new Date().toISOString(),
         },
+        // Top-level fields for immediate optimistic UI. These get dropped by
+        // the server-side allowlist (which is fine — the raw.* fields above
+        // are the source of truth that hydrate re-derives from on refresh).
         curatedLinkUrl: lead.curatedLinkUrl || curatedUrl,
+        curatedLinkSentAt: lead.curatedLinkSentAt || new Date().toISOString(),
         stage: lead.stage === 'new' || lead.stage === 'matched' ? 'tour-requested' : lead.stage,
         activities: [...(lead.activities || []), {
           id: `a_${Date.now()}`,
