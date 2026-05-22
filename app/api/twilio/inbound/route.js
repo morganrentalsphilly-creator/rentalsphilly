@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import twilio from 'twilio';
 import { supabaseAdmin } from '@/lib/supabase';
 import { sendSms, classifyKeyword, markOptOut, clearOptOut, toE164 } from '@/lib/sms.server';
+import { sendEmail } from '@/lib/email.server';
 
 function twiml(body) {
   // Empty TwiML response = "Twilio, do nothing, we already handled it."
@@ -285,7 +286,61 @@ export async function POST(request) {
       console.log('[twilio inbound] message stored', { messageId, leadId: lead.id, sid: messageSid });
     }
 
-    // 5. Handle compliance keywords.
+    // 5. AGENT NOTIFICATION — email Morgan immediately so she never misses
+    // an inbound text just because her browser isn't open. This is the
+    // single most important "I'm running a one-person rental advisory"
+    // safety net: a lead replies at 9pm, she's on her phone away from
+    // the laptop, and the message would otherwise sit invisible until
+    // she next opens the CRM. The email gives her:
+    //   - the lead's name + phone
+    //   - the message preview
+    //   - a deep-link to open the lead in the CRM
+    //
+    // Gated by settings.notifications.inboundEmail (default on). Skipped
+    // for STOP / HELP / START since Twilio's auto-reply covers those and
+    // Morgan doesn't need an email per opt-out.
+    const isComplianceKeyword = ['stop', 'start', 'help'].includes(classifyKeyword(body) || '');
+    if (!isComplianceKeyword) {
+      try {
+        const { data: settingsRow } = await db.from('settings').select('*').eq('id', 1).single();
+        const inboundEmailOn = settingsRow?.notifications?.inboundEmail !== false;
+        const agentEmail = settingsRow?.agent_email || settingsRow?.agentEmail || 'morganrentalsphilly@gmail.com';
+        if (inboundEmailOn && agentEmail) {
+          const appBase = process.env.NEXT_PUBLIC_APP_URL || 'https://rentalsphilly.vercel.app';
+          const leadUrl = `${appBase}/#admin?lead=${encodeURIComponent(lead.id)}`;
+          const inboxUrl = `${appBase}/#admin?tab=inbox`;
+          const leadName = lead.full_name || `${from}`;
+          const preview = body.slice(0, 200);
+          await sendEmail({
+            // Don't attach this email to the lead — it'd clutter their
+            // message history with our internal alerts. Use a passed `to`
+            // override; the wrapper handles agent-only sends without
+            // touching the lead's thread.
+            leadId: lead.id,
+            to: agentEmail,
+            subject: `📱 New text from ${leadName}: ${preview.slice(0, 60)}${preview.length > 60 ? '…' : ''}`,
+            body:
+              `${leadName} just texted you.\n\n` +
+              `> ${preview}\n\n` +
+              `Phone: ${from}\n` +
+              `Reply in the inbox: ${inboxUrl}\n` +
+              `Open the lead: ${leadUrl}\n\n` +
+              `— Rentals Philly\n` +
+              `(You're getting this because Inbound SMS notifications are on in Settings → Notifications. Turn off there if you prefer browser-only alerts.)`,
+            kind: 'agent_inbound_alert',
+            idempotencyKey: `inbound-alert-${messageId}`,
+            automated: true,
+            internal: true,  // don't show in lead's thread
+          });
+        }
+      } catch (err) {
+        // Don't fail the webhook if the alert email errors — message is
+        // already stored, we just won't ping Morgan this time.
+        console.warn('[twilio inbound] agent-notification email failed', { error: err?.message });
+      }
+    }
+
+    // 6. Handle compliance keywords.
     const keyword = classifyKeyword(body);
     if (keyword === 'stop') {
       await markOptOut(lead.id, from);

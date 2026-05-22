@@ -9860,10 +9860,16 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
           onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), newLeadEmail: v } })}
         />
         <AutomationRow
-          name="Inbound SMS notification"
-          desc="When a lead replies, get a browser notification (if enabled) and an in-app toast. Works automatically — no email or text to your phone."
+          name="Inbound SMS browser notification"
+          desc="When a lead replies and the CRM tab is open, surface a browser notification and in-app toast."
           value={form.notifications?.inboundToast !== false}
           onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), inboundToast: v } })}
+        />
+        <AutomationRow
+          name="Inbound SMS email alert"
+          desc="Every inbound text from a lead also sends you an email with the message preview + a link to the lead. Works when the CRM isn't open — your safety net so you never miss a reply. Recommended ON for launch."
+          value={form.notifications?.inboundEmail !== false}
+          onChange={(v) => setForm({ ...form, notifications: { ...(form.notifications || {}), inboundEmail: v } })}
         />
         <AutomationRow
           name="Weekly performance recap"
