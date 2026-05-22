@@ -10072,30 +10072,90 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
     onSend(next);
   };
 
+  // Decide which state the panel is in:
+  //   • timesSubmitted → lead picked times (terminal — show summary only)
+  //   • schedulingSent && picks.length → waiting on lead, allow re-send
+  //   • picks.length → lead picked via /c/[token], ready to send
+  //   • neither → agent-side flow: enter addresses manually and send
+  const hasPicks = picks.length > 0;
+  const showManualEntry = !hasPicks && !timesSubmitted;
+
   return (
     <Card className="p-5 space-y-4 border-2" style={{ backgroundColor: 'var(--brand-gold-soft)', borderColor: 'var(--brand-gold)' }}>
       <PanelHeader
         icon={CheckCircle2}
         iconClassName="text-white"
         iconStyle={{ backgroundColor: 'var(--brand-gold)' }}
-        title={timesSubmitted ? 'Lead picked tour times' : schedulingSent ? 'Scheduling link sent · waiting on lead' : 'Lead picked properties — review & send scheduling link'}
-        subtitle={`Submitted ${lead.raw?.curated_submitted_at ? new Date(lead.raw.curated_submitted_at).toLocaleString() : 'recently'}`}
+        title={
+          timesSubmitted
+            ? 'Lead picked tour times'
+            : schedulingSent
+            ? 'Scheduling link sent · waiting on lead'
+            : hasPicks
+            ? 'Lead picked properties — review & send scheduling link'
+            : 'Send scheduling link'
+        }
+        subtitle={
+          hasPicks
+            ? `Submitted ${lead.raw?.curated_submitted_at ? new Date(lead.raw.curated_submitted_at).toLocaleString() : 'recently'}`
+            : `Type or paste the addresses ${firstName || 'they'} want to tour — one per line — and we'll send the time picker.`
+        }
       />
 
-      <div className="bg-white rounded-xl p-3 border border-slate-200">
-        <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-2">
-          Picks ({picks.length})
-        </div>
-        <ul className="space-y-1 text-sm text-slate-700">
-          {picks.map((a) => <li key={a}>• {a}</li>)}
-        </ul>
-        {note && (
-          <div className="mt-3 pt-3 border-t border-slate-100">
-            <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Note</div>
-            <div className="text-sm text-slate-700 italic">{note}</div>
+      {hasPicks && (
+        <div className="bg-white rounded-xl p-3 border border-slate-200">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">
+              Picks ({picks.length})
+            </div>
+            {!timesSubmitted && (
+              <button
+                type="button"
+                onClick={() => {
+                  setManualAddrs(picks.join('\n'));
+                  setEditingManual(true);
+                }}
+                className="text-[11px] text-slate-500 hover:text-slate-900 underline"
+                title="Edit the address list before re-sending"
+              >
+                Edit
+              </button>
+            )}
           </div>
-        )}
-      </div>
+          <ul className="space-y-1 text-sm text-slate-700">
+            {picks.map((a) => <li key={a}>• {a}</li>)}
+          </ul>
+          {note && (
+            <div className="mt-3 pt-3 border-t border-slate-100">
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Note</div>
+              <div className="text-sm text-slate-700 italic">{note}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(showManualEntry || editingManual) && !timesSubmitted && (
+        <div className="bg-white rounded-xl p-3 border border-slate-200">
+          <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+            Properties to tour ({parseManualAddrs(manualAddrs).length})
+          </label>
+          <textarea
+            value={manualAddrs}
+            onChange={(e) => setManualAddrs(e.target.value)}
+            placeholder={`1420 Pine St, Apt 3\n822 N 15th St\n1500 Walnut St #4B`}
+            rows={5}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 resize-y"
+          />
+          <div className="text-[11px] text-slate-500 mt-1.5">
+            One address per line. Lead taps the link → picks a time for each.
+          </div>
+          {editingManual && (
+            <div className="text-[11px] text-amber-700 mt-1.5">
+              Editing existing picks — saving will replace them.
+            </div>
+          )}
+        </div>
+      )}
 
       {timesSubmitted ? (
         <div className="bg-white rounded-xl p-3 border border-slate-200">
@@ -10110,15 +10170,23 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
           </div>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-[11px] text-slate-600">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[11px] text-slate-600 flex-1 min-w-[180px]">
             {schedulingSent
               ? `Sent ${new Date(lead.raw.scheduling_open_at).toLocaleString()} — waiting on lead to pick times.`
-              : 'Confirm properties are still available, then send the scheduling link.'}
+              : hasPicks
+              ? 'Confirm properties are still available, then send the scheduling link.'
+              : `${lead.phone || lead.email || 'Lead'} will receive an SMS + email with the time picker.`}
           </div>
-          <Button onClick={onSend} disabled={busy}>
-            {busy ? 'Sending…' : schedulingSent ? 'Re-send link' : 'Send scheduling link'}
-          </Button>
+          {(showManualEntry || editingManual) ? (
+            <Button onClick={onSendManual} disabled={busy || parseManualAddrs(manualAddrs).length === 0}>
+              {busy ? 'Sending…' : 'Send scheduling link'}
+            </Button>
+          ) : (
+            <Button onClick={() => onSend()} disabled={busy}>
+              {busy ? 'Sending…' : schedulingSent ? 'Re-send link' : 'Send scheduling link'}
+            </Button>
+          )}
         </div>
       )}
     </Card>
