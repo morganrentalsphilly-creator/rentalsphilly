@@ -9958,6 +9958,83 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings }) {
 
   const updateAgent = (k, v) => setListingAgent((prev) => ({ ...prev, [k]: v }));
 
+  // Application status + follow-up state. Lives inside lead.raw.application_link
+  // so it persists. After the link is sent, this section becomes the
+  // "what happened" tracker — what did the lead actually do, what did the
+  // listing agent say.
+  const currentStatus = existing.status || 'sent';
+  const followUps = Array.isArray(existing.follow_ups) ? existing.follow_ups : [];
+  const STATUS_OPTIONS = [
+    { value: 'sent',            label: 'Link sent',     tone: 'bg-slate-100 text-slate-700' },
+    { value: 'lead_submitted',  label: 'Lead applied',  tone: 'bg-blue-100 text-blue-800' },
+    { value: 'under_review',    label: 'Under review',  tone: 'bg-amber-100 text-amber-800' },
+    { value: 'approved',        label: 'Approved',      tone: 'bg-emerald-100 text-emerald-800' },
+    { value: 'rejected',        label: 'Rejected',      tone: 'bg-red-100 text-red-800' },
+    { value: 'withdrawn',       label: 'Withdrawn',     tone: 'bg-slate-100 text-slate-500' },
+  ];
+  const updateStatus = async (newStatus) => {
+    const newLabel = STATUS_OPTIONS.find((o) => o.value === newStatus)?.label || newStatus;
+    await updateLead(lead.id, {
+      raw: {
+        ...(lead.raw || {}),
+        application_link: {
+          ...(lead.raw?.application_link || {}),
+          status: newStatus,
+          status_updated_at: new Date().toISOString(),
+        },
+      },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: 'application-status-changed',
+        timestamp: new Date().toISOString(),
+        message: `Application → ${newLabel}`,
+      }],
+    });
+    showToast(`Status → ${newLabel}`);
+  };
+  const [followUpNote, setFollowUpNote] = useState('');
+  const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const logFollowUp = async () => {
+    const note = followUpNote.trim();
+    if (!note) return;
+    setSavingFollowUp(true);
+    const entry = {
+      id: `fu_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+      date: new Date().toISOString(),
+      note,
+    };
+    await updateLead(lead.id, {
+      raw: {
+        ...(lead.raw || {}),
+        application_link: {
+          ...(lead.raw?.application_link || {}),
+          follow_ups: [...followUps, entry],
+        },
+      },
+      activities: [...(lead.activities || []), {
+        id: `a_${Date.now()}`,
+        type: 'application-followup',
+        timestamp: new Date().toISOString(),
+        message: `Application follow-up: ${note.slice(0, 100)}${note.length > 100 ? '…' : ''}`,
+      }],
+    });
+    setFollowUpNote('');
+    setSavingFollowUp(false);
+    showToast('Follow-up logged');
+  };
+  const removeFollowUp = async (id) => {
+    const next = followUps.filter((fu) => fu.id !== id);
+    await updateLead(lead.id, {
+      raw: {
+        ...(lead.raw || {}),
+        application_link: {
+          ...(lead.raw?.application_link || {}),
+          follow_ups: next,
+        },
+      },
+    });
+  };
+
   return (
     <Card className="p-5 space-y-4 bg-violet-50/40 border-violet-200">
       <div className="flex items-start gap-3">
@@ -10100,6 +10177,86 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings }) {
           </Button>
         </div>
       </div>
+
+      {/* STATUS TRACKER — appears once a link has been sent. Lets Morgan
+          move the application through its lifecycle + log follow-ups with
+          the lead or listing agent. */}
+      {sentAt && (
+        <div className="pt-3 border-t border-violet-200 space-y-3">
+          {/* Status pill row — current state + change action */}
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Status</div>
+            <div className="flex flex-wrap gap-1.5">
+              {STATUS_OPTIONS.map((opt) => {
+                const active = opt.value === currentStatus;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => !active && updateStatus(opt.value)}
+                    disabled={active}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors ${
+                      active
+                        ? `${opt.tone} border-2 border-current cursor-default`
+                        : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-400'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            {existing.status_updated_at && currentStatus !== 'sent' && (
+              <div className="text-[10px] text-slate-400 mt-1">Updated {timeAgo(existing.status_updated_at)}</div>
+            )}
+          </div>
+
+          {/* Follow-up log */}
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+              Follow-ups {followUps.length > 0 && <span className="text-slate-400">· {followUps.length}</span>}
+            </div>
+            {followUps.length > 0 && (
+              <div className="space-y-1.5 mb-2 max-h-40 overflow-y-auto">
+                {followUps.slice().reverse().map((fu) => (
+                  <div key={fu.id} className="flex items-start gap-2 text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                    <div className="text-slate-400 tabular-nums shrink-0 w-16 truncate">
+                      {new Date(fu.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    </div>
+                    <div className="flex-1 min-w-0 text-slate-700">{fu.note}</div>
+                    <button
+                      onClick={() => removeFollowUp(fu.id)}
+                      className="text-slate-300 hover:text-red-600 shrink-0"
+                      title="Delete follow-up"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={followUpNote}
+                onChange={(e) => setFollowUpNote(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); logFollowUp(); } }}
+                placeholder={mode === 'external'
+                  ? 'Talked with listing agent — needs proof of income…'
+                  : 'Lead asked about pet policy — confirmed allowed…'}
+                className="flex-1 text-xs px-3 py-1.5 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400"
+              />
+              <button
+                onClick={logFollowUp}
+                disabled={savingFollowUp || !followUpNote.trim()}
+                className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40"
+              >
+                {savingFollowUp ? '…' : 'Log'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
