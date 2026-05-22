@@ -114,6 +114,24 @@ export default function CuratedPage() {
   const submit1InFlightRef = useRef(false);
   const submit2InFlightRef = useRef(false);
   const submitRescheduleInFlightRef = useRef(false);
+
+  // Inline notice for transient validation / error feedback. Replaces
+  // window.alert() calls which look broken on a polished public-facing
+  // booking page and block the whole tab until dismissed. Auto-fades
+  // after 4 seconds. setNotice('text') to show, setNotice(null) to clear.
+  const [notice, setNotice] = useState(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+  // Reusable notice banner element — render this wherever the page needs
+  // to surface validation or error messages.
+  const noticeBanner = notice ? (
+    <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-md mx-auto px-4 py-2.5 rounded-xl shadow-lg text-sm flex items-center gap-2 ${notice.kind === 'error' ? 'bg-red-600 text-white' : 'bg-slate-900 text-white'}`}>
+      <span>{notice.message || notice}</span>
+    </div>
+  ) : null;
   // Which address card is currently expanded in the time picker. null means
   // "auto" — the first un-picked address expands itself. Used to collapse
   // picked addresses to a one-line summary so the lead doesn't scroll past
@@ -224,7 +242,7 @@ export default function CuratedPage() {
 
     const submitReschedule = async () => {
       if (!reschedulePick) {
-        alert('Pick a new time first.');
+        setNotice('Pick a new time first.');
         return;
       }
       // Sync guard — double-tap could fire two reschedule POSTs and write
@@ -248,7 +266,7 @@ export default function CuratedPage() {
         }
         setRescheduleDone(true);
       } catch (e) {
-        alert('Couldn\'t reschedule: ' + e.message);
+        setNotice({ message: `Couldn't reschedule: ${e.message}`, kind: 'error' });
       } finally {
         setRescheduleSubmitting(false);
         submitRescheduleInFlightRef.current = false;
@@ -259,6 +277,7 @@ export default function CuratedPage() {
       return (
         <div className="min-h-screen flex flex-col bg-slate-50">
           <Header firstName={firstName} />
+          {noticeBanner}
           <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-12 text-center">
             <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
             <h2 className="text-2xl font-semibold text-slate-900 mb-3">Tour rescheduled.</h2>
@@ -274,6 +293,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
+      {noticeBanner}
         <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-6 pb-28">
           <div className="rounded-2xl bg-white border border-slate-200 p-5">
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Reschedule tour</div>
@@ -349,7 +369,7 @@ export default function CuratedPage() {
 
     const submit1 = async () => {
       if (parsedAddresses.length === 0) {
-        alert('Tell us which properties you like — paste addresses from the listings tab, one per line.');
+        setNotice('Tell us which properties you like — paste addresses from the listings tab, one per line.');
         return;
       }
       if (submit1InFlightRef.current) return;
@@ -367,7 +387,7 @@ export default function CuratedPage() {
         }
         loadData(); // re-fetch — phase will be 'awaiting-scheduling'
       } catch (e) {
-        alert('Something went wrong: ' + e.message);
+        setNotice({ message: `Something went wrong: ${e.message}`, kind: 'error' });
       } finally {
         setSubmitting1(false);
         submit1InFlightRef.current = false;
@@ -377,6 +397,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
+      {noticeBanner}
         <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-7 pb-28">
           <div className="rounded-2xl bg-white border border-slate-200 p-5">
             <p className="text-[15px] text-slate-700 leading-relaxed">
@@ -482,6 +503,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
+      {noticeBanner}
         <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-16 text-center">
           <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
           <h2 className="text-2xl font-semibold text-slate-900 mb-3">Got your picks, {firstName}.</h2>
@@ -514,7 +536,7 @@ export default function CuratedPage() {
 
     const submit2 = async () => {
       if (!allPicked) {
-        alert('Pick a time for every property.');
+        setNotice('Pick a time for every property.');
         return;
       }
       // Sync re-entry guard. Phase 2 creates tour rows in the DB, so a
@@ -539,7 +561,7 @@ export default function CuratedPage() {
         }
         loadData();
       } catch (e) {
-        alert('Something went wrong: ' + e.message);
+        setNotice({ message: `Something went wrong: ${e.message}`, kind: 'error' });
       } finally {
         setSubmitting2(false);
         submit2InFlightRef.current = false;
@@ -563,6 +585,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
+      {noticeBanner}
 
         {/* Sticky progress strip — shows the lead exactly how close they are
             to done so they don't lose track on a long phone scroll. */}
@@ -715,6 +738,7 @@ export default function CuratedPage() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
       <Header firstName={firstName} />
+      {noticeBanner}
       <main className="flex-1 max-w-2xl w-full mx-auto px-5 md:px-8 py-8 md:py-12 space-y-6">
         {/* Hero confirmation */}
         <div className="text-center">

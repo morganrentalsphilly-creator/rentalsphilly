@@ -4318,6 +4318,15 @@ function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, 
   const matches = matchListings(lead, properties, excludedBrokerages).slice(0, MAX_PROPERTIES_PER_TOUR);
   const [selected, setSelected] = useState([]);
   const [photoModal, setPhotoModal] = useState(null);   // { listing, url } or null
+  // Inline non-blocking notice for "photos not configured" — replaces a
+  // jarring browser alert() on a customer-facing page. Auto-clears after
+  // a few seconds so it doesn't linger.
+  const [photoNotice, setPhotoNotice] = useState(null);
+  useEffect(() => {
+    if (!photoNotice) return;
+    const t = setTimeout(() => setPhotoNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [photoNotice]);
   const firstName = lead.fullName.split(' ')[0];
 
   const toggle = (listing) => {
@@ -4340,7 +4349,9 @@ function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, 
     e?.stopPropagation();
     const url = portalUrlFor(l);
     if (!url) {
-      window.alert('Photos aren\'t configured for this listing yet. Ask your agent.');
+      // Inline notice instead of window.alert — alerts on a public consumer
+      // page look broken and feel hostile. Auto-fades.
+      setPhotoNotice('Photos aren\'t loaded yet for this property. Ask your agent for the listing link.');
       return;
     }
     // Some Matrix portal URLs accept &Display=... or &MLSNumber= for deep
@@ -4360,6 +4371,12 @@ function ListingsView({ lead, properties, excludedBrokerages, brightPortalUrls, 
         <p className="text-slate-600 max-w-xl leading-relaxed">
           {matches.length > 0 ? `${matches.length} hand-picked ${matches.length === 1 ? 'home' : 'homes'}. Select up to ${MAX_PROPERTIES_PER_TOUR} you'd like to tour.` : 'No matches yet. We\'ll reach out shortly.'}
         </p>
+        {photoNotice && (
+          <div className="mt-5 inline-flex items-center gap-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2">
+            <Info className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>{photoNotice}</span>
+          </div>
+        )}
       </div>
 
       {matches.length > 0 && (
