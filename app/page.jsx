@@ -3007,6 +3007,11 @@ function IntakeForm({ onSubmit, onBack }) {
   });
   const update = (k, v) => setData({ ...data, [k]: v });
 
+  // Tracks which steps we've already auto-advanced from. A step auto-advances
+  // exactly once — re-arriving after a Back tap means the user is editing and
+  // we shouldn't immediately spring forward again.
+  const autoAdvancedRef = useRef({});
+
   // ---- Persist progress to localStorage ----
   // Mobile users sometimes get a phone call or tab eviction mid-form.
   // We save after every change and restore on mount so they don't lose work.
@@ -3072,6 +3077,7 @@ function IntakeForm({ onSubmit, onBack }) {
       title: 'When are you moving?',
       subtitle: 'We\'ll tailor our search to your timeline.',
       valid: () => !!data.moveInDate,
+      autoAdvance: true,
       fields: <DatePicker value={data.moveInDate} onChange={(v) => update('moveInDate', v)} />
     },
     {
@@ -3107,6 +3113,7 @@ function IntakeForm({ onSubmit, onBack }) {
       title: 'A few financial details',
       subtitle: 'This helps us match you with the right properties.',
       valid: () => data.employed && data.creditScore,
+      autoAdvance: true,
       fields: (
         <div className="space-y-5">
           <div>
@@ -3132,6 +3139,7 @@ function IntakeForm({ onSubmit, onBack }) {
       title: 'How would you like to tour?',
       subtitle: 'Pick what works best for you.',
       valid: () => !!data.tourType,
+      autoAdvance: true,
       fields: (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {[
@@ -3164,6 +3172,25 @@ function IntakeForm({ onSubmit, onBack }) {
   const s = steps[step];
   const progress = ((step + 1) / steps.length) * 100;
   const isLastStep = step === steps.length - 1;
+
+  // Auto-advance: when a step marked `autoAdvance` becomes valid, jump to the
+  // next step after a brief delay so the user sees their selection highlighted.
+  // Each step auto-advances exactly once, so tapping Back to edit doesn't
+  // immediately catapult the user forward again. Never auto-submits the final
+  // step — that requires an explicit "Send to my agent" tap.
+  useEffect(() => {
+    if (submitting) return;
+    if (!s.autoAdvance) return;
+    if (!s.valid()) return;
+    if (isLastStep) return;
+    if (autoAdvancedRef.current[step]) return;
+    const handle = setTimeout(() => {
+      autoAdvancedRef.current[step] = true;
+      setStep((cur) => (cur === step ? step + 1 : cur));
+    }, 500);
+    return () => clearTimeout(handle);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, data, submitting]);
 
   const handleNext = async () => {
     if (!s.valid() || submitting) return;
