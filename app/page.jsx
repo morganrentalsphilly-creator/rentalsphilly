@@ -1943,14 +1943,45 @@ export default function App() {
     if (!lead) return;
     const entry = { id: `w_${Date.now()}`, leadId, preferredDates, createdAt: new Date().toISOString(), status: 'waiting' };
     await saveWaitlist([...waitlist, entry]);
-    const newMsg = {
-      id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
-      to: lead.email, via: 'gmail', subject: 'You\'re on the waitlist',
-      body: `Hi ${lead.fullName.split(' ')[0]} — you're on the waitlist! The moment a new tour slot opens for your dates, I'll email & text you.`,
-      timestamp: new Date().toISOString(), automated: true,
-    };
+    const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+
+    // CRITICAL HISTORY: this used to build a fake "You're on the waitlist"
+    // email row and shove it into lead.messages WITHOUT calling sendEmail.
+    // The lead received nothing. The agent saw a phantom "sent" email in
+    // the thread. Route through the real wrapper now so confirmations
+    // actually go out, and only stash the row if the send succeeded.
+    let confirmRow = null;
+    try {
+      const emailResult = await sendEmail({
+        leadId,
+        subject: 'You\'re on the waitlist',
+        body: `Hi ${firstName} — you're on the waitlist! The moment a new tour slot opens for your preferred dates (${preferredDates.join(', ')}), I'll email & text you.\n\n— Morgan`,
+        kind: 'waitlist_confirm',
+        idempotencyKey: `waitlist-${entry.id}`,
+        automated: true,
+      });
+      if (emailResult?.ok && emailResult.message) {
+        confirmRow = {
+          id: emailResult.message.id,
+          channel: 'email',
+          direction: 'outbound',
+          status: emailResult.message.status || 'sent',
+          to: emailResult.message.to,
+          via: 'resend',
+          subject: emailResult.message.subject,
+          body: emailResult.message.body,
+          timestamp: emailResult.message.created_at || new Date().toISOString(),
+          automated: true,
+        };
+      }
+    } catch (err) {
+      console.warn('[waitlist] confirmation email failed', err?.message);
+    }
+
     await updateLead(leadId, {
-      messages: [...(lead.messages || []), newMsg],
+      // Only include the row if the email actually sent — otherwise the
+      // lead's thread would show a confirmation they never received.
+      messages: confirmRow ? [...(lead.messages || []), confirmRow] : (lead.messages || []),
       activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'waitlisted', timestamp: new Date().toISOString(), message: `Added to waitlist (${preferredDates.length} dates)` }],
     });
   };
