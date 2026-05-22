@@ -6250,19 +6250,8 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
       {/* Setup checklist — only renders while there's outstanding setup */}
       <SetupChecklist settings={settings} setSubview={setSubview} />
 
-      {/* THIS WEEK — business pulse KPI strip with week-over-week deltas */}
-      <WeekKpiStrip leads={leads} />
-
-      {/* PIPELINE FUNNEL — at-a-glance "where are my leads sitting" with
-          click-to-drill behavior. Jumping to a stage opens Pipeline view
-          (TODO: wire stage filter so clicking a stage pre-filters Pipeline). */}
-      <PipelineFunnelCard leads={leads} onJumpToStage={() => setSubview('pipeline')} />
-
-      {/* HOT PROSPECTS — top 5 by score + engagement. Quality-ranked
-          counterpart to Focus Now (which is urgency-ranked). */}
-      <HotProspectsCard leads={leads} onSelectLead={onSelectLead} />
-
-      {/* FOCUS NOW — the single source-of-truth ranked queue */}
+      {/* FOCUS NOW — the single source-of-truth ranked queue. First card
+          below the header because this is the "what should I do?" answer. */}
       <FocusNowCard
         leads={leads}
         overdueTasks={overdueTasks}
@@ -6273,12 +6262,10 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
         showToast={showToast}
       />
 
-      {/* Touch tracker — daily + weekly outbound activity counter */}
-      <TouchTrackerCard leads={leads} />
-
-      {/* Browser notification opt-in prompt — only if not yet decided */}
-      <NotificationPrompt />
-
+      {/* HOT PROSPECTS — top 5 by score + engagement. Quality-ranked
+          counterpart to Focus Now (which is urgency-ranked). Sits directly
+          below Focus Now since both are "leads to act on" surfaces. */}
+      <HotProspectsCard leads={leads} onSelectLead={onSelectLead} />
 
       {/* TASKS */}
       <Card className="p-5 space-y-3">
@@ -6379,8 +6366,23 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
         </Card>
       )}
 
+      {/* ──────────── BUSINESS SUMMARY (below the action fold) ──────────── */}
+
+      {/* THIS WEEK — business pulse KPI strip with week-over-week deltas */}
+      <WeekKpiStrip leads={leads} />
+
+      {/* PIPELINE FUNNEL — at-a-glance "where are my leads sitting" with
+          click-to-drill behavior */}
+      <PipelineFunnelCard leads={leads} onJumpToStage={() => setSubview('pipeline')} />
+
+      {/* Touch tracker — daily + weekly outbound activity counter */}
+      <TouchTrackerCard leads={leads} />
+
       {/* TODAY'S WINS — rolling log of today's outbound activity for momentum */}
       <TodaysWinsCard leads={leads} onSelectLead={onSelectLead} />
+
+      {/* Browser notification opt-in prompt — housekeeping, dismissable */}
+      <NotificationPrompt />
     </div>
   );
 }
