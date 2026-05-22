@@ -3012,6 +3012,55 @@ function IntakeForm({ onSubmit, onBack }) {
   // we shouldn't immediately spring forward again.
   const autoAdvancedRef = useRef({});
 
+  // Per-field "touched" state — only show validation errors AFTER the user
+  // has interacted with a field (typed + blurred). Hides red text on a pristine
+  // form so the first-time-loading experience isn't a wall of warnings.
+  const [touched, setTouched] = useState({});
+  const markTouched = (k) => setTouched((t) => ({ ...t, [k]: true }));
+
+  // Field-level validators. Each returns either null (valid) or a short
+  // human message. Only checked once the user has touched the field.
+  const fieldErrors = {
+    fullName: !data.fullName.trim() ? 'Add your full name' : null,
+    email: !data.email.trim()
+      ? 'Add your email'
+      : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())
+        ? 'Email looks invalid'
+        : null,
+    phone: !data.phone.trim()
+      ? 'Add your phone number'
+      : data.phone.replace(/\D/g, '').length < 10
+        ? 'Phone number looks too short'
+        : null,
+  };
+  const fieldHint = (k) => (touched[k] && fieldErrors[k] ? fieldErrors[k] : null);
+
+  // Helper computing the single most-pressing thing the user needs to do to
+  // unlock Continue. Surfaces as a tiny hint above the disabled CTA so the
+  // user is never left guessing why the button is greyed out.
+  const blockingHint = (() => {
+    if (submitting) return null;
+    // Step 0: contact — pick the first invalid field
+    if (step === 0) {
+      if (fieldErrors.fullName) return 'Add your full name';
+      if (fieldErrors.email) return 'Check your email';
+      if (fieldErrors.phone) return 'Add your phone number';
+    }
+    // Step 1: move-in date
+    if (step === 1 && !data.moveInDate) return 'Pick a move-in date';
+    // Step 2: budget
+    if (step === 2 && (!data.budgetMin || !data.budgetMax)) return 'Set your budget range';
+    // Step 3: beds/baths — already defaults to 1/1, basically can't be invalid
+    // Step 5: financial
+    if (step === 5) {
+      if (!data.employed) return 'Are you currently employed?';
+      if (!data.creditScore) return 'Pick a credit range';
+    }
+    // Step 6: tour type
+    if (step === 6 && !data.tourType) return 'Pick in-person or virtual';
+    return null;
+  })();
+
   // ---- Persist progress to localStorage ----
   // Mobile users sometimes get a phone call or tab eviction mid-form.
   // We save after every change and restore on mount so they don't lose work.
@@ -3064,12 +3113,45 @@ function IntakeForm({ onSubmit, onBack }) {
     {
       title: 'Let\'s start with the basics',
       subtitle: 'How can we reach you?',
-      valid: () => data.fullName.trim() && /.+@.+\..+/.test(data.email) && data.phone.trim().length >= 7,
+      valid: () => !fieldErrors.fullName && !fieldErrors.email && !fieldErrors.phone,
       fields: (
         <div className="space-y-4">
-          <FormField label="Full name" icon={User}><input {...inputProps.fullName} value={data.fullName} onChange={e => update('fullName', e.target.value)} placeholder="Alex Morgan" className="form-input" /></FormField>
-          <FormField label="Email" icon={Mail}><input {...inputProps.email} type="email" value={data.email} onChange={e => update('email', e.target.value)} placeholder="alex@example.com" className="form-input" /></FormField>
-          <FormField label="Mobile phone" icon={Phone}><input {...inputProps.phone} type="tel" value={data.phone} onChange={e => update('phone', formatUsPhone(e.target.value))} placeholder="(215) 555-0123" className="form-input" maxLength={14} /></FormField>
+          <FormField label="Full name" icon={User}>
+            <input
+              {...inputProps.fullName}
+              value={data.fullName}
+              onChange={(e) => update('fullName', e.target.value)}
+              onBlur={() => markTouched('fullName')}
+              placeholder="Alex Morgan"
+              className={`form-input ${fieldHint('fullName') ? 'border-red-300' : ''}`}
+            />
+            {fieldHint('fullName') && <div className="text-xs text-red-600 mt-1.5">{fieldHint('fullName')}</div>}
+          </FormField>
+          <FormField label="Email" icon={Mail}>
+            <input
+              {...inputProps.email}
+              type="email"
+              value={data.email}
+              onChange={(e) => update('email', e.target.value)}
+              onBlur={() => markTouched('email')}
+              placeholder="alex@example.com"
+              className={`form-input ${fieldHint('email') ? 'border-red-300' : ''}`}
+            />
+            {fieldHint('email') && <div className="text-xs text-red-600 mt-1.5">{fieldHint('email')}</div>}
+          </FormField>
+          <FormField label="Mobile phone" icon={Phone}>
+            <input
+              {...inputProps.phone}
+              type="tel"
+              value={data.phone}
+              onChange={(e) => update('phone', formatUsPhone(e.target.value))}
+              onBlur={() => markTouched('phone')}
+              placeholder="(215) 555-0123"
+              className={`form-input ${fieldHint('phone') ? 'border-red-300' : ''}`}
+              maxLength={14}
+            />
+            {fieldHint('phone') && <div className="text-xs text-red-600 mt-1.5">{fieldHint('phone')}</div>}
+          </FormField>
         </div>
       )
     },
@@ -3249,6 +3331,13 @@ function IntakeForm({ onSubmit, onBack }) {
       {/* STICKY CTA — fixed to bottom of viewport on mobile, easy thumb reach */}
       <div className="fixed bottom-0 left-0 right-0 z-10 bg-white border-t border-slate-200 shadow-[0_-4px_24px_-12px_rgba(0,0,0,0.12)]">
         <div className="max-w-xl mx-auto px-5 md:px-8 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+          {/* Inline hint when Continue is disabled — tells the user exactly
+              what's needed to unlock it. Hidden once the step is valid. */}
+          {blockingHint && (
+            <div className="text-center text-xs text-slate-500 mb-2">
+              {blockingHint}
+            </div>
+          )}
           <button
             onClick={handleNext}
             disabled={!s.valid() || submitting}
