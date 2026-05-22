@@ -120,6 +120,47 @@ export async function POST(request) {
         return NextResponse.json({ ok: true });
       }
 
+      case 'delete_lead': {
+        // Hard-delete a single lead and every child row that references it.
+        // We delete child tables explicitly so this works even on schemas
+        // without ON DELETE CASCADE configured. Order: child rows first, then
+        // the lead. Each step is best-effort — log on error but keep going so
+        // a missing child table doesn't block the lead delete.
+        const { id } = body;
+        if (!id) return NextResponse.json({ error: 'missing_lead_id' }, { status: 400 });
+        const childTables = [
+          'messages',
+          'activities',
+          'tasks',
+          'tours',
+          'submissions',
+          'scheduled_nudges',
+          'sms_blast_recipients',
+        ];
+        const childErrors = [];
+        for (const t of childTables) {
+          const { error } = await db.from(t).delete().eq('lead_id', id);
+          if (error) {
+            console.warn(`[delete_lead] child '${t}' delete error`, error.message);
+            childErrors.push({ table: t, error: error.message });
+          }
+        }
+        // Also clean any uploaded application/document blobs from storage. We
+        // discover paths by scanning the storage bucket for the lead's folder.
+        try {
+          const { data: storageList } = await db.storage.from('applications').list(id, { limit: 100 });
+          if (storageList?.length) {
+            const paths = storageList.map((f) => `${id}/${f.name}`);
+            await db.storage.from('applications').remove(paths);
+          }
+        } catch (storageErr) {
+          console.warn('[delete_lead] storage cleanup failed', storageErr?.message);
+        }
+        const { error } = await db.from('leads').delete().eq('id', id);
+        if (error) throw error;
+        return NextResponse.json({ ok: true, childErrors });
+      }
+
       case 'insert_message': {
         const { message } = body;
         const { data, error } = await db.from('messages').insert(message).select().single();

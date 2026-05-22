@@ -1527,6 +1527,22 @@ export default function App() {
 
   // Update a lead in Supabase + sync newly-added nested items (messages/activities/tasks/submissions).
   // Strategy: for each nested array, compare current-in-state vs updates, and persist anything new.
+  // Hard-delete a single lead. Optimistically removes from local state, then
+  // tells the server to delete the lead + every child row. If the server call
+  // fails we don't restore — caller is expected to surface the error via toast.
+  const removeLead = async (id) => {
+    setLeads((prev) => prev.filter((l) => l.id !== id));
+    if (currentLead?.id === id) setCurrentLead(null);
+    if (selectedLeadId === id) setSelectedLeadId(null);
+    try {
+      const db = await import('@/lib/db');
+      await db.deleteLead(id);
+    } catch (err) {
+      console.error('[removeLead] server delete failed', err);
+      throw err;
+    }
+  };
+
   const updateLead = async (id, updates) => {
     const existing = leads.find(l => l.id === id);
     const merged = { ...existing, ...updates };
@@ -2143,7 +2159,7 @@ export default function App() {
             <div className="h-64 bg-slate-100 rounded-2xl" />
           </div>
         ) : (
-          <AdminCRM leads={leads} addLead={addLead} updateLead={updateLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
+          <AdminCRM leads={leads} addLead={addLead} updateLead={updateLead} removeLead={removeLead} saveLeads={saveLeads} slots={slots} openSlot={openSlot} closeSlot={closeSlot} waitlist={waitlist} saveWaitlist={saveWaitlist} settings={settings} saveSettings={saveSettings} subview={adminSubview} setSubview={setAdminSubview} selectedLeadId={selectedLeadId} setSelectedLeadId={setSelectedLeadId} showToast={showToast} timeOffset={timeOffset} saveTimeOffset={saveTimeOffset} saveScreeningReport={saveScreeningReport} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} createSubmission={createSubmission} updateSubmissionStatus={updateSubmissionStatus} logSubmissionFollowUp={logSubmissionFollowUp} sessionEmail={session.user?.email} properties={properties} saveProperty={saveProperty} removeProperty={removeProperty} bulkImportProperties={bulkImportProperties} />
         )
       )}
     </div>
@@ -5888,7 +5904,7 @@ function KeyboardShortcutHelp({ onClose }) {
   );
 }
 
-function AdminCRM({ leads, addLead, updateLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
+function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, openSlot, closeSlot, waitlist, saveWaitlist, settings, saveSettings, subview, setSubview, selectedLeadId, setSelectedLeadId, showToast, timeOffset, saveTimeOffset, saveScreeningReport, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, createSubmission, updateSubmissionStatus, logSubmissionFollowUp, sessionEmail, properties, saveProperty, removeProperty, bulkImportProperties }) {
   const [composeModal, setComposeModal] = useState(null);
   const [screeningModal, setScreeningModal] = useState(null);
   const [submitModal, setSubmitModal] = useState(null);
@@ -6139,7 +6155,7 @@ function AdminCRM({ leads, addLead, updateLead, saveLeads, slots, openSlot, clos
         />
       )}
 
-      {selectedLead && <LeadDetailCRM lead={selectedLead} onClose={() => setSelectedLeadId(null)} updateLead={updateLead} onCompose={(arg) => {
+      {selectedLead && <LeadDetailCRM lead={selectedLead} onClose={() => setSelectedLeadId(null)} updateLead={updateLead} removeLead={removeLead} onCompose={(arg) => {
         // Accept either onCompose('sms-custom') (legacy string) or
         // onCompose({ kind, prefill }) from NextBestActionCard.
         if (typeof arg === 'string') {
@@ -9111,7 +9127,7 @@ function LeadActivityTimeline({ lead }) {
 }
 
 // Lead actions menu — archive, mark lost, delete. Dropdown overflow menu.
-function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
+function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
   const [open, setOpen] = useState(false);
   const isArchived = lead.stage === 'archived';
   const snoozedUntil = lead.raw?.snoozed_until;
@@ -9172,17 +9188,17 @@ function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
   };
 
   const deleteLead = async () => {
-    if (!confirm(`Permanently delete ${lead.fullName}? This removes all messages, tours, tasks, and activities. This cannot be undone.\n\nType the lead's first name to confirm.`)) return;
+    if (!confirm(`Permanently delete ${lead.fullName}? This removes the lead and every message, tour, task, application, and activity tied to them. This cannot be undone.\n\nClick OK to continue — you'll be asked to type the lead's first name to confirm.`)) return;
     const confirmName = prompt(`Type "${lead.fullName.split(' ')[0]}" to confirm:`);
     if (confirmName !== lead.fullName.split(' ')[0]) {
       showToast('Cancelled — name did not match');
       return;
     }
     try {
-      const db = await import('@/lib/db');
-      // Soft delete by setting stage = 'deleted' + opting out of all comms.
-      // We avoid hard-deletes to preserve audit trail.
-      await db.updateLead(lead.id, { stage: 'deleted', opted_out: true });
+      // Hard delete: removes the lead row + every child row (messages,
+      // activities, tasks, tours, submissions, scheduled_nudges, blast
+      // recipients) + any uploaded document blobs in storage.
+      await removeLead(lead.id);
       showToast(`Deleted ${lead.fullName}`);
       onClose();
     } catch (err) {
@@ -9255,7 +9271,7 @@ function LeadActionsMenu({ lead, updateLead, showToast, onClose }) {
   );
 }
 
-function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus }) {
+function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
   const initials = lead.fullName.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase();
@@ -9275,7 +9291,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, onCompose, showToast, onOpen
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              <LeadActionsMenu lead={lead} updateLead={updateLead} showToast={showToast} onClose={onClose} />
+              <LeadActionsMenu lead={lead} updateLead={updateLead} removeLead={removeLead} showToast={showToast} onClose={onClose} />
               <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
             </div>
           </div>
