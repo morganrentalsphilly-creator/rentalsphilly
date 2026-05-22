@@ -12,6 +12,7 @@ import {
   onAuthChange,
 } from '@/lib/supabase.client';
 import { isAdminEmail } from '@/lib/auth';
+import { buildSignature } from '@/lib/email-templates';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { ArrowRight, ArrowLeft, Check, Calendar, MapPin, Bed, Bath, DollarSign, Clock, Mail, Phone, User, FileText, Users, CalendarDays, Bell, Send, ChevronRight, X, Filter, Star, Sparkles, Building2, CheckCircle2, MessageSquare, Edit3, Activity, Plus, Search, Zap, PhoneCall, FileCheck, Award, ChevronDown, Video, Settings, Hourglass, Info, Flag, Bot, Shield, AlertTriangle, ClipboardPaste, ExternalLink, Upload, Download, Trash2, Eye, File, Inbox, Archive } from 'lucide-react';
 // ============================================================
@@ -113,6 +114,17 @@ const DEFAULT_AGENT_SETTINGS = {
   agentEmail: 'agent@rentalsphilly.com',
   agentPhone: '(215) 555-0100',
   twilioNumber: '(267) 555-0199',
+  // Rich email signature appended to every customer-facing email. Edited
+  // from Settings → Profile. The plain-text version is appended to the
+  // text/plain part; the HTML version renders as a card in the brand shell.
+  // All fields optional; the block collapses fields that are blank.
+  signature: {
+    title: 'Rental Agent · Rentals Philly',
+    website: 'rentalsphilly.com',
+    tagline: '',
+    licenseLine: '',
+    fairHousing: true,
+  },
   rentSpree: {
     dashboardUrl: 'https://app.rentspree.com/dashboard',
   },
@@ -834,6 +846,15 @@ function mergeSettingsRow(row) {
     merged.rentSpree = { ...(merged.rentSpree || {}), applicationUrl: row.rentspree_application_url };
   } else if (row.raw && row.raw.rentspree_application_url) {
     merged.rentSpree = { ...(merged.rentSpree || {}), applicationUrl: row.raw.rentspree_application_url };
+  }
+
+  // ---- Email signature ----
+  // Lives in the dedicated `signature` jsonb column from migration 0009.
+  // Pre-migration installs may have stashed it in raw.signature — fall back.
+  if (row.signature && typeof row.signature === 'object') {
+    merged.signature = { ...row.signature };
+  } else if (row.raw && row.raw.signature && typeof row.raw.signature === 'object') {
+    merged.signature = { ...row.raw.signature };
   }
 
   // ---- raw.agent_availability fallback (pre-migration 0004 installs) ----
@@ -1882,6 +1903,9 @@ export default function App() {
         systemTemplates: newSettings.systemTemplates,
         emailSignature: newSettings.emailSignature,
 
+        // Structured email signature (jsonb, added in migration 0009).
+        signature: newSettings.signature,
+
         // NOTE: we deliberately do NOT write to `raw` from here. The cron
         // dispatcher uses settings.raw to stash `last_cron_tick` +
         // `last_cron_summary` every minute, and any client-side write of the
@@ -1913,7 +1937,7 @@ export default function App() {
         const m = msg.match(/['"]([\w-]+)['"]\s+(?:column|of)/i) || msg.match(/column\s+['"]?([\w-]+)['"]?\s+(?:of|does not exist)/i);
         if (m && m[1]) return m[1];
         // Last resort: scan known optional column names against the error.
-        for (const name of ['raw', 'agent_availability', 'welcomeMessages', 'systemTemplates', 'quickReplyTemplates', 'emailSignature', 'notifications', 'calendar_feed_token', 'rentspree_dashboard_url']) {
+        for (const name of ['raw', 'agent_availability', 'welcomeMessages', 'systemTemplates', 'quickReplyTemplates', 'emailSignature', 'notifications', 'calendar_feed_token', 'rentspree_dashboard_url', 'rentspree_application_url', 'signature']) {
           if (msg.includes(name) && (msg.includes('column') || msg.includes('does not exist') || msg.includes('schema cache'))) {
             return name;
           }
@@ -6301,9 +6325,16 @@ function SetupChecklist({ settings, setSubview }) {
     },
     {
       key: 'emailSignature',
-      label: 'Add an email signature',
-      done: !!(settings.emailSignature && settings.emailSignature.trim().length > 5),
-      hint: 'Auto-appended to outbound emails from the inbox',
+      label: 'Customize your email signature',
+      // Signature title is the most-edited field — if Morgan has changed it
+      // away from the default, treat the signature as configured. We also
+      // accept a non-empty website / tagline / license as "configured".
+      done: !!(settings.signature && (
+        (settings.signature.title && settings.signature.title !== 'Rental Agent · Rentals Philly') ||
+        settings.signature.tagline ||
+        settings.signature.licenseLine
+      )),
+      hint: 'Auto-attached to every outbound email · Settings → Email signature',
     },
     {
       key: 'shifts',
@@ -9968,20 +9999,11 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
           <FormField label="Your email"><input type="email" value={form.agentEmail} onChange={e => update('agentEmail', e.target.value)} className="form-input" /></FormField>
           <FormField label="Your phone"><input type="tel" value={form.agentPhone} onChange={e => update('agentPhone', formatUsPhone(e.target.value))} className="form-input" maxLength={14} /></FormField>
           <FormField label="Twilio number"><input type="tel" value={form.twilioNumber} onChange={e => update('twilioNumber', e.target.value)} className="form-input" /></FormField>
-          <FormField label="Email signature (auto-appended to every outbound email)">
-            <textarea
-              value={form.emailSignature || ''}
-              onChange={(e) => update('emailSignature', e.target.value)}
-              rows={5}
-              placeholder={`Best,\n${form.agentName || 'Morgan Page'}\n${form.agentPhone || '(215) 555-0123'}\nRentals Philly`}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-slate-400 resize-y font-mono"
-            />
-            <div className="text-[10px] text-slate-400 mt-1">
-              Appended automatically to outbound emails sent through the inbox or templates. SMS is not affected.
-            </div>
-          </FormField>
         </div>
       </Card>
+
+      <EmailSignatureCard form={form} update={update} />
+
 
       <Button size="lg" onClick={save} disabled={saving || !dirty}>
         {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved ✓'}
@@ -10043,6 +10065,116 @@ function AutomationRow({ name, desc, value, onChange, disabled, onEdit, editLabe
         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${value ? 'left-[18px]' : 'left-0.5'}`} />
       </button>
     </div>
+  );
+}
+
+// ============================================================
+// EMAIL SIGNATURE CARD
+//
+// Lives on the Settings page. Lets Morgan customize what appears at the
+// bottom of every outbound customer email. The plain-text version goes into
+// the text/plain part of each send; the HTML version renders as a card
+// inside the brand shell. Identity fields (name / phone / email) come from
+// the Agent profile card above — this card only adds the SIGNATURE-SPECIFIC
+// fields (title, website, tagline, license, fair housing).
+//
+// Live preview uses the same buildSignature() helper that sendEmail() calls
+// on the server, so what Morgan sees in the preview is byte-for-byte what
+// gets sent to the lead.
+// ============================================================
+function EmailSignatureCard({ form, update }) {
+  const sig = form.signature || {};
+  const setSig = (key, value) => update('signature', { ...sig, [key]: value });
+
+  // Build a synthetic settings object that mirrors what the server sees
+  // (signature fields merged with identity fields from the same form), then
+  // render the EXACT html buildSignature() produces. This keeps the preview
+  // and the actual send pixel-identical — no drift between them.
+  const previewSettings = useMemo(() => ({
+    agentName: form.agentName,
+    agentEmail: form.agentEmail,
+    agentPhone: form.agentPhone,
+    signature: sig,
+  }), [form.agentName, form.agentEmail, form.agentPhone, sig]);
+  const built = useMemo(() => buildSignature(previewSettings), [previewSettings]);
+
+  return (
+    <Card className="p-5">
+      <SectionHeader icon={Mail}>Email signature</SectionHeader>
+      <div className="text-sm text-slate-600 leading-relaxed mb-4">
+        Appended automatically to every customer-facing email — welcome, scheduling link, tour confirmation, and any manual reply you send from the inbox. The name, phone, and email come from your Agent profile above; everything else lives here.
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-5">
+        <div className="space-y-3">
+          <FormField label="Title / role">
+            <input
+              value={sig.title || ''}
+              onChange={(e) => setSig('title', e.target.value)}
+              className="form-input"
+              placeholder="Rental Agent · Rentals Philly"
+            />
+          </FormField>
+
+          <FormField label="Website">
+            <input
+              value={sig.website || ''}
+              onChange={(e) => setSig('website', e.target.value)}
+              className="form-input"
+              placeholder="rentalsphilly.com"
+            />
+          </FormField>
+
+          <FormField label="Tagline (optional)">
+            <input
+              value={sig.tagline || ''}
+              onChange={(e) => setSig('tagline', e.target.value)}
+              className="form-input"
+              placeholder="Hand-picked Philly rentals"
+            />
+          </FormField>
+
+          <FormField label="License line (optional)">
+            <input
+              value={sig.licenseLine || ''}
+              onChange={(e) => setSig('licenseLine', e.target.value)}
+              className="form-input"
+              placeholder="PA RS-XXXXXX · Brokered by [Brokerage]"
+            />
+            <div className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+              Required by PA real estate law on most agent communications. Leave blank if you'd rather omit.
+            </div>
+          </FormField>
+
+          <label className="flex items-start gap-3 cursor-pointer pt-1">
+            <input
+              type="checkbox"
+              checked={sig.fairHousing !== false}
+              onChange={(e) => setSig('fairHousing', e.target.checked)}
+              className="mt-1 w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            <div className="text-sm">
+              <div className="font-medium text-slate-900">Include fair-housing line</div>
+              <div className="text-[11px] text-slate-500 leading-relaxed">
+                Appends "Rentals Philly supports Equal Housing Opportunity." Recommended.
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">Live preview</div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="bg-white rounded-lg p-4 shadow-sm">
+              <div className="text-sm text-slate-700 mb-3 italic">…rest of your email body…</div>
+              <div dangerouslySetInnerHTML={{ __html: built.html }} />
+            </div>
+          </div>
+          <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mt-3 mb-2">Plain-text fallback</div>
+          <pre className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-700 whitespace-pre-wrap leading-relaxed font-mono">{built.text}</pre>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -13824,16 +13956,12 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           automated: false,
         };
       } else {
-        // Auto-append the agent's signature if they have one and the body
-        // doesn't already include it (avoid double-signing on quoted replies).
-        // Use `body` (which respects bodyOverride from the AI Send-now path)
-        // instead of composerBody so the override actually goes out.
-        const sig = (settings?.emailSignature || '').trim();
-        const finalBody = sig && !body.includes(sig)
-          ? `${body}\n\n${sig}`
-          : body;
+        // No more client-side signature append — the server wrapper
+        // (sendEmail in lib/email.server.js) reads settings.signature and
+        // appends a consistent rich signature to BOTH the text and HTML
+        // versions. Appending here would double-sign.
         const result = await sendEmail({
-          leadId: lead.id, subject: composerSubject || '(no subject)', body: finalBody,
+          leadId: lead.id, subject: composerSubject || '(no subject)', body,
           kind: 'manual', idempotencyKey: `inbox-email-${lead.id}-${Date.now()}`, automated: false,
         });
         if (!result.ok) {
@@ -14530,7 +14658,9 @@ function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOp
     { key: 'tour',     label: '/tour',     desc: 'Tour confirmation snippet',    insert: `Confirming your tour on ${tourDate || '[date]'} at ${tourTime || '[time]'}. See you there!` },
     { key: 'sched',    label: '/sched',    desc: 'Scheduling link snippet',      insert: `Pick your tour times: ${portalUrl}` },
     { key: 'hi',       label: '/hi',       desc: `Greet ${firstName}`,           insert: `Hi ${firstName} — ` },
-    { key: 'sig',      label: '/sig',      desc: 'Insert your email signature',  insert: settings?.emailSignature || `Best,\n${settings?.agentName || 'Morgan'}` },
+    // /sig removed — sendEmail() now auto-appends the rich signature from
+    // Settings → Email signature on EVERY outbound email, so manually
+    // inserting one would only confuse the preview vs. what gets sent.
     { key: 'template', label: '/template', desc: 'Open full template picker',    action: 'openTemplates' },
   ];
   // Inline user templates as /tpl-{id} entries (only first 5 for brevity).

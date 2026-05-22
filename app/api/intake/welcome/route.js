@@ -133,26 +133,31 @@ Constraints:
 //
 // {applicationUrl} is the only token that depends on settings; the rest are
 // derived from the lead. fill() resolves all of them before send.
+// NOTE: email bodies deliberately have NO `— {agentName}` sign-off line.
+// sendEmail() appends a settings-driven signature block (name, title, phone,
+// email, website, fair-housing line) to both the plain-text and HTML
+// versions automatically. Leaving the legacy sign-off here would render as a
+// double signature.
 const DEFAULT_TEMPLATES = {
   GCMS: {
     sms: `Rentals Philly: Got it, {firstName} — I'm hand-picking rentals for you now. You'll get a personalized link with photos soon. Reply STOP to opt out.`,
     emailSubject: `Hand-picked Philly rentals — incoming`,
-    email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,\n— {agentName}`,
+    email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,`,
   },
   BCMS: {
     sms: `Rentals Philly: Got it, {firstName}! To get you ready fast, please submit a quick application here so we can move when the right place comes up: {applicationUrl} — Reply STOP to opt out.`,
     emailSubject: `One quick step before we start hunting`,
-    email: `Hi {firstName},\n\nThanks for reaching out. To make sure we can move fast when the right place comes up, the first step is a quick rental application:\n\n{applicationUrl}\n\nOnce I have that on file, I'll start hand-picking rentals that match your budget and neighborhoods, and we'll schedule tours from there. The application takes about 10 minutes.\n\nTalk soon,\n— {agentName}`,
+    email: `Hi {firstName},\n\nThanks for reaching out. To make sure we can move fast when the right place comes up, the first step is a quick rental application:\n\n{applicationUrl}\n\nOnce I have that on file, I'll start hand-picking rentals that match your budget and neighborhoods, and we'll schedule tours from there. The application takes about 10 minutes.\n\nTalk soon,`,
   },
   'GCM75+': {
     sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked rentals. Save my number for the meantime. Reply STOP to opt out.`,
     emailSubject: `Got you on the calendar for {moveInDate}`,
-    email: `Hi {firstName},\n\nThanks for letting me know what you're looking for. Since your move-in is further out, I'll start curating about 75 days before {moveInDate}. That's when listings for your window will actually be on the market.\n\nIn the meantime, save my contact — if your timeline shifts or you have questions, text me anytime.\n\n— {agentName}`,
+    email: `Hi {firstName},\n\nThanks for letting me know what you're looking for. Since your move-in is further out, I'll start curating about 75 days before {moveInDate}. That's when listings for your window will actually be on the market.\n\nIn the meantime, save my contact — if your timeline shifts or you have questions, text me anytime.`,
   },
   'BC75+': {
     sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll send you a quick application link about 75 days before {moveInDate} so we can hit the ground running. Save my number for the meantime. Reply STOP to opt out.`,
     emailSubject: `Planning ahead for {moveInDate}`,
-    email: `Hi {firstName},\n\nThanks for reaching out. Since your move-in is further out, here's how I'll work with you:\n\nAbout 75 days before {moveInDate}, I'll send a quick application link to get started — that's the first step so we can move fast when the right place comes up. After that, I'll hand-pick rentals and we'll schedule tours.\n\nIf your timeline shifts or you have questions before then, text me anytime.\n\n— {agentName}`,
+    email: `Hi {firstName},\n\nThanks for reaching out. Since your move-in is further out, here's how I'll work with you:\n\nAbout 75 days before {moveInDate}, I'll send a quick application link to get started — that's the first step so we can move fast when the right place comes up. After that, I'll hand-pick rentals and we'll schedule tours.\n\nIf your timeline shifts or you have questions before then, text me anytime.`,
   },
 };
 
@@ -248,7 +253,10 @@ export async function POST(request) {
       if (ai) {
         smsBody = ai.sms;
         emailSubject = ai.emailSubject || emailSubject;
-        emailBody = `Hi ${firstName},\n\n${ai.email}\n\n— ${agentName}`;
+        // NOTE: don't append `— ${agentName}` here. sendEmail() now appends
+        // the full settings-driven signature block automatically; manually
+        // signing here would double-sign or short-circuit the appender.
+        emailBody = `Hi ${firstName},\n\n${ai.email}`;
       }
     }
 
