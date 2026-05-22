@@ -10,6 +10,7 @@
 // auto-generate one the first time it's missing.
 
 import { supabaseAdmin } from '@/lib/supabase';
+import { requireAdmin } from '@/lib/auth.server';
 import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -116,9 +117,12 @@ export async function GET(request) {
   });
 }
 
-// POST = regenerate token. Returns the new token URL. Auth: settings table
-// can only be updated by the service role, but for safety we require an
-// existing valid token OR an admin call from the dashboard.
+// POST = regenerate token. Returns the new token URL. Admin-only.
+//
+// Auth: a valid admin session is the primary check. As a fallback (e.g.
+// for an automation calling this) we still accept the existing token in the
+// body OR a fresh CRON_SECRET — so the admin UI keeps working and tooling
+// stays unblocked.
 export async function POST(request) {
   try {
     const db = supabaseAdmin();
@@ -126,12 +130,16 @@ export async function POST(request) {
     const existing = settings?.calendar_feed_token;
     const body = await request.json().catch(() => ({}));
 
-    // If a token already exists, require it OR a fresh CRON_SECRET to rotate.
-    if (existing) {
-      const auth = request.headers.get('authorization') || '';
-      const ok = (body?.token && body.token === existing) ||
-                 (process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`);
-      if (!ok) return new Response('Unauthorized', { status: 401 });
+    // First-time generation (no existing token) requires admin auth.
+    // Rotation (token already exists) accepts admin auth, OR the current
+    // token, OR a CRON_SECRET. Belt + suspenders.
+    const adminAuth = await requireAdmin(request);
+    if (!adminAuth.ok) {
+      if (!existing) return adminAuth.response;
+      const authHeader = request.headers.get('authorization') || '';
+      const altOk = (body?.token && body.token === existing) ||
+                    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
+      if (!altOk) return adminAuth.response;
     }
 
     const next = crypto.randomBytes(24).toString('hex');

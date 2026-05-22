@@ -11611,9 +11611,8 @@ function CalendarFeedCard() {
   const generate = async () => {
     setBusy(true);
     try {
-      const res = await fetch('/api/calendar/feed', {
+      const res = await authedFetch('/api/calendar/feed', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: data?.token || '' }),
       });
       const json = await res.json();
