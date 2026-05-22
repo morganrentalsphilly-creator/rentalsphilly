@@ -3015,6 +3015,14 @@ function IntakeForm({ onSubmit, onBack }) {
   });
   const update = (k, v) => setData({ ...data, [k]: v });
 
+  // Anti-spam: honeypot field that's invisible to humans but tempting for bots.
+  // A filled honeypot = bot. We silently "succeed" so the bot stops retrying.
+  const [honeypot, setHoneypot] = useState('');
+
+  // Anti-spam: track form mount time. A real human filling 8 steps takes 20+
+  // seconds at minimum. Anything under 3s is almost certainly a bot.
+  const mountTimeRef = useRef(Date.now());
+
   // Tracks which steps we've already auto-advanced from. A step auto-advances
   // exactly once — re-arriving after a Back tap means the user is editing and
   // we shouldn't immediately spring forward again.
@@ -3314,6 +3322,28 @@ function IntakeForm({ onSubmit, onBack }) {
   const handleNext = async () => {
     if (!s.valid() || submitting) return;
     if (!isLastStep) { setStep(step + 1); return; }
+
+    // ---- ANTI-SPAM CHECKS ----
+    // Bots that fill every field they see will populate the honeypot.
+    // Bots that POST quickly hit the time guard. In either case we silently
+    // pretend success — no error, no retry signal for the bot — and skip the
+    // actual lead create / SMS / email. Real users never see this path.
+    const elapsedMs = Date.now() - mountTimeRef.current;
+    const tooFast = elapsedMs < 3000;
+    const honeypotTripped = honeypot.trim().length > 0;
+    if (tooFast || honeypotTripped) {
+      console.warn('[intake] spam guard tripped', { tooFast, honeypotTripped, elapsedMs });
+      setSubmitting(true);
+      // Small pretend-delay so it looks like a real submission to the bot.
+      setTimeout(() => {
+        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        // We deliberately don't call onSubmit — the bot's submission goes nowhere.
+        // Show the holding-pattern by NOT toggling submitting back off; the
+        // submit button stays "Sending…" which gives the bot nothing to retry on.
+      }, 600);
+      return;
+    }
+
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -3329,6 +3359,24 @@ function IntakeForm({ onSubmit, onBack }) {
 
   return (
     <div className="min-h-screen flex flex-col bg-white">
+      {/* Honeypot field — invisible to real users, tempting for bots that
+          auto-fill every input. If this comes back populated, we silently
+          drop the submission. Hidden via positioning + opacity (display:none
+          can be detected); aria-hidden + tabindex=-1 keeps screen readers
+          and keyboard users away. */}
+      <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+        <label htmlFor="ip-website-url">Website (leave blank)</label>
+        <input
+          id="ip-website-url"
+          name="website"
+          type="text"
+          tabIndex={-1}
+          autoComplete="off"
+          value={honeypot}
+          onChange={(e) => setHoneypot(e.target.value)}
+        />
+      </div>
+
       <style>{`
         .form-input { width: 100%; padding: 0.875rem 1rem; border: 1.5px solid rgb(226 232 240); border-radius: 0.875rem; font-size: 16px; outline: none; transition: all 0.15s; background: white; -webkit-appearance: none; appearance: none; min-height: 48px; }
         .form-input:focus { border-color: rgb(15 23 42); box-shadow: 0 0 0 3px rgba(15,23,42,0.06); }
