@@ -461,7 +461,7 @@ const downloadLeadsCsv = (leads) => {
     (l.tags || []).join('; '),
     (l.notes || '').replace(/\n+/g, ' ').slice(0, 500),
     l.createdAt,
-    l.commission?.amount || '',
+    l.raw?.commission?.amount || '',
   ].map(csvCell).join(','));
   const csv = [headers.join(','), ...rows].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -5463,10 +5463,10 @@ function WeekKpiStrip({ leads }) {
       if (leasedAt) {
         if (inWindow(leasedAt, thisStart, now)) {
           leased[0]++;
-          commission[0] += Number(lead.commission?.amount) || 0;
+          commission[0] += Number(lead.raw?.commission?.amount) || 0;
         } else if (inWindow(leasedAt, lastStart, thisStart)) {
           leased[1]++;
-          commission[1] += Number(lead.commission?.amount) || 0;
+          commission[1] += Number(lead.raw?.commission?.amount) || 0;
         }
       }
     }
@@ -12524,8 +12524,8 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
 
   const totalCommission = useMemo(() => {
     return leads
-      .filter((l) => l.commission?.amount && (l.stage === 'leased' || l.stage === 'paid'))
-      .reduce((sum, l) => sum + Number(l.commission.amount || 0), 0);
+      .filter((l) => l.raw?.commission?.amount && (l.stage === 'leased' || l.stage === 'paid'))
+      .reduce((sum, l) => sum + Number(l.raw?.commission?.amount || 0), 0);
   }, [leads]);
 
   const toneClass = (tone) => ({
@@ -12666,9 +12666,15 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                           <button
                             onClick={(e) => advanceStage(lead, e)}
                             title={`Advance to ${PIPELINE_STAGES[PIPELINE_STAGES.findIndex((s) => s.id === (lead.stage || 'new')) + 1]?.label}`}
-                            className="text-slate-300 hover:text-emerald-600 shrink-0 p-0.5"
+                            // Bigger tap target so this is comfortably usable
+                            // on mobile (was 14px icon + 2px padding = ~18px hit
+                            // area, well under Apple's 44px guideline). Now
+                            // 28px hit area with a hover ring so the affordance
+                            // reads as "click me to advance the stage" on
+                            // desktop too.
+                            className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 active:scale-95 transition-all shrink-0"
                           >
-                            <ArrowRight className="w-3.5 h-3.5" />
+                            <ArrowRight className="w-4 h-4" />
                           </button>
                         )}
                       </div>
@@ -12715,10 +12721,10 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                           </div>
                         );
                       })()}
-                      {lead.commission?.amount && (
+                      {lead.raw?.commission?.amount && (
                         <div className="mt-1.5 text-[10px] font-semibold text-emerald-700">
-                          {fmtCurrency(Number(lead.commission.amount))}
-                          {lead.commission.received_at && ' ✓ paid'}
+                          {fmtCurrency(Number(lead.raw.commission.amount))}
+                          {lead.raw.commission.received_at && ' ✓ paid'}
                         </div>
                       )}
                     </button>
@@ -14868,9 +14874,9 @@ function AnalyticsView({ leads }) {
       const source = lead.source || 'Unknown';
       sourceCounts[source] = (sourceCounts[source] || 0) + 1;
       if (lead.stage === 'leased' || lead.stage === 'paid') sourceConverted[source] = (sourceConverted[source] || 0) + 1;
-      const amt = Number(lead.commission?.amount || 0);
+      const amt = Number(lead.raw?.commission?.amount || 0);
       if (amt && (lead.stage === 'leased' || lead.stage === 'paid')) commissionEarned += amt;
-      if (amt && lead.commission?.received_at) commissionReceived += amt;
+      if (amt && lead.raw?.commission?.received_at) commissionReceived += amt;
     }
 
     const matched = leads.filter((l) => l.curatedLinkSentAt || ['matched', 'tour-requested', 'tour-booked', 'post-tour', 'applied', 'leased', 'paid'].includes(l.stage)).length;
