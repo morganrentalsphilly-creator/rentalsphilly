@@ -4382,7 +4382,7 @@ function AdminUnauthorized({ email }) {
 // phone calls, etc. Streamlined version of the intake form (single screen,
 // no consent disclosure since the agent is entering it, no progress bar).
 // ============================================================
-function AddLeadModal({ onClose, onCreate }) {
+function AddLeadModal({ onClose, onCreate, showToast }) {
   const [data, setData] = useState({
     fullName: '', email: '', phone: '',
     moveInDate: '', budgetMin: '1500', budgetMax: '2500',
@@ -4407,7 +4407,7 @@ function AddLeadModal({ onClose, onCreate }) {
       await onCreate(data);
     } catch (err) {
       console.error('[add lead]', err);
-      alert(`Couldn't add lead: ${err.message}`);
+      showToast?.({ message: `Couldn't add lead: ${err.message}`, kind: 'error' });
       setSubmitting(false);
     }
   };
@@ -6073,6 +6073,7 @@ function KeyboardShortcutHelp({ onClose }) {
     { keys: ['g', 'l'], label: 'Go to Leads' },
     { keys: ['g', 'c'], label: 'Go to Tours (Calendar)' },
     { keys: ['g', 's'], label: 'Go to Settings' },
+    { keys: ['n'],      label: 'Add a lead (walk-in / phone)' },
     { keys: ['1-9'],    label: 'Jump to Focus Now row (Today view)' },
     { keys: ['←', '→'], label: 'Prev / Next lead (when drawer is open)' },
     { keys: ['j', 'k'], label: 'Prev / Next lead or inbox thread' },
@@ -6157,6 +6158,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
       if (e.key === 'Escape') {
         setShowShortcutHelp(false);
         setShowCommandPalette(false);
+        setAddLeadModal(false);
         setSelectedLeadId(null);
         return;
       }
@@ -6171,6 +6173,12 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
       }
       if (e.key === 'g' || e.key === 'G') {
         pendingG = setTimeout(() => { pendingG = null; }, 800);
+        return;
+      }
+      // "n" opens the Add Lead modal — quick capture for walk-ins / phone leads.
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        setAddLeadModal(true);
         return;
       }
       // "1"-"9" jumps directly to that row in the Focus Now queue when Today
@@ -6432,6 +6440,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
       {addLeadModal && (
         <AddLeadModal
           onClose={() => setAddLeadModal(false)}
+          showToast={showToast}
           onCreate={async (leadData) => {
             const created = await addLead(leadData);
             setAddLeadModal(false);
@@ -11987,7 +11996,7 @@ function SettingsSection({
       )}
       {tab === 'analytics' && <AnalyticsView leads={leads} />}
       {tab === 'activity' && <ActivityFeedView leads={leads} />}
-      {tab === 'integrations' && <IntegrationsView />}
+      {tab === 'integrations' && <IntegrationsView showToast={showToast} />}
       {tab === 'help' && <HelpView />}
       {tab === 'blast' && <BlastView leads={leads} showToast={showToast} />}
     </div>
@@ -12109,7 +12118,7 @@ function HelpView() {
 // INTEGRATIONS — health check for every external service. Pings /api/health
 // which probes Supabase, Twilio, Resend, Anthropic, and reports sending mode.
 // ============================================================
-function IntegrationsView() {
+function IntegrationsView({ showToast }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -12199,7 +12208,7 @@ function IntegrationsView() {
       </div>
 
       {/* iCal calendar subscribe URL */}
-      <CalendarFeedCard />
+      <CalendarFeedCard showToast={showToast} />
 
       {/* Custom domain setup helper */}
       <CustomDomainCard />
@@ -12308,7 +12317,7 @@ function CustomDomainCard() {
 
 // Card showing the iCal subscribe URL for tours. The URL is token-gated;
 // rotate generates a new token (invalidates the old one).
-function CalendarFeedCard() {
+function CalendarFeedCard({ showToast }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -12322,9 +12331,9 @@ function CalendarFeedCard() {
       });
       const json = await res.json();
       if (json.ok) setData(json);
-      else alert(`Couldn't generate: ${json.error || res.status}`);
+      else showToast?.({ message: `Couldn't generate feed: ${json.error || res.status}`, kind: 'error' });
     } catch (err) {
-      alert(err.message);
+      showToast?.({ message: `Couldn't generate feed: ${err.message}`, kind: 'error' });
     }
     setBusy(false);
   };
