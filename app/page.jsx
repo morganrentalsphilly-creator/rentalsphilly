@@ -1394,10 +1394,18 @@ export default function App() {
   // Cached after the first load — won't refetch on every admin visit within
   // the same session.
   const [adminDataLoaded, setAdminDataLoaded] = useState(false);
+  // Surface a clear error state when /api/data?resource=all fails (network
+  // hiccup, Supabase outage, etc.). Without this, the catch block silently
+  // swallowed the error and the loading skeleton spun forever — Morgan had
+  // to refresh the whole page. The retry counter is bumped by the Retry
+  // button and re-runs the load useEffect.
+  const [adminLoadError, setAdminLoadError] = useState(null);
+  const [adminLoadAttempt, setAdminLoadAttempt] = useState(0);
   useEffect(() => {
     if (view !== 'admin') return;
     if (!session) return;
     if (adminDataLoaded) return;
+    setAdminLoadError(null);
     (async () => {
       try {
         const data = await loadAll();
@@ -1413,9 +1421,14 @@ export default function App() {
         setAdminDataLoaded(true);
       } catch (e) {
         console.error('[app] Failed to load admin data', e);
+        // Surface the failure to the user instead of silently leaving them
+        // on a frozen loading skeleton. The retry-state-error component
+        // rendered below shows the message and a Retry button.
+        setAdminLoadError(e?.message || 'Could not load your dashboard');
       }
     })();
-  }, [view, session, adminDataLoaded]);
+    // adminLoadAttempt is the retry counter — bumping it re-runs this effect.
+  }, [view, session, adminDataLoaded, adminLoadAttempt]);
 
   // ---- Supabase Realtime: live inbox updates ------------------------------
   // Subscribe to INSERTs on the `messages` table and merge each new row into
@@ -2424,6 +2437,37 @@ export default function App() {
           <AdminLogin />
         ) : !isAdminEmail(session.user?.email) ? (
           <AdminUnauthorized email={session.user?.email} />
+        ) : !adminDataLoaded && adminLoadError ? (
+          // Load failed — surface the error + offer Retry so Morgan doesn't
+          // get trapped on an infinite skeleton when /api/data hiccups.
+          <div className="min-h-screen bg-slate-50 -mt-px flex items-center justify-center px-6">
+            <div className="max-w-md w-full bg-white rounded-2xl border border-slate-200 shadow-[0_1px_2px_0_rgba(15,23,42,0.04)] p-6 text-center">
+              <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-red-50 flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-red-600" strokeWidth={1.5} />
+              </div>
+              <div className="font-semibold text-slate-900 mb-1">Couldn't load your dashboard</div>
+              <div className="text-sm text-slate-500 mb-5 break-words">
+                {adminLoadError}
+              </div>
+              <div className="flex items-center justify-center gap-2">
+                <button
+                  onClick={() => { setAdminLoadError(null); setAdminLoadAttempt((n) => n + 1); }}
+                  className="px-4 py-2 rounded-full text-sm font-semibold bg-slate-900 text-white hover:bg-slate-800"
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={async () => { await signOut(); }}
+                  className="px-4 py-2 rounded-full text-sm text-slate-600 hover:text-slate-900"
+                >
+                  Sign out
+                </button>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-4">
+                If this keeps happening, check your internet connection or try refreshing.
+              </div>
+            </div>
+          </div>
         ) : !adminDataLoaded ? (
           <div className="min-h-screen bg-slate-50 -mt-px"><div className="max-w-7xl mx-auto px-6 md:px-8 py-8 animate-pulse">
             <div className="flex items-center justify-between mb-8">
