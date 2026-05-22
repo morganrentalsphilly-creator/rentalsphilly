@@ -1699,13 +1699,14 @@ export default function App() {
         systemTemplates: newSettings.systemTemplates,
         emailSignature: newSettings.emailSignature,
 
-        // Fallback: also stash agent_availability inside raw jsonb so it
-        // survives even if migration 0004 hasn't been applied. The load path
-        // reads from this if the top-level column is missing.
-        raw: {
-          ...(newSettings.raw || {}),
-          agent_availability: newSettings.agent_availability,
-        },
+        // NOTE: we deliberately do NOT write to `raw` from here. The cron
+        // dispatcher uses settings.raw to stash `last_cron_tick` +
+        // `last_cron_summary` every minute, and any client-side write of the
+        // whole jsonb here would clobber the latest heartbeat back to whatever
+        // the client loaded — making the Settings → Integrations page show
+        // "Stale" until the next cron tick. The agent_availability fallback
+        // via raw existed for the pre-0004 era; with migrations 0004 + 0006
+        // applied, the top-level column always exists, so we don't need it.
       };
       // Strip any keys that are undefined so we don't accidentally null out
       // a column that the caller didn't set (e.g. a partial save from a
@@ -1714,11 +1715,10 @@ export default function App() {
 
       // Resilient save: if Postgres rejects an unknown column (because a
       // migration hasn't been applied yet — 0004 added agent_availability,
-      // 0005 added raw, and the base table may not have welcomeMessages on
-      // older installs), parse the column name out of the error message,
-      // drop ONLY that key, and retry. We cap retries so a malformed error
-      // can't spin forever. Order of attempts: full → drop the rejected
-      // column → drop another → ... → give up after `maxRetries`.
+      // 0006 added welcomeMessages + the rest), parse the column name out of
+      // the error message, drop ONLY that key, and retry. We cap retries so
+      // a malformed error can't spin forever. Order of attempts: full → drop
+      // the rejected column → drop another → ... → give up after `maxRetries`.
       //
       // Postgres / PostgREST emit one of these phrasings when a column is
       // missing:
