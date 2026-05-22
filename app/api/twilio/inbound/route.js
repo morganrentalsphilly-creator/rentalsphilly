@@ -68,8 +68,25 @@ export async function POST(request) {
       return twiml();
     }
 
-    // 3. Find or create the lead by phone.
     const db = supabaseAdmin();
+
+    // 2.5. Idempotency: if Twilio is retrying a webhook for the same MessageSid
+    //      (happens when our handler is slow or briefly errored), we've already
+    //      processed this message. Return immediately to avoid duplicate rows.
+    if (messageSid) {
+      const { data: existing } = await db
+        .from('messages')
+        .select('id')
+        .eq('twilio_sid', messageSid)
+        .eq('direction', 'inbound')
+        .maybeSingle();
+      if (existing) {
+        console.log('[twilio inbound] duplicate webhook ignored', { messageSid });
+        return twiml();
+      }
+    }
+
+    // 3. Find or create the lead by phone.
     let lead = null;
     {
       const { data } = await db
