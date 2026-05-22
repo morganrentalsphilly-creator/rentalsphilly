@@ -226,24 +226,57 @@ export async function POST(request) {
       settings.rentspree_application_url ||
       settings.application_url ||
       '';
+
+    // SAFETY NET: If a BCMS / BC75+ lead is about to be welcomed but the
+    // general application URL hasn't been configured yet, we MUST NOT ship
+    // a placeholder string ("[application link — set in Settings →
+    // Integrations]") to the lead. Their welcome literally says "fill out
+    // this application: <placeholder>" — that's a "rentals philly looks
+    // amateur" moment that loses the lead instantly.
+    //
+    // Two-layer fallback:
+    //   1. Use whichever bucket-specific template DOESN'T require the URL
+    //      (GCMS for moving-soon, GCM75+ for further-out), so the lead gets
+    //      a coherent "I'm working on your search" message instead.
+    //   2. Page the agent — Morgan needs to know this is happening so she
+    //      can fix it ASAP — using the same internal-email channel as the
+    //      inbound-SMS alerts.
+    let effectiveBucket = bucket;
+    if ((bucket === 'BCMS' || bucket === 'BC75+') && !applicationUrl) {
+      effectiveBucket = bucket === 'BCMS' ? 'GCMS' : 'GCM75+';
+      console.warn('[intake/welcome] application URL missing — falling back to non-app template', { leadId, fromBucket: bucket, toBucket: effectiveBucket });
+      // Fire-and-forget internal alert. Don't await — we don't want to block
+      // the welcome send on this notification.
+      try {
+        const agentEmailAddr = settings.agentEmail || settings.agent_email;
+        if (agentEmailAddr) {
+          // Defer import so we don't load the email server module just for
+          // the alert path on every welcome send.
+          import('@/lib/email.server').then(({ sendEmail }) => {
+            sendEmail({
+              to: agentEmailAddr,
+              subject: 'Action needed: General application URL missing',
+              body: `Heads up — ${firstName} just intaked as a ${bucket} lead, but the General rental application URL isn't set in Settings → Integrations yet.\n\nThey got a generic welcome instead of the application-first welcome. Set the URL in Settings and consider sending them the application link manually from their lead page.`,
+              kind: 'agent_config_alert',
+              internal: true,
+              automated: true,
+            }).catch(() => {});
+          }).catch(() => {});
+        }
+      } catch {}
+    }
+
     const fill = (s) => String(s || '')
       .replace(/\{firstName\}/g, firstName)
       .replace(/\{moveInDate\}/g, moveInLabel)
       .replace(/\{agentName\}/g, agentName)
-      .replace(/\{applicationUrl\}/g, applicationUrl || '[application link — set in Settings → Integrations]');
+      .replace(/\{applicationUrl\}/g, applicationUrl);
 
     const settingsTemplates = settings.welcomeMessages || settings.welcome_messages || {};
-    const t = settingsTemplates[bucket] || DEFAULT_TEMPLATES[bucket] || DEFAULT_TEMPLATES.GCMS;
+    const t = settingsTemplates[effectiveBucket] || DEFAULT_TEMPLATES[effectiveBucket] || DEFAULT_TEMPLATES.GCMS;
     let smsBody = fill(t.sms);
     let emailSubject = fill(t.emailSubject || t.subject);
     let emailBody = fill(t.email);
-
-    // Loud warning when a BCMS / BC75+ welcome would be missing the
-    // application URL — without it, the most important next step in the
-    // workflow is just a placeholder string.
-    if ((bucket === 'BCMS' || bucket === 'BC75+') && !applicationUrl) {
-      console.warn('[intake/welcome] no general application URL in settings — BCMS/BC75+ welcome will ship with placeholder', { leadId, bucket });
-    }
 
     // ---- OPTIONAL AI PERSONALIZATION ----
     // Gated by settings.automation.aiWelcome (default on) AND the master switch.

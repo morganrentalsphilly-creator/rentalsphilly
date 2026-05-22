@@ -84,11 +84,21 @@ const matchListings = (lead, pool, excludedBrokerages) => {
   // they always did. Without this fallback, switching the picker to exact
   // would have silently re-interpreted every existing lead's `beds: '2'`
   // as "exactly 2BR" instead of "2+ BR" — dropping all 3BR matches.
-  const bedsMin = Number(lead.bedsMin ?? lead.beds ?? 0) || 0;
-  const bedsMax = (lead.bedsMax != null && lead.bedsMax !== '')
+  //
+  // IMPORTANT: use `||` not `??` for the fallback. `??` only falls through
+  // on null/undefined — empty string ('') is treated as a real value and
+  // becomes 0, which would silently re-match the lead against studios
+  // only. Lots of imported/scraped/legacy leads have empty strings here.
+  const pickMin = (a, b) => {
+    if (a !== null && a !== undefined && a !== '') return Number(a) || 0;
+    if (b !== null && b !== undefined && b !== '') return Number(b) || 0;
+    return 0;
+  };
+  const bedsMin  = pickMin(lead.bedsMin, lead.beds);
+  const bedsMax  = (lead.bedsMax != null && lead.bedsMax !== '')
     ? parseUpper(lead.bedsMax)
     : Infinity;
-  const bathsMin = Number(lead.bathsMin ?? lead.baths ?? 0) || 0;
+  const bathsMin = pickMin(lead.bathsMin, lead.baths);
   const bathsMax = (lead.bathsMax != null && lead.bathsMax !== '')
     ? parseUpper(lead.bathsMax)
     : Infinity;
@@ -4176,13 +4186,18 @@ function IntakeForm({ onSubmit, onBack }) {
       await onSubmit(data);
       // Clear draft on success
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      // Defense in depth: also release the lock + clear submitting state
+      // even on success. The parent normally navigates away (which
+      // unmounts us) so this is moot — but if anything in the parent
+      // throws between addLead returning and setView running, the user
+      // would otherwise be staring at a stuck "Sending…" button forever.
+      // It's safe to release here because the parent owns navigation.
+      submitInFlightRef.current = false;
+      setSubmitting(false);
     } catch (err) {
       console.error('[intake submit] failed', err);
       setSubmitError(err?.message || 'Network error');
       setSubmitting(false);
-      // Release the in-flight lock so the user can retry. On success we
-      // intentionally leave it locked — the parent navigates away from
-      // the form, so further taps would never fire anyway.
       submitInFlightRef.current = false;
     }
   };
