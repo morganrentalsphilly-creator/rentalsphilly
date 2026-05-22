@@ -226,11 +226,17 @@ export async function POST(request) {
 
     // 4. Insert the inbound message row.
     //
-    // CRITICAL: Supabase `.insert()` does NOT throw on error — it returns
-    // an { error } object. The previous code didn't check this, so insert
-    // failures (missing column, RLS, constraint) silently dropped messages.
-    // Always log the error so we can see what's wrong in Vercel logs.
+    // CRITICAL: messages.id has a NOT NULL constraint without a default. We
+    // must generate the id client-side. (The client codebase already does
+    // this for outbound — `m_${Date.now()}_${random}`. The webhook never
+    // did, which is why every inbound was silently failing the insert.)
+    //
+    // Supabase `.insert()` does NOT throw on error — it returns
+    // an { error } object. Always log the error so failures surface in
+    // Vercel logs instead of silently dropping messages.
+    const messageId = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const messageRow = {
+      id: messageId,
       lead_id: lead.id,
       channel: 'sms',
       direction: 'inbound',
@@ -253,8 +259,9 @@ export async function POST(request) {
         leadId: lead.id,
       });
       // Try the minimal row shape (no optional columns) in case a column
-      // from a later migration is missing on Morgan's schema.
+      // from a later migration is missing on the schema.
       const minimalRow = {
+        id: messageId,
         lead_id: lead.id,
         channel: 'sms',
         direction: 'inbound',
@@ -275,7 +282,7 @@ export async function POST(request) {
         console.warn('[twilio inbound] saved via minimal-row fallback (column from migration missing)');
       }
     } else {
-      console.log('[twilio inbound] message stored', { leadId: lead.id, sid: messageSid });
+      console.log('[twilio inbound] message stored', { messageId, leadId: lead.id, sid: messageSid });
     }
 
     // 5. Handle compliance keywords.
