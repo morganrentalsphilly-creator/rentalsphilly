@@ -441,7 +441,11 @@ export async function GET(request) {
   // Outbound transactional sends like blast drain still flow because those are
   // user-initiated, not automated nudges. Default is "enabled" if the setting
   // hasn't been written yet (back-compat with installs predating these toggles).
-  const { data: settingsRow } = await db.from('settings').select('automation, raw').eq('id', 1).single();
+  // SELECT * (not 'automation, raw') so we don't blow up if a column hasn't
+  // been added yet — see migrations 0004 + 0005. The heartbeat write below
+  // is already wrapped in try/catch, so a missing `raw` column degrades to
+  // "no heartbeat" rather than crashing the whole cron run.
+  const { data: settingsRow } = await db.from('settings').select('*').eq('id', 1).single();
   const auto = settingsRow?.automation || {};
   const automationOn = auto.enabled !== false;
   const remindersOn = automationOn && auto.tourReminders !== false;

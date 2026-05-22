@@ -1582,20 +1582,37 @@ export default function App() {
       // a column that the caller didn't set (e.g. a partial save from a
       // narrow updater that only knows about one field).
       const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
-      try {
-        await updateSettings(cleaned);
-      } catch (firstErr) {
-        // If the DB rejects a column (e.g. migration 0004 not yet applied),
-        // retry without it. agent_availability still persists via raw.
-        const msg = String(firstErr?.message || '').toLowerCase();
-        if (msg.includes('agent_availability') && msg.includes('column')) {
-          console.warn('[settings] agent_availability column missing — saving via raw only. Apply migration 0004.');
-          const { agent_availability: _omit, ...withoutCol } = cleaned;
-          await updateSettings(withoutCol);
-        } else {
-          throw firstErr;
+      // Try the full payload, then progressively drop optional columns if
+      // the DB rejects any of them. Both `agent_availability` (migration
+      // 0004) and `raw` (migration 0005) may be missing on installs that
+      // haven't applied the latest migrations — the save shouldn't blow
+      // up just because one optional column isn't there.
+      const tryUpdate = async (obj) => {
+        try {
+          await updateSettings(obj);
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, err };
         }
+      };
+      const missingColumnError = (err, name) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return msg.includes(name) && (msg.includes('column') || msg.includes('does not exist') || msg.includes('schema cache'));
+      };
+      let attempt = await tryUpdate(cleaned);
+      if (!attempt.ok && missingColumnError(attempt.err, 'raw')) {
+        // No `raw` column → drop it and try again (migration 0005 missing).
+        console.warn('[settings] raw column missing — saving without it. Apply migration 0005.');
+        const { raw: _r, ...withoutRaw } = cleaned;
+        attempt = await tryUpdate(withoutRaw);
       }
+      if (!attempt.ok && missingColumnError(attempt.err, 'agent_availability')) {
+        // No `agent_availability` column → drop it (migration 0004 missing).
+        console.warn('[settings] agent_availability column missing — saving without it. Apply migration 0004.');
+        const { agent_availability: _a, raw: _r, ...withoutCols } = cleaned;
+        attempt = await tryUpdate(withoutCols);
+      }
+      if (!attempt.ok) throw attempt.err;
     } catch (e) {
       console.error('[app] Failed to save settings', e);
       showToast({ message: `Couldn't save settings: ${e.message}`, kind: 'error' });
@@ -12537,14 +12554,20 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
                       {t.isHandled && !t.isUnread && (
                         <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" title="Handled — will re-surface when they reply" />
                       )}
-                      <div className={`font-medium text-sm truncate ${t.isUnread ? 'text-slate-900' : t.isHandled ? 'text-slate-500' : 'text-slate-700'}`}>
+                      <div className={`text-sm truncate ${
+                        t.isUnread
+                          ? 'font-semibold text-slate-900'
+                          : t.isHandled
+                          ? 'font-medium text-slate-500'
+                          : 'font-medium text-slate-700'
+                      }`}>
                         {t.lead.fullName}
                       </div>
-                      <div className="text-[10px] text-slate-400 ml-auto shrink-0">{timeAgo(t.last.timestamp)}</div>
+                      <div className={`text-[10px] ml-auto shrink-0 tabular-nums ${t.isUnread ? 'text-slate-600 font-medium' : 'text-slate-400'}`}>{timeAgo(t.last.timestamp)}</div>
                     </div>
-                    <div className="text-[11px] text-slate-500 truncate flex items-center gap-1">
+                    <div className={`text-[11px] truncate flex items-center gap-1 ${t.isUnread ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>
                       {t.last.channel === 'sms' ? <MessageSquare className="w-3 h-3 shrink-0" /> : <Mail className="w-3 h-3 shrink-0" />}
-                      {t.last.direction === 'outbound' && <span className="text-slate-400">You: </span>}
+                      {t.last.direction === 'outbound' && <span className="text-slate-400 font-normal">You: </span>}
                       <span className="truncate">{preview}</span>
                     </div>
                   </button>
@@ -12783,63 +12806,76 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           )}
 
           {/* RIGHT: lead context (lg+ only) */}
-          {activeThread && (
+          {activeThread && (() => {
+            // Pull the values we'll display into local consts so the JSX stays
+            // clean and we can skip rendering rows whose data isn't on file.
+            const L = activeThread.lead;
+            const stageMeta = PIPELINE_STAGES.find((s) => s.id === (L.stage || 'new')) || PIPELINE_STAGES[0];
+            const hasBudget = L.budgetMin || L.budgetMax;
+            const budgetText = hasBudget
+              ? `${L.budgetMin ? fmtCurrency(Number(L.budgetMin)) : '—'} – ${L.budgetMax ? fmtCurrency(Number(L.budgetMax)) : '—'}`
+              : null;
+            const bedsBaths = (() => {
+              const parts = [];
+              if (L.beds === '0') parts.push('Studio');
+              else if (L.beds) parts.push(`${L.beds}+ bd`);
+              if (L.baths) parts.push(`${L.baths}+ ba`);
+              return parts.length ? parts.join(' · ') : null;
+            })();
+            const moveIn = L.moveInDate ? fmtDate(L.moveInDate) : null;
+            // Small label/value row. Renders nothing if value is empty so the
+            // pane doesn't show "—" for fields the lead simply didn't fill in.
+            const Row = ({ label, value, mono }) => {
+              if (!value) return null;
+              return (
+                <div>
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{label}</div>
+                  <div className={`text-slate-900 mt-0.5 ${mono ? 'text-xs' : 'text-sm font-medium'}`}>{value}</div>
+                </div>
+              );
+            };
+            return (
             <Card className="p-4 overflow-y-auto hidden lg:block">
               <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-3">Lead at a glance</div>
               <div className="space-y-3 text-sm">
                 <div>
-                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Stage</div>
-                  <div className="font-medium text-slate-900">{activeThread.lead.stage || 'new'}</div>
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1">Stage</div>
+                  <Pill tone={stageMeta.tone || 'neutral'}>{stageMeta.label}</Pill>
                 </div>
-                <div>
-                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Budget</div>
-                  <div className="font-medium text-slate-900">
-                    {activeThread.lead.budgetMin ? fmtCurrency(Number(activeThread.lead.budgetMin)) : '?'}
-                    {' – '}
-                    {activeThread.lead.budgetMax ? fmtCurrency(Number(activeThread.lead.budgetMax)) : '?'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Beds / Baths</div>
-                  <div className="font-medium text-slate-900">
-                    {activeThread.lead.beds === '0' ? 'Studio' : `${activeThread.lead.beds}+ bd`} · {activeThread.lead.baths}+ ba
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Areas</div>
-                  <div className="font-medium text-slate-900 text-xs">{activeThread.lead.areas || 'No preference'}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500 uppercase tracking-wide">Move-in</div>
-                  <div className="font-medium text-slate-900">{fmtDate(activeThread.lead.moveInDate)}</div>
-                </div>
-                {activeThread.lead.raw?.curated_address_picks?.length > 0 && (
+                <Row label="Budget" value={budgetText} />
+                <Row label="Beds / Baths" value={bedsBaths} />
+                <Row label="Areas" value={L.areas} mono />
+                <Row label="Move-in" value={moveIn} />
+                {L.raw?.curated_address_picks?.length > 0 && (
                   <div>
-                    <div className="text-[11px] text-slate-500 uppercase tracking-wide">Picked properties</div>
-                    <ul className="text-xs space-y-0.5 mt-1">
-                      {activeThread.lead.raw.curated_address_picks.slice(0, 5).map((a, i) => (
+                    <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1">Picked properties</div>
+                    <ul className="text-xs space-y-0.5">
+                      {L.raw.curated_address_picks.slice(0, 5).map((a, i) => (
                         <li key={i} className="text-slate-700">• {a}</li>
                       ))}
                     </ul>
                   </div>
                 )}
-                {(activeThread.lead.tours || []).filter((t) => t.status !== 'cancelled').length > 0 && (
+                {(L.tours || []).filter((t) => t.status !== 'cancelled').length > 0 && (
                   <div>
-                    <div className="text-[11px] text-slate-500 uppercase tracking-wide">Tours</div>
-                    {(activeThread.lead.tours || []).slice(0, 3).map((t) => (
-                      <div key={t.id} className="text-xs text-slate-700">
-                        {t.date} {t.time} · {t.status}
-                      </div>
-                    ))}
+                    <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1">Tours</div>
+                    <div className="space-y-0.5">
+                      {(L.tours || []).slice(0, 3).map((t) => (
+                        <div key={t.id} className="text-xs text-slate-700 tabular-nums">
+                          {t.date} {t.time} · <span className="text-slate-500">{t.status}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
-                <button onClick={() => onSelectLead(activeThread.lead.id)}
+                <button onClick={() => onSelectLead(L.id)}
                   className="w-full px-3 py-2 rounded-full text-xs font-medium bg-slate-900 text-white hover:bg-slate-800 transition-colors mt-3">
                   Open full lead detail →
                 </button>
               </div>
             </Card>
-          )}
+            );
+          })()}
         </div>
       )}
 

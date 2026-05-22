@@ -140,17 +140,30 @@ export async function GET() {
   // Threshold of 3 min gives 2 missed ticks of grace before alerting.
   try {
     const db = supabaseAdmin();
-    const { data: settingsRow } = await db.from('settings').select('raw').eq('id', 1).single();
-    const lastTick = settingsRow?.raw?.last_cron_tick;
-    const lastSummary = settingsRow?.raw?.last_cron_summary || {};
-    if (!lastTick) {
-      checks.vercel_cron = { ok: false, label: 'No heartbeat', detail: 'Dispatcher has never run — check vercel.json + CRON_SECRET' };
+    // SELECT * (not 'raw') so this query doesn't fail entirely if the `raw`
+    // column hasn't been added yet (migration 0005). When the column is
+    // missing we surface a clear "apply this migration" message rather than
+    // a generic "Heartbeat read failed".
+    const { data: settingsRow, error: settingsErr } = await db.from('settings').select('*').eq('id', 1).single();
+    if (settingsErr) throw settingsErr;
+    if (!settingsRow || !('raw' in settingsRow)) {
+      checks.vercel_cron = {
+        ok: false,
+        label: 'Missing `raw` column',
+        detail: 'Apply supabase/migrations/0005_settings_raw_column.sql — the cron heartbeat + Settings → Save both rely on it.',
+      };
     } else {
-      const ageMs = Date.now() - new Date(lastTick).getTime();
-      const stale = ageMs > 3 * 60 * 1000;
-      checks.vercel_cron = stale
-        ? { ok: false, label: `Stale (${timeSince(lastTick)})`, detail: 'Dispatcher hasn\'t ticked in 3+ min. Check Vercel cron logs.' }
-        : { ok: true, label: `Last tick ${timeSince(lastTick)}`, detail: `Reminders: ${lastSummary.reminders ?? '—'} · Nudges: ${lastSummary.nudges ?? '—'} · Tour outcomes: ${lastSummary.tour_outcomes ?? '—'} · Blast: ${lastSummary.blast ?? 0}` };
+      const lastTick = settingsRow?.raw?.last_cron_tick;
+      const lastSummary = settingsRow?.raw?.last_cron_summary || {};
+      if (!lastTick) {
+        checks.vercel_cron = { ok: false, label: 'No heartbeat', detail: 'Dispatcher has never run — check vercel.json + CRON_SECRET' };
+      } else {
+        const ageMs = Date.now() - new Date(lastTick).getTime();
+        const stale = ageMs > 3 * 60 * 1000;
+        checks.vercel_cron = stale
+          ? { ok: false, label: `Stale (${timeSince(lastTick)})`, detail: 'Dispatcher hasn\'t ticked in 3+ min. Check Vercel cron logs.' }
+          : { ok: true, label: `Last tick ${timeSince(lastTick)}`, detail: `Reminders: ${lastSummary.reminders ?? '—'} · Nudges: ${lastSummary.nudges ?? '—'} · Tour outcomes: ${lastSummary.tour_outcomes ?? '—'} · Blast: ${lastSummary.blast ?? 0}` };
+      }
     }
   } catch (err) {
     checks.vercel_cron = { ok: false, label: 'Heartbeat read failed', detail: err.message };
