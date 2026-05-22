@@ -1256,6 +1256,33 @@ export default function App() {
 
   const getNow = () => new Date(Date.now() + timeOffset);
 
+  // ---- Toasts ------------------------------------------------------------
+  // Hoisted to the top of App so every subsequent hook + handler can call it
+  // without tripping the rules-of-hooks TDZ warning. (The previous location
+  // was after several useEffects that referenced it via closure — safe at
+  // runtime but ESLint flagged it, and the ordering made the code harder
+  // to follow.) Stacked toasts: each call appends; older ones auto-fade
+  // (3s success / 6s error) or the user clicks them. Caller can pass a
+  // string (success) or { message, kind } for tone. Display caps at 3.
+  const showToast = (msgOrObj) => {
+    const m = typeof msgOrObj === 'string'
+      ? { message: msgOrObj, kind: 'success' }
+      : { kind: 'success', ...msgOrObj };
+    const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const ttl = m.kind === 'error' ? 6000 : 3000;
+    setToast((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const next = [...list, { id, ...m }];
+      return next.slice(-3);
+    });
+    setTimeout(() => {
+      setToast((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== id) : prev));
+    }, ttl);
+  };
+  const dismissToast = (id) => {
+    setToast((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== id) : prev));
+  };
+
   // ---- Auth: load initial session + subscribe to changes ------------------
   useEffect(() => {
     let unsub = () => {};
@@ -1656,30 +1683,6 @@ export default function App() {
   // ref pattern to keep `leads` out of the dep array, otherwise the loop
   // returns.
   // useEffect(() => { ... }, [...]);
-
-  // Stacked toasts. Each call appends a new toast; older toasts stay visible
-  // until they auto-dismiss (3s for success, 6s for errors) or the user clicks
-  // them. Caller can pass a string (success) or { message, kind } for tone.
-  // Display caps at 3 — older toasts auto-fade earlier when overflow occurs.
-  const showToast = (msgOrObj) => {
-    const m = typeof msgOrObj === 'string'
-      ? { message: msgOrObj, kind: 'success' }
-      : { kind: 'success', ...msgOrObj };
-    const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const ttl = m.kind === 'error' ? 6000 : 3000;
-    setToast((prev) => {
-      const list = Array.isArray(prev) ? prev : [];
-      const next = [...list, { id, ...m }];
-      // Cap visible at 3; older ones get nudged out immediately.
-      return next.slice(-3);
-    });
-    setTimeout(() => {
-      setToast((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== id) : prev));
-    }, ttl);
-  };
-  const dismissToast = (id) => {
-    setToast((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== id) : prev));
-  };
 
   // Update a lead in Supabase + sync newly-added nested items (messages/activities/tasks/submissions).
   // Strategy: for each nested array, compare current-in-state vs updates, and persist anything new.
@@ -7900,7 +7903,30 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
             >
               <Download className="w-3 h-3" /> Export CSV
             </button>
-            <button onClick={() => { if (confirm('Clear all leads?')) saveLeads([]); }} className="text-xs text-slate-400 hover:text-red-600">Clear all</button>
+            <button
+              onClick={() => {
+                // Two-step confirmation for the nuclear option. The first
+                // dialog states the scope + makes them type the exact phrase;
+                // the second prompt collects the typed phrase. This is
+                // permanent and cascades to messages, tours, tasks, etc. via
+                // the delete_all_leads handler — a stray click would be
+                // catastrophic.
+                const count = leads.length;
+                if (count === 0) return;
+                if (!confirm(`Permanently delete ALL ${count} lead${count === 1 ? '' : 's'} and every message, tour, task, application, and activity tied to them?\n\nThis cannot be undone. You'll be asked to type "DELETE ALL" to confirm.`)) return;
+                const phrase = prompt('Type DELETE ALL (in caps) to confirm:');
+                if (phrase !== 'DELETE ALL') {
+                  showToast({ message: 'Cancelled — phrase did not match', kind: 'error' });
+                  return;
+                }
+                saveLeads([]);
+                showToast(`Cleared ${count} lead${count === 1 ? '' : 's'}`);
+              }}
+              className="text-xs text-slate-400 hover:text-red-600"
+              title="Permanently delete every lead in the database"
+            >
+              Clear all
+            </button>
           </>
         )}
       </div>
@@ -8877,18 +8903,36 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
 
+  const [saving, setSaving] = useState(false);
   const markDirty = (next) => { setDirty(true); setForm(next); };
   const update = (k, v) => markDirty({ ...form, [k]: v });
   const updateAutomation = (k, v) => markDirty({ ...form, automation: { ...form.automation, [k]: v } });
   const updateAvailability = (next) => markDirty({ ...form, agent_availability: next });
   const save = async () => {
-    await saveSettings(form);
-    setDirty(false);
-    showToast('Settings saved');
+    if (saving) return;
+    setSaving(true);
+    try {
+      await saveSettings(form);
+      setDirty(false);
+      showToast('Settings saved');
+    } finally {
+      setSaving(false);
+    }
   };
+  const discard = () => { setForm(settings); setDirty(false); };
+
+  // Warn before navigating away with unsaved changes. Catches accidental
+  // tab close / hard refresh — but not in-app nav (we'd need a router hook
+  // for that). Good enough for the most common foot-gun.
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-2xl pb-24 relative">
       <Card className="divide-y divide-slate-100 overflow-hidden">
         <div className="p-5">
           <SectionHeader icon={Bot}>Automation</SectionHeader>
@@ -9020,7 +9064,42 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
         </div>
       </Card>
 
-      <Button size="lg" onClick={save}>Save settings</Button>
+      <Button size="lg" onClick={save} disabled={saving || !dirty}>
+        {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved ✓'}
+      </Button>
+
+      {/* Sticky "Unsaved changes" bar — fixed to the viewport bottom, only
+          shows when the form is dirty. Catches Morgan scrolling back up to
+          edit something and forgetting the Save button is way down at the
+          bottom of the page. Slides up via the translate-y transition. */}
+      <div
+        className={`fixed bottom-0 inset-x-0 z-40 pointer-events-none transition-transform duration-200 ${
+          dirty ? 'translate-y-0' : 'translate-y-full'
+        }`}
+        aria-hidden={!dirty}
+      >
+        <div className="max-w-2xl mx-auto px-4 pb-4 pointer-events-auto">
+          <div className="bg-slate-900 text-white rounded-xl shadow-2xl px-4 py-3 flex items-center gap-3">
+            <div className="flex-1 text-sm font-medium">Unsaved changes</div>
+            <button
+              onClick={discard}
+              disabled={saving}
+              className="text-xs text-slate-300 hover:text-white px-2 py-1 disabled:opacity-50"
+            >
+              Discard
+            </button>
+            <button
+              onClick={save}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-60"
+              style={{ backgroundColor: saving ? undefined : 'var(--brand-gold)', color: 'white' }}
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <style>{`.form-input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid rgb(226 232 240); border-radius: 0.5rem; font-size: 0.875rem; outline: none; transition: border-color 0.15s; } .form-input:focus { border-color: rgb(100 116 139); }`}</style>
     </div>
   );
