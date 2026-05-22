@@ -293,7 +293,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
-      {noticeBanner}
+        {noticeBanner}
         <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-6 pb-28">
           <div className="rounded-2xl bg-white border border-slate-200 p-5">
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Reschedule tour</div>
@@ -397,7 +397,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
-      {noticeBanner}
+        {noticeBanner}
         <main className="flex-1 max-w-3xl w-full mx-auto px-5 md:px-8 py-6 md:py-10 space-y-7 pb-28">
           <div className="rounded-2xl bg-white border border-slate-200 p-5">
             <p className="text-[15px] text-slate-700 leading-relaxed">
@@ -503,7 +503,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
-      {noticeBanner}
+        {noticeBanner}
         <main className="flex-1 max-w-xl w-full mx-auto px-5 md:px-8 py-16 text-center">
           <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-6 text-2xl">✓</div>
           <h2 className="text-2xl font-semibold text-slate-900 mb-3">Got your picks, {firstName}.</h2>
@@ -585,7 +585,7 @@ export default function CuratedPage() {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50">
         <Header firstName={firstName} />
-      {noticeBanner}
+        {noticeBanner}
 
         {/* Sticky progress strip — shows the lead exactly how close they are
             to done so they don't lose track on a long phone scroll. */}
