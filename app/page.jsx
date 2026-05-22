@@ -9478,6 +9478,7 @@ function LeadActivityTimeline({ lead }) {
     if (type === 'message-in') return { icon: MessageSquare, color: 'text-amber-600 bg-amber-50' };
     if (type === 'message-out') return { icon: Send, color: 'text-blue-600 bg-blue-50' };
     if (type === 'lead-created') return { icon: Sparkles, color: 'text-emerald-600 bg-emerald-50' };
+    if (type === 'note') return { icon: Edit3, color: 'text-slate-700 bg-slate-100' };
     if (type?.startsWith('stage-')) return { icon: Activity, color: 'text-violet-600 bg-violet-50' };
     if (type?.includes('tour-')) return { icon: CalendarDays, color: 'text-blue-600 bg-blue-50' };
     if (type?.includes('task')) return { icon: CheckCircle2, color: 'text-slate-600 bg-slate-100' };
@@ -9538,7 +9539,7 @@ function LeadActivityTimeline({ lead }) {
       <>
         {filterRail}
         <div className="text-center text-sm text-slate-400 py-8">
-          No <span className="text-slate-600">{filter}</span> events for this lead.
+          No <span className="text-slate-600">{filter === 'all' ? '' : filter}</span> activity for this lead.
           <button onClick={() => setFilter('all')} className="ml-2 underline text-slate-700 hover:text-slate-900">Show all</button>
         </div>
       </>
@@ -9724,6 +9725,67 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
   );
 }
 
+// Quick-note bar — single-line input at the top of the lead detail Overview
+// for logging a discrete activity entry without scrolling to the Notes panel.
+// Common workflow: hang up call → open lead → type "Spoke with Sarah, she's
+// flexible up to $2400" → Enter → done. Each entry shows up in the Activity
+// timeline with a timestamp. Distinct from lead.raw.notes (which is the rolling
+// free-form notes field — that lives further down).
+function QuickNoteBar({ lead, updateLead, showToast }) {
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    const text = value.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      await updateLead(lead.id, {
+        activities: [...(lead.activities || []), {
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+          type: 'note',
+          timestamp: new Date().toISOString(),
+          message: text,
+        }],
+      });
+      setValue('');
+      showToast('Note logged');
+    } catch (err) {
+      console.error('[quick note] save failed', err);
+      showToast({ message: 'Could not save note', kind: 'error' });
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200">
+      <Edit3 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            save();
+          }
+        }}
+        placeholder="Log a quick note (Enter to save)…"
+        className="flex-1 bg-transparent text-sm outline-none placeholder-slate-400 min-w-0"
+      />
+      {value.trim() && (
+        <button
+          onClick={save}
+          disabled={busy}
+          className="shrink-0 px-3 py-1 rounded-full text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40"
+        >
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus, onPrev, onNext, position }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
@@ -9879,6 +9941,9 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
         <div className="flex-1 overflow-y-auto p-5">
           {tab === 'overview' && (
             <div className="space-y-5">
+              {/* Quick-note bar — single-line activity logger right at the
+                  top so a post-call note is one tap + type + Enter away. */}
+              <QuickNoteBar lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* AI status briefing — instant context when reopening a lead */}
               <LeadSummaryCard lead={lead} />
               {/* AI Next Best Action — one concrete recommended move */}
