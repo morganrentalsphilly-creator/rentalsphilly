@@ -5871,6 +5871,8 @@ function KeyboardShortcutHelp({ onClose }) {
     { keys: ['g', 'c'], label: 'Go to Tours (Calendar)' },
     { keys: ['g', 's'], label: 'Go to Settings' },
     { keys: ['1-9'],    label: 'Jump to Focus Now row (Today view)' },
+    { keys: ['←', '→'], label: 'Prev / Next lead (when drawer is open)' },
+    { keys: ['j', 'k'], label: 'Prev / Next lead (when drawer is open)' },
     { keys: ['⌘', 'Enter'], label: 'Send message in inbox composer' },
     { keys: ['Esc'],    label: 'Close drawer or overlay' },
     { keys: ['?'],      label: 'Toggle this help' },
@@ -6156,15 +6158,43 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
         />
       )}
 
-      {selectedLead && <LeadDetailCRM lead={selectedLead} onClose={() => setSelectedLeadId(null)} updateLead={updateLead} removeLead={removeLead} onCompose={(arg) => {
-        // Accept either onCompose('sms-custom') (legacy string) or
-        // onCompose({ kind, prefill }) from NextBestActionCard.
-        if (typeof arg === 'string') {
-          setComposeModal({ lead: selectedLead, template: arg });
-        } else if (arg && typeof arg === 'object') {
-          setComposeModal({ lead: selectedLead, template: arg.kind || 'sms-custom', prefill: arg.prefill || '' });
-        }
-      }} showToast={showToast} onOpenScreening={() => setScreeningModal({ lead: selectedLead })} onOpenSubmit={() => setSubmitModal({ lead: selectedLead })} onOpenFollowUp={(submissionId) => setFollowUpModal({ lead: selectedLead, submissionId })} settings={settings} saveApplicationFile={saveApplicationFile} deleteApplicationFile={deleteApplicationFile} toggleApplicationReviewed={toggleApplicationReviewed} updateSubmissionStatus={updateSubmissionStatus} />}
+      {selectedLead && (() => {
+        // Compute prev/next IDs in the current leads array so the drawer can
+        // surface arrows + arrow-key shortcuts. Order = parent's `leads` array
+        // (newest first). Once we're at the ends, the buttons no-op.
+        const idx = leads.findIndex((l) => l.id === selectedLead.id);
+        const prevId = idx > 0 ? leads[idx - 1].id : null;
+        const nextId = idx >= 0 && idx < leads.length - 1 ? leads[idx + 1].id : null;
+        return (
+          <LeadDetailCRM
+            lead={selectedLead}
+            onClose={() => setSelectedLeadId(null)}
+            updateLead={updateLead}
+            removeLead={removeLead}
+            onCompose={(arg) => {
+              // Accept either onCompose('sms-custom') (legacy string) or
+              // onCompose({ kind, prefill }) from NextBestActionCard.
+              if (typeof arg === 'string') {
+                setComposeModal({ lead: selectedLead, template: arg });
+              } else if (arg && typeof arg === 'object') {
+                setComposeModal({ lead: selectedLead, template: arg.kind || 'sms-custom', prefill: arg.prefill || '' });
+              }
+            }}
+            showToast={showToast}
+            onOpenScreening={() => setScreeningModal({ lead: selectedLead })}
+            onOpenSubmit={() => setSubmitModal({ lead: selectedLead })}
+            onOpenFollowUp={(submissionId) => setFollowUpModal({ lead: selectedLead, submissionId })}
+            settings={settings}
+            saveApplicationFile={saveApplicationFile}
+            deleteApplicationFile={deleteApplicationFile}
+            toggleApplicationReviewed={toggleApplicationReviewed}
+            updateSubmissionStatus={updateSubmissionStatus}
+            onPrev={prevId ? () => setSelectedLeadId(prevId) : null}
+            onNext={nextId ? () => setSelectedLeadId(nextId) : null}
+            position={idx >= 0 ? { idx: idx + 1, total: leads.length } : null}
+          />
+        );
+      })()}
 
       {screeningModal && <ScreeningPasteModal lead={screeningModal.lead} onClose={() => setScreeningModal(null)} onSave={async (reportInput) => { await saveScreeningReport(screeningModal.lead.id, reportInput); setScreeningModal(null); }} settings={settings} />}
 
@@ -9389,11 +9419,37 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
   );
 }
 
-function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus }) {
+function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showToast, onOpenScreening, onOpenSubmit, onOpenFollowUp, settings, saveApplicationFile, deleteApplicationFile, toggleApplicationReviewed, updateSubmissionStatus, onPrev, onNext, position }) {
   const [tab, setTab] = useState('overview');
   const stage = PIPELINE_STAGES.find(s => s.id === (lead.stage || 'new')) || PIPELINE_STAGES[0];
   const initials = lead.fullName.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase();
   const submissionCount = (lead.submissions || []).length;
+
+  // Arrow-key + j/k navigation between leads. Active only while the drawer
+  // is mounted. Ignored when the user is typing in an input/textarea/select
+  // so the shortcuts don't break editing. ESC closes the drawer (existing
+  // App-level handler).
+  useEffect(() => {
+    const isTyping = (el) => {
+      if (!el) return false;
+      const tag = (el.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      return !!el.isContentEditable;
+    };
+    const handler = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTyping(document.activeElement)) return;
+      if ((e.key === 'ArrowRight' || e.key === 'j') && onNext) {
+        e.preventDefault();
+        onNext();
+      } else if ((e.key === 'ArrowLeft' || e.key === 'k') && onPrev) {
+        e.preventDefault();
+        onPrev();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onPrev, onNext]);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" onClick={onClose}>
@@ -9409,6 +9465,34 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">
+              {/* Prev/Next nav — click or use ← / → (or k / j) to fly through
+                  the list without closing the drawer. Position chip in the
+                  middle shows where you are in the list (e.g. "3 / 47"). */}
+              {(onPrev || onNext) && (
+                <div className="hidden sm:flex items-center gap-0.5 mr-1">
+                  <button
+                    onClick={onPrev || undefined}
+                    disabled={!onPrev}
+                    title="Previous lead (←)"
+                    className="w-8 h-8 rounded-full hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                  {position && (
+                    <span className="text-[10px] text-slate-400 tabular-nums px-1 select-none" title={`${position.idx} of ${position.total}`}>
+                      {position.idx}/{position.total}
+                    </span>
+                  )}
+                  <button
+                    onClick={onNext || undefined}
+                    disabled={!onNext}
+                    title="Next lead (→)"
+                    className="w-8 h-8 rounded-full hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                  >
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
               <LeadActionsMenu lead={lead} updateLead={updateLead} removeLead={removeLead} showToast={showToast} onClose={onClose} />
               <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
             </div>
