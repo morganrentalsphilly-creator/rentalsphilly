@@ -4690,6 +4690,118 @@ function NotificationPrompt() {
 // Touch tracker — counts outbound messages (your manual touches, not automated
 // system messages) over the last 24h and 7 days. Visible counter motivates
 // consistency — the agents who close the most also touch the most.
+// Week-over-week KPI strip — surfaces business pulse at the top of Today.
+// Computes 5 rolling-7-day metrics:
+//   • Touches sent (outbound non-internal messages)
+//   • Leads added (created_at in window)
+//   • Tours run (tour.date in window, not cancelled)
+//   • Leases signed (stage-change activity to 'leased' in window)
+//   • Commission booked ($ from commission.amount tied to leases this week)
+//
+// Each KPI shows current vs prior 7-day window with a delta chip (▲ / ▼ / —).
+// All computation is in-memory; no extra API calls.
+function WeekKpiStrip({ leads }) {
+  const stats = useMemo(() => {
+    const now = Date.now();
+    const dayMs = 86400000;
+    const thisStart = now - 7 * dayMs;
+    const lastStart = now - 14 * dayMs;
+    const inWindow = (ts, start, end) => {
+      if (!ts) return false;
+      const t = new Date(ts).getTime();
+      return t >= start && t < end;
+    };
+
+    let touches = [0, 0];      // [thisWeek, lastWeek]
+    let added = [0, 0];
+    let tours = [0, 0];
+    let leased = [0, 0];
+    let commission = [0, 0];
+
+    for (const lead of leads) {
+      // Leads added
+      if (inWindow(lead.createdAt, thisStart, now)) added[0]++;
+      else if (inWindow(lead.createdAt, lastStart, thisStart)) added[1]++;
+
+      // Outbound touches (SMS + email, non-internal, by message timestamp)
+      for (const m of (lead.messages || [])) {
+        if (m.internal) continue;
+        if (m.direction !== 'outbound') continue;
+        if (inWindow(m.timestamp, thisStart, now)) touches[0]++;
+        else if (inWindow(m.timestamp, lastStart, thisStart)) touches[1]++;
+      }
+
+      // Tours by tour.date (only completed / showed / scheduled — not cancelled)
+      for (const t of (lead.tours || [])) {
+        if (t.status === 'cancelled' || t.status === 'no-show') continue;
+        if (!t.date) continue;
+        const tourTime = new Date(t.date + 'T12:00:00').getTime();
+        if (tourTime >= thisStart && tourTime < now) tours[0]++;
+        else if (tourTime >= lastStart && tourTime < thisStart) tours[1]++;
+      }
+
+      // Leases signed: look for stage-change activities to 'leased', OR check
+      // lead.raw.leased_at. Either is acceptable — we de-dupe by lead id.
+      const leasedAt = lead.raw?.leased_at;
+      if (leasedAt) {
+        if (inWindow(leasedAt, thisStart, now)) {
+          leased[0]++;
+          commission[0] += Number(lead.commission?.amount) || 0;
+        } else if (inWindow(leasedAt, lastStart, thisStart)) {
+          leased[1]++;
+          commission[1] += Number(lead.commission?.amount) || 0;
+        }
+      }
+    }
+
+    return { touches, added, tours, leased, commission };
+  }, [leads]);
+
+  // Returns a delta object: { label, tone } for rendering the change chip.
+  const delta = (cur, prev) => {
+    if (cur === prev) return { label: '—', tone: 'text-slate-400' };
+    if (prev === 0) return { label: cur > 0 ? '+new' : '—', tone: cur > 0 ? 'text-emerald-600' : 'text-slate-400' };
+    const pct = Math.round(((cur - prev) / prev) * 100);
+    const up = pct > 0;
+    return {
+      label: `${up ? '▲' : '▼'} ${Math.abs(pct)}%`,
+      tone: up ? 'text-emerald-600' : 'text-red-500',
+    };
+  };
+
+  const fmtMoney = (n) => n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toLocaleString()}`;
+
+  const kpis = [
+    { label: 'Touches sent',     value: stats.touches[0],                         d: delta(stats.touches[0], stats.touches[1]) },
+    { label: 'Leads added',      value: stats.added[0],                           d: delta(stats.added[0], stats.added[1]) },
+    { label: 'Tours run',        value: stats.tours[0],                           d: delta(stats.tours[0], stats.tours[1]) },
+    { label: 'Leases signed',    value: stats.leased[0],                          d: delta(stats.leased[0], stats.leased[1]) },
+    { label: 'Commission',       value: fmtMoney(stats.commission[0]),            d: delta(stats.commission[0], stats.commission[1]) },
+  ];
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">This week</div>
+          <div className="text-[11px] text-slate-500">Last 7 days vs the 7 days before</div>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+        {kpis.map((k) => (
+          <div key={k.label} className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1 truncate">{k.label}</div>
+            <div className="flex items-baseline gap-2">
+              <div className="text-xl font-bold text-slate-900 tabular-nums">{k.value}</div>
+              <div className={`text-[10px] font-semibold tabular-nums ${k.d.tone}`}>{k.d.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 function TouchTrackerCard({ leads }) {
   const stats = useMemo(() => {
     const now = Date.now();
@@ -5676,6 +5788,9 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
 
       {/* Setup checklist — only renders while there's outstanding setup */}
       <SetupChecklist settings={settings} setSubview={setSubview} />
+
+      {/* THIS WEEK — business pulse KPI strip with week-over-week deltas */}
+      <WeekKpiStrip leads={leads} />
 
       {/* FOCUS NOW — the single source-of-truth ranked queue */}
       <FocusNowCard
