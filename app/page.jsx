@@ -11955,29 +11955,10 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               {/* Quick-note bar — single-line activity logger right at the
                   top so a post-call note is one tap + type + Enter away. */}
               <QuickNoteBar lead={lead} updateLead={updateLead} showToast={showToast} />
-              {/* AI status briefing — instant context when reopening a lead */}
-              <LeadSummaryCard lead={lead} />
-              {/* AI Next Best Action — one concrete recommended move */}
-              <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} />
-              {/* Phase 1: send curated portal link. */}
-              <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
-              {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
-              <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
-              {/* Phase 3: post-tour, send application link — RentSpree (our
-                  listings) or external link (other agents' properties). */}
-              <ApplicationLinkPanel lead={lead} allLeads={allLeads} updateLead={updateLead} showToast={showToast} settings={settings} />
-              {/* Commission tracking (only after stage >= applied). */}
-              <CommissionPanel lead={lead} updateLead={updateLead} showToast={showToast} />
-
-              {/* Notes + tags + source — private agent context */}
-              <NotesAndTagsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
-
-              {/* Lead documents (apps, IDs, pay stubs) — drag-and-drop */}
-              <LeadDocumentsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
-
-              {/* Lead criteria — compact chip strip. Only renders fields that
-                  actually have data, so empty leads don't show "Not specified"
-                  noise. Each chip: muted label + bold value, single line. */}
+              {/* Lead criteria — foundational facts surface FIRST so Morgan
+                  doesn't have to scroll past 7 action panels to see budget,
+                  beds, move-in date, areas, etc. when re-opening a lead.
+                  Renders only if there's at least one fact on file. */}
               {(() => {
                 const chips = [];
                 if (lead.budgetMin && lead.budgetMax) {
@@ -11989,8 +11970,8 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
                     value: `${lead.beds === '0' ? 'Studio' : `${lead.beds}+ bd`}${lead.baths ? ` · ${lead.baths}+ ba` : ''}`,
                   });
                 }
-                if (lead.areas) chips.push({ label: 'Areas', value: lead.areas });
                 if (lead.moveInDate) chips.push({ label: 'Move-in', value: fmtDate(lead.moveInDate) });
+                if (lead.areas) chips.push({ label: 'Areas', value: lead.areas });
                 if ((lead.tourAvailability || []).length > 0) {
                   const labels = (lead.tourAvailability || [])
                     .map((id) => TOUR_WINDOWS.find((w) => w.id === id)?.label)
@@ -12014,6 +11995,25 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
                   </Card>
                 );
               })()}
+              {/* AI status briefing — instant context when reopening a lead */}
+              <LeadSummaryCard lead={lead} />
+              {/* AI Next Best Action — one concrete recommended move */}
+              <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} />
+              {/* Phase 1: send curated portal link. */}
+              <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+              {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
+              <SchedulingLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+              {/* Phase 3: post-tour, send application link — RentSpree (our
+                  listings) or external link (other agents' properties). */}
+              <ApplicationLinkPanel lead={lead} allLeads={allLeads} updateLead={updateLead} showToast={showToast} settings={settings} />
+              {/* Commission tracking (only after stage >= applied). */}
+              <CommissionPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+
+              {/* Notes + tags + source — private agent context */}
+              <NotesAndTagsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
+
+              {/* Lead documents (apps, IDs, pay stubs) — drag-and-drop */}
+              <LeadDocumentsPanel lead={lead} updateLead={updateLead} showToast={showToast} />
 
               {/* Tours toured — newest first; upcoming tours highlighted so
                   the next-up tour is always at the top of the list. */}
