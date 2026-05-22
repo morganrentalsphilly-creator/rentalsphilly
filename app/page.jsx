@@ -2281,9 +2281,16 @@ export default function App() {
     // welcome messages or surface success to the user. If the DB write fails
     // we re-throw so IntakeForm sees the error and shows its polished retry
     // banner. The user's draft stays in localStorage so they don't lose work.
+    //
+    // The server-side endpoint has a phone-based 60-second dedup window. On a
+    // dedup hit it returns the EXISTING lead (different id than the one we
+    // generated). We must use the server-returned id for state + the welcome
+    // flow kickoff — otherwise we'd fire /api/intake/welcome with an id that
+    // doesn't exist in the DB and the welcome SMS never fires.
+    let serverLeadId = id;
     try {
       const db = await import('@/lib/db');
-      await db.createLead({
+      const created = await db.createLead({
         id,
         full_name: lead.fullName,
         email: lead.email,
@@ -2307,6 +2314,12 @@ export default function App() {
           duplicate_of: dupLead?.id || null,    // pointer back to original lead
         },
       });
+      // If server deduped, `created.id` differs from our client `id`. Use
+      // the server's id everywhere downstream.
+      if (created?.id && created.id !== id) {
+        console.log('[addLead] server deduped to existing lead', created.id);
+        serverLeadId = created.id;
+      }
     } catch (e) {
       console.error('[app] Failed to create lead in Supabase', e);
       // Re-throw so the IntakeForm catch block shows the retry banner.
@@ -2317,13 +2330,19 @@ export default function App() {
     // Best-effort: insert activity + tasks. These reference the lead row, so
     // they should succeed if createLead did. If they fail we log + continue —
     // the lead is in the DB, which is the critical part. The agent can manually
-    // recreate the task if needed.
-    try {
-      const db = await import('@/lib/db');
-      await db.insertActivity(welcomeActivity);
-      for (const t of tasks) await db.insertTask(t);
-    } catch (e) {
-      console.warn('[app] activity/tasks insert failed (lead still created)', e);
+    // recreate the task if needed. Use serverLeadId so the FK points at the
+    // server's actual lead row (matters when dedup hit and id was rewritten).
+    if (serverLeadId === id) {
+      // Only write activity + tasks when this was a true CREATE — if dedup
+      // returned the existing lead, the prior intake already wrote its own
+      // activity row and we don't want a duplicate "Lead created" entry.
+      try {
+        const db = await import('@/lib/db');
+        await db.insertActivity({ ...welcomeActivity, lead_id: serverLeadId });
+        for (const t of tasks) await db.insertTask({ ...t, lead_id: serverLeadId });
+      } catch (e) {
+        console.warn('[app] activity/tasks insert failed (lead still created)', e);
+      }
     }
 
     // ---- WELCOME FLOW (server-side) ----
@@ -2337,17 +2356,23 @@ export default function App() {
     // button while AI generates copy + Twilio rate-limits + Resend acknowledges.
     // The welcome messages will land in the lead's thread once the server is
     // done. The agent's CRM picks them up automatically on next load / realtime.
+    //
+    // On a server-side dedup hit, the welcome endpoint's own idempotency check
+    // (messages with kind=welcome already exist for this lead) returns
+    // alreadySent=true, so this is safe to fire regardless.
     fetch('/api/intake/welcome', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId: id }),
+      body: JSON.stringify({ leadId: serverLeadId }),
     }).catch((err) => console.warn('[addLead] welcome flow kickoff failed', err?.message));
 
     // Build the in-memory lead object for immediate UI use. Messages will be
     // empty initially — the server-side welcome flow inserts the message rows
-    // asynchronously and the CRM picks them up on next load.
+    // asynchronously and the CRM picks them up on next load. Use serverLeadId
+    // (which falls back to the client id when there's no dedup) so the local
+    // UI state agrees with what the DB actually has.
     const newLead = {
-      ...lead, id, bucket, stage: 'new',
+      ...lead, id: serverLeadId, bucket, stage: 'new',
       createdAt,
       source: lead.source || 'Unknown',
       tags: dupLead ? ['Possible duplicate'] : [],
@@ -2358,6 +2383,16 @@ export default function App() {
       messages: [],
     };
 
+    // If dedup returned an existing lead that's already in our local state,
+    // don't insert a stub — the realtime/hydrate flow already has the real
+    // one with full history. Just navigate to it.
+    if (serverLeadId !== id) {
+      const existing = leads.find((l) => l.id === serverLeadId);
+      if (existing) {
+        setCurrentLead(existing);
+        return existing;
+      }
+    }
     setLeads([newLead, ...leads]);
     setCurrentLead(newLead);
     return newLead;
