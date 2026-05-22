@@ -13250,7 +13250,7 @@ function TodayStrip({ metrics, upcomingTours, overdueTasks, todayTasks }) {
       {stats.map((s, i) => (
         <div
           key={i}
-          className={`rounded-xl border border-slate-200 bg-white px-3 py-2.5 ${
+          className={`rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-[0_1px_2px_0_rgba(15,23,42,0.04)] ${
             s.tone === 'accent' ? 'ring-1 ring-offset-1 ring-amber-200' :
             s.tone === 'danger' && s.value > 0 ? 'ring-1 ring-offset-1 ring-red-200' :
             ''
