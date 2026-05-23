@@ -8077,25 +8077,32 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
             <div className="text-xs text-slate-500 mt-0.5">{leads.length} lead{leads.length === 1 ? '' : 's'} · {upcomingTours.length} upcoming tour{upcomingTours.length === 1 ? '' : 's'}</div>
           </div>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <GlobalSearch
-            search={search}
-            setSearch={setSearch}
-            leads={leads}
-            onSelectLead={(id) => { setSelectedLeadId(id); setSearch(''); }}
-            onSelectTour={(leadId) => { setSelectedLeadId(leadId); setSearch(''); }}
-          />
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
+          {/* GlobalSearch is the desktop inline search bar — wide. Hidden on
+              mobile to free up horizontal space; the search icon in the nav
+              row below opens the command palette instead. */}
+          <div className="hidden md:block">
+            <GlobalSearch
+              search={search}
+              setSearch={setSearch}
+              leads={leads}
+              onSelectLead={(id) => { setSelectedLeadId(id); setSearch(''); }}
+              onSelectTour={(leadId) => { setSelectedLeadId(leadId); setSearch(''); }}
+            />
+          </div>
           <button
             onClick={() => setAddLeadModal(true)}
             className="px-3 py-2 rounded-full text-xs font-semibold text-white inline-flex items-center gap-1.5 transition-colors hover:opacity-90"
             style={{ backgroundColor: 'var(--brand-gold)' }}
             title="Add a lead manually (referral, walk-in, etc.)"
+            aria-label="Add lead"
           >
-            <Plus className="w-3.5 h-3.5" /> Add lead
+            <Plus className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Add lead</span>
           </button>
           {sessionEmail && (
             <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span className="hidden sm:inline">{sessionEmail}</span>
+              <span className="hidden lg:inline">{sessionEmail}</span>
               <button
                 onClick={async () => { await signOut(); }}
                 className="px-3 py-1.5 rounded-full border border-slate-200 hover:border-slate-300 hover:text-slate-700 transition-colors"
@@ -8107,31 +8114,63 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
         </div>
       </div>
 
-      {/* 6-tab top nav. Today is the default landing for at-a-glance work. */}
-      <div className="flex gap-1 mb-6 border-b border-slate-200 overflow-x-auto">
-        {[
-          { k: 'today', label: 'Today', icon: Sparkles, badge: flagCount + needsReplyBadge },
-          { k: 'inbox', label: 'Inbox', icon: Inbox, badge: needsReplyBadge },
-          { k: 'pipeline', label: 'Pipeline', icon: Activity, count: leads.filter(l => l.stage && !['lost', 'paid'].includes(l.stage)).length },
-          { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
-          { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
-          { k: 'settings', label: 'Settings', icon: Settings },
-        ].map(t => (
-          <button
-            key={t.k}
-            onClick={() => setSubview(t.k)}
-            className={`px-5 py-3 text-[15px] font-semibold transition-colors flex items-center gap-2.5 whitespace-nowrap border-b-2 -mb-px ${
-              subview === t.k
-                ? 'text-brand-ink border-brand-ink'
-                : 'text-slate-500 border-transparent hover:text-slate-900'
-            }`}
-          >
-            <t.icon className="w-4 h-4" />
-            {t.label}
-            {t.badge > 0 && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--brand-gold)', color: 'white' }}>{t.badge}</span>}
-            {!t.badge && t.count > 0 && <span className="text-[11px] text-slate-400 font-medium tabular-nums">{t.count}</span>}
-          </button>
-        ))}
+      {/* 6-tab top nav. Today is the default landing for at-a-glance work.
+          Mobile: icon-only chips with tiny labels underneath so we can fit
+          all six in the viewport without horizontal scroll. Desktop: full
+          icon-plus-label pattern. Switching at sm: breakpoint (~640px).
+          Also: a quick-search button on the right opens the command palette
+          (Cmd+K) so Morgan can jump to any lead in two taps from her phone
+          without a keyboard. */}
+      <div className="flex items-stretch gap-0.5 mb-6 border-b border-slate-200">
+        <div className="flex-1 flex gap-0.5 overflow-x-auto -mb-px">
+          {[
+            { k: 'today', label: 'Today', icon: Sparkles, badge: flagCount + needsReplyBadge },
+            { k: 'inbox', label: 'Inbox', icon: Inbox, badge: needsReplyBadge },
+            { k: 'pipeline', label: 'Pipeline', icon: Activity, count: leads.filter(l => l.stage && !['lost', 'paid'].includes(l.stage)).length },
+            { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
+            { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
+            { k: 'settings', label: 'Settings', icon: Settings },
+          ].map(t => {
+            const active = subview === t.k;
+            return (
+              <button
+                key={t.k}
+                onClick={() => setSubview(t.k)}
+                title={t.label}
+                aria-label={t.label}
+                className={`flex-1 sm:flex-initial relative flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-2.5 px-2 sm:px-5 py-2 sm:py-3 text-[11px] sm:text-[15px] font-semibold transition-colors whitespace-nowrap border-b-2 ${
+                  active
+                    ? 'text-brand-ink border-brand-ink'
+                    : 'text-slate-500 border-transparent hover:text-slate-900'
+                }`}
+              >
+                <t.icon className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="leading-tight">{t.label}</span>
+                {t.badge > 0 && (
+                  <span
+                    className="absolute sm:static top-1 right-1 sm:top-auto sm:right-auto text-[9px] sm:text-[10px] font-bold px-1.5 sm:px-2 py-0.5 rounded-full leading-none"
+                    style={{ backgroundColor: 'var(--brand-gold)', color: 'white' }}
+                  >
+                    {t.badge}
+                  </span>
+                )}
+                {!t.badge && t.count > 0 && (
+                  <span className="hidden sm:inline text-[11px] text-slate-400 font-medium tabular-nums">{t.count}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {/* Quick-search trigger — visible on every screen but most useful on
+            mobile where Cmd+K isn't reachable. Opens the command palette. */}
+        <button
+          onClick={() => setShowCommandPalette(true)}
+          title="Quick search (⌘K)"
+          aria-label="Quick search leads"
+          className="shrink-0 px-3 sm:px-4 py-2 sm:py-3 text-slate-500 hover:text-slate-900 transition-colors -mb-px border-b-2 border-transparent flex items-center justify-center"
+        >
+          <Search className="w-5 h-5 sm:w-4 sm:h-4" />
+        </button>
       </div>
 
       {/* Today snapshot — always visible above the tab content for at-a-glance counts */}

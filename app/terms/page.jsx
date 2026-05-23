@@ -7,6 +7,8 @@
 // enforceability for things we don't actually do.
 // ============================================================================
 
+import Link from 'next/link';
+
 export const metadata = {
   title: 'Terms of Service · Rentals Philly',
   description: 'Terms governing your use of Rentals Philly.',
@@ -17,9 +19,9 @@ export default function TermsPage() {
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-2xl mx-auto px-5 py-12 sm:py-16">
         <div className="mb-8">
-          <a href="/" className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-900">
+          <Link href="/" className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-900">
             ← Rentals Philly
-          </a>
+          </Link>
         </div>
 
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-2">Terms of Service</h1>
@@ -126,9 +128,9 @@ export default function TermsPage() {
         </div>
 
         <div className="mt-10 pt-6 border-t border-slate-200 text-xs text-slate-500">
-          <a href="/privacy" className="hover:text-slate-900 underline">Privacy</a>
+          <Link href="/privacy" className="hover:text-slate-900 underline">Privacy</Link>
           &nbsp;·&nbsp;
-          <a href="/" className="hover:text-slate-900 underline">Home</a>
+          <Link href="/" className="hover:text-slate-900 underline">Home</Link>
         </div>
       </div>
     </div>

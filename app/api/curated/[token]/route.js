@@ -232,6 +232,32 @@ export async function POST(request, ctx) {
       });
       if (phase2ActErr) console.error('[curated POST phase 2] activity insert FAILED', { leadId: lead.id, error: phase2ActErr.message });
 
+      // BrightMLS confirmation task — the lead has picked their tour times,
+      // but the actual showing slot needs to be reserved on the LANDLORD side
+      // (BrightMLS showing request). This is a manual step Morgan does. We
+      // surface it as a high-priority task in Today so it never gets dropped.
+      // Due TODAY so it always appears on the dashboard the moment the lead
+      // picks. The `brightmls-confirm` flag lets us filter / surface this
+      // class of task with custom UI later if we want a dedicated section.
+      if (inserted.length > 0) {
+        const firstName = (lead.full_name || '').split(' ')[0] || lead.full_name || 'lead';
+        const addrList = picks.map((p) => p.address).filter(Boolean).join(', ').slice(0, 200);
+        const taskTitle = inserted.length === 1
+          ? `Confirm tour in BrightMLS for ${firstName} — ${picks[0].address} at ${picks[0].slotTime} on ${picks[0].slotDate}`
+          : `Confirm ${inserted.length} tours in BrightMLS for ${firstName} — ${addrList}`;
+        const { error: confirmTaskErr } = await db.from('tasks').insert({
+          id: `t_${Date.now()}_bml`,
+          lead_id: lead.id,
+          title: taskTitle,
+          due_date: new Date().toISOString().slice(0, 10),
+          status: 'pending',
+          priority: 'high',
+          auto: true,
+          flags: ['brightmls-confirm'],
+        });
+        if (confirmTaskErr) console.error('[curated POST phase 2] BrightMLS task insert FAILED', { leadId: lead.id, error: confirmTaskErr.message });
+      }
+
       // Confirm to lead.
       const summary = picks.map((p) => `• ${p.address} — ${p.slotDate} ${p.slotTime}`).join('\n');
       await sendSms({

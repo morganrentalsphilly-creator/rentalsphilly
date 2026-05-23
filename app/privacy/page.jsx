@@ -8,6 +8,8 @@
 // by the CTIA messaging guidelines). Don't soften it without re-registering.
 // ============================================================================
 
+import Link from 'next/link';
+
 export const metadata = {
   title: 'Privacy Policy · Rentals Philly',
   description: 'How Rentals Philly handles your personal information.',
@@ -18,9 +20,9 @@ export default function PrivacyPage() {
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-2xl mx-auto px-5 py-12 sm:py-16">
         <div className="mb-8">
-          <a href="/" className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-900">
+          <Link href="/" className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 hover:text-slate-900">
             ← Rentals Philly
-          </a>
+          </Link>
         </div>
 
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-2">Privacy Policy</h1>
@@ -122,9 +124,9 @@ export default function PrivacyPage() {
         </div>
 
         <div className="mt-10 pt-6 border-t border-slate-200 text-xs text-slate-500">
-          <a href="/terms" className="hover:text-slate-900 underline">Terms</a>
+          <Link href="/terms" className="hover:text-slate-900 underline">Terms</Link>
           &nbsp;·&nbsp;
-          <a href="/" className="hover:text-slate-900 underline">Home</a>
+          <Link href="/" className="hover:text-slate-900 underline">Home</Link>
         </div>
       </div>
     </div>
