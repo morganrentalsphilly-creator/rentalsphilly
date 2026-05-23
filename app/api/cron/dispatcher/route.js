@@ -500,6 +500,38 @@ async function runStageNudges(db, settings) {
       if (history[rule.key]) continue;   // already nudged for this rule
 
       try {
+        // FLAG-BEFORE-SEND ordering. Without this, the previous order
+        // (send → write flag) had a fatal failure mode: if the SMS
+        // succeeded but the flag-write DB call failed, the next cron
+        // tick (60 seconds later) would re-nudge the same lead, and the
+        // tick after that, and the tick after that — TCPA exposure +
+        // an extremely bad user experience. The lead would get the same
+        // SMS every minute until the DB recovered.
+        //
+        // New ordering: claim the slot in nudge_history FIRST. If the
+        // flag write fails we skip this lead this tick (will retry next
+        // tick). If it succeeds we then attempt the SMS — and even if
+        // the SMS fails, the lead is "spent" for this rule, so they
+        // won't get the same nudge tomorrow. They'll still get the
+        // NEXT rule in the cadence (e.g. day 7 if day 3 fails to send).
+        // Single lost nudge >>> spam-loop risk.
+        //
+        // sendSMS itself also has idempotencyKey deduplication at the
+        // messages table level, so even if this code's flag is somehow
+        // bypassed, the same SMS body can't go out twice.
+        const { error: nudgeFlagErr } = await db.from('leads').update({
+          raw: {
+            ...(lead.raw || {}),
+            nudge_history: { ...history, [rule.key]: new Date().toISOString() },
+          },
+        }).eq('id', lead.id);
+        if (nudgeFlagErr) {
+          console.error('[cron] nudge_history write FAILED — skipping this tick to avoid loop', {
+            leadId: lead.id, rule: rule.key, error: nudgeFlagErr.message, code: nudgeFlagErr.code,
+          });
+          errors++;
+          continue;
+        }
         const firstName = (lead.full_name || '').split(' ')[0] || 'there';
         const result = await sendSms({
           leadId: lead.id,
@@ -511,19 +543,9 @@ async function runStageNudges(db, settings) {
           idempotencyKey: `nudge-${rule.key}-${lead.id}`,
         });
         if (result.ok) sent++;
-        // Mark as nudged regardless of opt-out outcome (we don't want to retry).
-        const { error: nudgeFlagErr } = await db.from('leads').update({
-          raw: {
-            ...(lead.raw || {}),
-            nudge_history: { ...history, [rule.key]: new Date().toISOString() },
-          },
-        }).eq('id', lead.id);
-        if (nudgeFlagErr) {
-          // If we don't capture this, the same lead gets the same nudge
-          // every cron tick until the row finally writes — a brutal UX
-          // and a TCPA exposure.
-          console.error('[cron] nudge_history write FAILED — nudge may re-fire', {
-            leadId: lead.id, rule: rule.key, error: nudgeFlagErr.message, code: nudgeFlagErr.code,
+        else if (result.error !== 'opted_out') {
+          console.warn('[cron] nudge SMS failed AFTER flag-write', {
+            leadId: lead.id, rule: rule.key, error: result.error,
           });
         }
         await sleep(PER_MESSAGE_DELAY_MS);
