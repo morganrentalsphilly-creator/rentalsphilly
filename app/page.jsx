@@ -1967,6 +1967,15 @@ export default function App() {
         agent_availability: newSettings.agent_availability,
         notifications: newSettings.notifications,
 
+        // Filters & portals jsonb (migration 0010). Previously dropped on
+        // the way to the DB because they weren't in this payload mapping —
+        // Morgan would add an excluded brokerage, see it in the UI, then
+        // lose it on refresh. The resilient retry below silently drops
+        // these if migration 0010 hasn't been applied yet, so this is
+        // safe to ship before the migration.
+        excluded_brokerages: newSettings.excluded_brokerages,
+        bright_portal_urls: newSettings.bright_portal_urls,
+
         // camelCase-quoted columns from migration 0003
         welcomeMessages: newSettings.welcomeMessages,
         quickReplyTemplates: newSettings.quickReplyTemplates,
@@ -2007,7 +2016,7 @@ export default function App() {
         const m = msg.match(/['"]([\w-]+)['"]\s+(?:column|of)/i) || msg.match(/column\s+['"]?([\w-]+)['"]?\s+(?:of|does not exist)/i);
         if (m && m[1]) return m[1];
         // Last resort: scan known optional column names against the error.
-        for (const name of ['raw', 'agent_availability', 'welcomeMessages', 'systemTemplates', 'quickReplyTemplates', 'emailSignature', 'notifications', 'calendar_feed_token', 'rentspree_dashboard_url', 'rentspree_application_url', 'signature']) {
+        for (const name of ['raw', 'agent_availability', 'welcomeMessages', 'systemTemplates', 'quickReplyTemplates', 'emailSignature', 'notifications', 'calendar_feed_token', 'rentspree_dashboard_url', 'rentspree_application_url', 'signature', 'excluded_brokerages', 'bright_portal_urls']) {
           if (msg.includes(name) && (msg.includes('column') || msg.includes('does not exist') || msg.includes('schema cache'))) {
             return name;
           }
