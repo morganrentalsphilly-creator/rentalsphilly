@@ -55,8 +55,32 @@ export async function GET(request) {
   }
 
   // Compute the sections.
-  const newLeadsNoCurate = leads.filter((l) =>
-    l.stage === 'new' && !l.raw?.curated_link_sent_at
+  // Bucket-aware "needs a curated link" — mirrors the rule set used by
+  // Focus Now and nextMove() so the daily email doesn't report 75+ day
+  // leads as "waiting for a curated link" when they're really in the
+  // light-touch holding pattern, and doesn't report BCMS-no-app leads
+  // (we're waiting on THEM, not the other way around).
+  const newLeadsNoCurate = leads.filter((l) => {
+    if (l.stage !== 'new') return false;
+    if (l.raw?.curated_link_sent_at) return false;
+    const moveInIso = l.move_in_date || l.raw?.moveInDate;
+    const moveIn = moveInIso ? new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : '')) : null;
+    const daysToMove = moveIn ? Math.round((moveIn - new Date()) / 86400000) : 0;
+    const hasApplication = !!l.application || l.application_status === 'received' || l.raw?.application_status === 'received';
+    // 75+ day buckets outside their window — quiet.
+    if ((l.bucket === 'GCM75+' || l.bucket === 'BC75+') && daysToMove > 75) return false;
+    // BCMS waiting on application — quiet (the system is correctly idle).
+    if (l.bucket === 'BCMS' && !hasApplication) return false;
+    return true;
+  });
+  // Separately count BCMS leads waiting on app — Morgan should know they
+  // exist (so she can manually nudge if she wants) but they're not
+  // "waiting for a curated link" since that's not the next step.
+  const bcmsWaitingOnApp = leads.filter((l) =>
+    l.stage === 'new'
+    && l.bucket === 'BCMS'
+    && !l.application
+    && !(l.application_status === 'received' || l.raw?.application_status === 'received')
   );
   const requestedTours = leads.filter((l) => l.stage === 'tour-requested');
   const todayStr = new Date().toISOString().slice(0, 10);

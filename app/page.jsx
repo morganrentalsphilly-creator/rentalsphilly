@@ -14837,8 +14837,21 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   };
 
   // Today action cards.
+  // Bucket-aware: skip 75+ day leads outside their window, skip BCMS
+  // still waiting on an application. Mirrors Focus Now + nextMove() so
+  // every "new lead needs curate" surface uses the same rule set.
   const newLeadsNoCurate = useMemo(() =>
-    leads.filter((l) => l.stage === 'new' && !l.curatedLinkSentAt), [leads]);
+    leads.filter((l) => {
+      if (l.stage !== 'new') return false;
+      if (l.curatedLinkSentAt) return false;
+      const moveInIso = l.moveInDate || l.move_in_date || l.raw?.moveInDate;
+      const moveIn = moveInIso ? new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : '')) : null;
+      const daysToMove = moveIn ? Math.round((moveIn - new Date()) / 86400000) : 0;
+      const hasApp = !!l.application || l.applicationStatus === 'received';
+      if ((l.bucket === 'GCM75+' || l.bucket === 'BC75+') && daysToMove > 75) return false;
+      if (l.bucket === 'BCMS' && !hasApp) return false;
+      return true;
+    }), [leads]);
   // Leads who picked properties via /c/[token] but Morgan hasn't sent the
   // scheduling link yet. This is the single highest-value action — until the
   // scheduling link goes out, the lead can't pick a tour time and the deal
