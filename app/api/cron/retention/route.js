@@ -79,6 +79,23 @@ export async function GET(request) {
     // Asks for a Google review and a referral. Stage doesn't matter — leased
     // or paid both qualify. Skipped if move-in is in the future.
     if (daysSinceMoveIn >= 7 && daysSinceMoveIn <= 21 && !history.post_lease_review) {
+      // FLAG-BEFORE-SEND ordering (same pattern as the dispatcher #213).
+      // Claim the slot in retention_history FIRST. If the flag write fails
+      // we skip this lead this tick; if it succeeds, the SMS goes out.
+      // sms.server.js also dedupes by idempotencyKey as backstop, but this
+      // primary guard means a DB hiccup can't have us calling sendSms()
+      // every minute against the same lead.
+      const { error: postLeaseFlagErr } = await db.from('leads').update({
+        raw: {
+          ...(lead.raw || {}),
+          retention_history: { ...history, post_lease_review: new Date().toISOString() },
+        },
+      }).eq('id', lead.id);
+      if (postLeaseFlagErr) {
+        console.error('[retention] post_lease_review flag write FAILED — skipping this tick to avoid loop', { leadId: lead.id, error: postLeaseFlagErr.message });
+        errors++;
+        continue;
+      }
       const body = `Hi ${firstName} — Morgan from Rentals Philly. Hope move-in is going smoothly! If you have 30 seconds, a quick Google review of how it went would mean a lot. And if you know anyone hunting for a rental in Philly, send 'em my way — I'll take great care of them. Reply STOP to opt out.`;
       try {
         const result = await sendSms({
@@ -88,14 +105,10 @@ export async function GET(request) {
         if (result.ok) {
           sent++;
           log.push({ id: lead.id, kind: 'post-lease-review' });
-          const { error: histErr } = await db.from('leads').update({
-            raw: {
-              ...(lead.raw || {}),
-              retention_history: { ...history, post_lease_review: new Date().toISOString() },
-            },
-          }).eq('id', lead.id);
-          if (histErr) console.error('[retention] post-lease retention_history write FAILED — may re-fire', { leadId: lead.id, error: histErr.message });
-        } else { errors++; }
+        } else if (result.error !== 'opted_out') {
+          console.warn('[retention] post-lease SMS failed AFTER flag-write', { leadId: lead.id, error: result.error });
+          errors++;
+        }
       } catch (err) { errors++; console.error('[retention post-lease]', err); }
       continue;
     }
@@ -105,6 +118,18 @@ export async function GET(request) {
     if (yearsSinceMoveIn >= 1 && daysToNextAnniversary <= 3) {
       const annivKey = `anniv-y${yearsSinceMoveIn}`;
       if (!history[annivKey]) {
+        // Flag-BEFORE-send (see post-lease branch above for rationale).
+        const { error: annivFlagErr } = await db.from('leads').update({
+          raw: {
+            ...(lead.raw || {}),
+            retention_history: { ...history, [annivKey]: new Date().toISOString() },
+          },
+        }).eq('id', lead.id);
+        if (annivFlagErr) {
+          console.error('[retention] anniversary flag write FAILED — skipping this tick to avoid loop', { leadId: lead.id, annivKey, error: annivFlagErr.message });
+          errors++;
+          continue;
+        }
         const body = `Hi ${firstName} — Morgan from Rentals Philly. Hard to believe it's already been ${yearsSinceMoveIn} year${yearsSinceMoveIn === 1 ? '' : 's'} at your place. Hope it's still feeling like home. If you know anyone hunting for a rental in Philly, I'd be grateful for the intro 🙏`;
         try {
           const result = await sendSms({
@@ -114,14 +139,10 @@ export async function GET(request) {
           if (result.ok) {
             sent++;
             log.push({ id: lead.id, kind: 'anniversary', year: yearsSinceMoveIn });
-            const { error: annivHistErr } = await db.from('leads').update({
-              raw: {
-                ...(lead.raw || {}),
-                retention_history: { ...history, [annivKey]: new Date().toISOString() },
-              },
-            }).eq('id', lead.id);
-            if (annivHistErr) console.error('[retention] anniversary retention_history write FAILED — may re-fire', { leadId: lead.id, annivKey, error: annivHistErr.message });
-          } else { errors++; }
+          } else if (result.error !== 'opted_out') {
+            console.warn('[retention] anniversary SMS failed AFTER flag-write', { leadId: lead.id, annivKey, error: result.error });
+            errors++;
+          }
         } catch (err) { errors++; console.error('[retention anniv]', err); }
       }
     }
