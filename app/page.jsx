@@ -8891,60 +8891,73 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
         })}
       </div>
 
-      {/* Bulk-action bar — appears when ≥1 lead selected. Two rows on mobile:
-          the compose row up top, then a row of management actions below. */}
+      {/* Bulk-action bar — appears when ≥1 lead selected. Light card matching
+          the rest of the UI, with a brand-gold accent rail on the left to
+          distinguish "active selection" mode without a slab of dark color. */}
       {selected.size > 0 && (
-        <Card className="p-3 mb-3 bg-slate-900 text-white border-slate-900 space-y-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="text-sm font-semibold">{selected.size} selected</div>
-            <button onClick={clearSelected} className="text-xs text-slate-300 hover:text-white underline">Clear</button>
-            <input
-              value={bulkBody}
-              onChange={(e) => setBulkBody(e.target.value)}
-              placeholder="Type SMS — use {firstName} for personalization"
-              className="flex-1 min-w-[200px] text-sm bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-slate-400"
-            />
-            <div className="text-[10px] text-slate-400 tabular-nums">{bulkBody.length} chars · {Math.max(1, Math.ceil(bulkBody.length / 160))} seg</div>
-            <button
-              onClick={sendBulkSms}
-              disabled={!bulkBody.trim() || bulkBusy}
-              className="px-4 py-1.5 bg-white text-slate-900 rounded-full text-sm font-medium hover:bg-slate-100 disabled:opacity-30 inline-flex items-center gap-1.5"
-            >
-              <Send className="w-3.5 h-3.5" /> {bulkBusy ? 'Sending…' : `Send to ${selected.size}`}
-            </button>
-          </div>
-          {/* Management actions row — visually divided from the compose row */}
-          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
-            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mr-1">Actions</span>
-            <button
-              onClick={() => bulkSnooze(7)}
-              disabled={bulkBusy}
-              className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 inline-flex items-center gap-1"
-            >
-              <Bell className="w-3 h-3" /> Snooze 7d
-            </button>
-            <button
-              onClick={() => bulkSnooze(30)}
-              disabled={bulkBusy}
-              className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 inline-flex items-center gap-1"
-            >
-              <Bell className="w-3 h-3" /> Snooze 30d
-            </button>
-            <button
-              onClick={bulkArchive}
-              disabled={bulkBusy}
-              className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30 inline-flex items-center gap-1"
-            >
-              <Archive className="w-3 h-3" /> Archive
-            </button>
-            <div className="ml-auto" />
-            <button
-              onClick={bulkDelete}
-              disabled={bulkBusy}
-              className="px-3 py-1 text-[11px] font-medium rounded-full bg-red-900/60 hover:bg-red-900 text-red-100 disabled:opacity-30 inline-flex items-center gap-1"
-            >
-              <Trash2 className="w-3 h-3" /> Delete…
-            </button>
+        <Card className="p-0 mb-3 overflow-hidden border-slate-200">
+          <div className="flex">
+            <div className="w-1 shrink-0" style={{ backgroundColor: 'var(--brand-gold)' }} />
+            <div className="flex-1 p-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <span className="inline-flex items-center justify-center min-w-[22px] h-[22px] px-1.5 rounded-full text-[11px] font-bold text-white tabular-nums" style={{ backgroundColor: 'var(--brand-gold)' }}>
+                    {selected.size}
+                  </span>
+                  selected
+                </div>
+                <button onClick={clearSelected} className="text-xs text-slate-500 hover:text-slate-900 underline">Clear</button>
+                <input
+                  value={bulkBody}
+                  onChange={(e) => setBulkBody(e.target.value)}
+                  placeholder="Type SMS — use {firstName} for personalization"
+                  style={{ fontSize: 14 }}
+                  className="flex-1 min-w-[200px] bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                />
+                <div className="text-[10px] text-slate-500 tabular-nums whitespace-nowrap">{bulkBody.length} chars · {Math.max(1, Math.ceil(bulkBody.length / 160))} seg</div>
+                <button
+                  onClick={sendBulkSms}
+                  disabled={!bulkBody.trim() || bulkBusy}
+                  className="px-4 py-1.5 rounded-full text-sm font-semibold text-white hover:opacity-90 disabled:opacity-30 inline-flex items-center gap-1.5 transition-opacity"
+                  style={{ backgroundColor: 'var(--brand-gold)' }}
+                >
+                  <Send className="w-3.5 h-3.5" /> {bulkBusy ? 'Sending…' : `Send to ${selected.size}`}
+                </button>
+              </div>
+              {/* Management actions row — subtle separator from the compose row */}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mr-1">Actions</span>
+                <button
+                  onClick={() => bulkSnooze(7)}
+                  disabled={bulkBusy}
+                  className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-30 inline-flex items-center gap-1 transition-colors"
+                >
+                  <Bell className="w-3 h-3" /> Snooze 7d
+                </button>
+                <button
+                  onClick={() => bulkSnooze(30)}
+                  disabled={bulkBusy}
+                  className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-30 inline-flex items-center gap-1 transition-colors"
+                >
+                  <Bell className="w-3 h-3" /> Snooze 30d
+                </button>
+                <button
+                  onClick={bulkArchive}
+                  disabled={bulkBusy}
+                  className="px-3 py-1 text-[11px] font-medium rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-30 inline-flex items-center gap-1 transition-colors"
+                >
+                  <Archive className="w-3 h-3" /> Archive
+                </button>
+                <div className="ml-auto" />
+                <button
+                  onClick={bulkDelete}
+                  disabled={bulkBusy}
+                  className="px-3 py-1 text-[11px] font-medium rounded-full bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 disabled:opacity-30 inline-flex items-center gap-1 transition-colors"
+                >
+                  <Trash2 className="w-3 h-3" /> Delete…
+                </button>
+              </div>
+            </div>
           </div>
         </Card>
       )}
