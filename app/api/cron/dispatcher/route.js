@@ -92,7 +92,7 @@ async function runReminders(db) {
 
   // Build the public app URL once (used in reschedule links).
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ||
-                 (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://rentalsphilly.vercel.app');
+                 (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://rentalsphilly.com');
 
   let sent = 0;
   let errors = 0;

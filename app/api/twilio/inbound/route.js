@@ -306,7 +306,7 @@ export async function POST(request) {
         const inboundEmailOn = settingsRow?.notifications?.inboundEmail !== false;
         const agentEmail = settingsRow?.agent_email || settingsRow?.agentEmail || 'morganrentalsphilly@gmail.com';
         if (inboundEmailOn && agentEmail) {
-          const appBase = process.env.NEXT_PUBLIC_APP_URL || 'https://rentalsphilly.vercel.app';
+          const appBase = process.env.NEXT_PUBLIC_APP_URL || 'https://rentalsphilly.com';
           const leadUrl = `${appBase}/#admin?lead=${encodeURIComponent(lead.id)}`;
           const inboxUrl = `${appBase}/#admin?tab=inbox`;
           const leadName = lead.full_name || `${from}`;

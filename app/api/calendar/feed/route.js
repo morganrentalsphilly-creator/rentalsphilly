@@ -1,7 +1,7 @@
 // Live iCalendar feed of all upcoming tours.
 //
 // Subscribe URL (the agent uses this once in their calendar app):
-//   https://rentalsphilly.vercel.app/api/calendar/feed?token=XXX
+//   https://rentalsphilly.com/api/calendar/feed?token=XXX
 //
 // In Apple Calendar:  File → New Calendar Subscription → paste the URL
 // In Google Calendar: Settings → Add calendar → From URL → paste the URL
@@ -105,7 +105,7 @@ export async function GET(request) {
     const location = addrs[0] || '';
     return [
       'BEGIN:VEVENT',
-      `UID:tour-${t.id}@rentalsphilly.vercel.app`,
+      `UID:tour-${t.id}@rentalsphilly.com`,
       `DTSTAMP:${fmtUtc(new Date())}`,
       `DTSTART:${fmtUtc(start)}`,
       `DTEND:${fmtUtc(end)}`,
@@ -170,7 +170,7 @@ export async function POST(request) {
       return new Response(JSON.stringify({ ok: false, error: error.message }), { status: 500 });
     }
     const base = process.env.NEXT_PUBLIC_APP_URL ||
-                 (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://rentalsphilly.vercel.app');
+                 (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://rentalsphilly.com');
     return new Response(JSON.stringify({
       ok: true,
       token: next,

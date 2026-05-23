@@ -139,7 +139,7 @@ export async function GET(request) {
     sections.map((s) =>
       `${s.title}\n${s.items.map((i) => `  • ${i}`).join('\n')}\n`
     ).join('\n') +
-    '\n\nOpen the CRM: https://rentalsphilly.vercel.app/#admin\n';
+    '\n\nOpen the CRM: https://rentalsphilly.com/#admin\n';
 
   const htmlBody = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1c1f2a;">
@@ -156,7 +156,7 @@ export async function GET(request) {
         </div>
       `).join('')}
       <div style="margin-top: 32px; text-align: center;">
-        <a href="https://rentalsphilly.vercel.app/#admin"
+        <a href="https://rentalsphilly.com/#admin"
            style="display: inline-block; padding: 12px 24px; background: #b58e54; color: white; text-decoration: none; border-radius: 999px; font-weight: 600;">
           Open the CRM →
         </a>

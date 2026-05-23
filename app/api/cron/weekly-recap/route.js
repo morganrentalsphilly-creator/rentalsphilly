@@ -221,7 +221,7 @@ Output ONLY the JSON array, no commentary, no code fences. Be specific and direc
       ${rowsHtml}
     </table>
     <p style="margin:18px 0 6px;font-size:13px;color:#64748b;">See the full funnel and stage-time breakdowns:</p>
-    <p style="margin:0 0 14px;"><a href="https://rentalsphilly.vercel.app/#admin" style="color:#b58e54;text-decoration:underline;">Open Analytics →</a></p>
+    <p style="margin:0 0 14px;"><a href="https://rentalsphilly.com/#admin" style="color:#b58e54;text-decoration:underline;">Open Analytics →</a></p>
   `;
   const html = htmlShell({ body, preheader: weekLabel });
 
@@ -232,7 +232,7 @@ Output ONLY the JSON array, no commentary, no code fences. Be specific and direc
       const val = s.dollar ? fmt$(s.value) : fmt(s.value);
       return `${s.label}: ${val} (${d.text})`;
     }).join('\n') +
-    '\n\nFull analytics: https://rentalsphilly.vercel.app/#admin';
+    '\n\nFull analytics: https://rentalsphilly.com/#admin';
 
   // Send via Resend.
   try {

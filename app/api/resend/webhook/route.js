@@ -1,7 +1,7 @@
 // Resend webhook receiver.
 //
 // Configure in Resend dashboard → Webhooks → New webhook:
-//   URL:      https://rentalsphilly.vercel.app/api/resend/webhook
+//   URL:      https://rentalsphilly.com/api/resend/webhook
 //   Events:   email.delivered, email.opened, email.clicked,
 //             email.bounced, email.complained, email.delivery_delayed
 //   Secret:   set RESEND_WEBHOOK_SECRET in Vercel env (any string)

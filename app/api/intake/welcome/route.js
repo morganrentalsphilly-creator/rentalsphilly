@@ -347,7 +347,7 @@ export async function POST(request) {
             `Areas: ${lead.areas || 'no preference'}\n` +
             `Source: ${lead.raw?.source || 'Unknown'}\n` +
             `Bucket: ${BUCKET_HINTS[bucket] || bucket}\n\n` +
-            `Open the CRM: https://rentalsphilly.vercel.app/#admin`,
+            `Open the CRM: https://rentalsphilly.com/#admin`,
           kind: 'new_lead_alert',
           idempotencyKey: `agent-new-lead-${lead.id}`,
           automated: true,

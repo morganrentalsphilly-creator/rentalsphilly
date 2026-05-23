@@ -107,7 +107,7 @@ Required:
 - `RESEND_FROM_EMAIL` (e.g. `morgan@rentalsphilly.com`)
 - `ANTHROPIC_API_KEY` — drives every AI feature; without it AI falls back silently
 - `ENABLE_REAL_SENDING` (set to `true` for production, leave unset for simulated mode)
-- `NEXT_PUBLIC_APP_URL` (https://rentalsphilly.vercel.app or your custom domain)
+- `NEXT_PUBLIC_APP_URL` (https://rentalsphilly.com — set in Vercel env)
 
 Cron-only:
 - `CRON_SECRET` (matches Vercel Cron config; generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)

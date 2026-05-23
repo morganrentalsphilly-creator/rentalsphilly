@@ -562,7 +562,7 @@ const downloadIcsForTour = (tour) => {
     'VERSION:2.0',
     'PRODID:-//Rentals Philly//Tour//EN',
     'BEGIN:VEVENT',
-    `UID:tour-${tour.id}@rentalsphilly.vercel.app`,
+    `UID:tour-${tour.id}@rentalsphilly.com`,
     `DTSTAMP:${fmt(new Date())}`,
     `DTSTART:${fmt(start)}`,
     `DTEND:${fmt(end)}`,
@@ -5793,7 +5793,7 @@ function ShareIntakeButton({ showToast }) {
     inFlightRef.current = true;
 
     // Hardcoded to the production domain — even if Morgan is viewing the
-    // CRM from rentalsphilly.vercel.app or localhost during a test, the
+    // CRM from rentalsphilly.com or localhost during a test, the
     // SHARED link must always send the recipient to the real domain so
     // her audience sees the polished URL.
     const shareUrl = 'https://rentalsphilly.com/?start=1';
@@ -6580,7 +6580,7 @@ function NextBestActionCard({ lead, onCompose, showToast, updateLead, settings }
         const token = lead.raw?.curated_token || (typeof crypto !== 'undefined' && crypto.randomUUID
           ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
           : Math.random().toString(36).slice(2, 18));
-        const appBase = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://rentalsphilly.vercel.app';
+        const appBase = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://rentalsphilly.com';
         const curatedUrl = `${appBase}/c/${token}`;
         const smsBody = `Rentals Philly: I checked availability — pick your tour times here: ${curatedUrl}`;
         const emailSubject = 'Pick your tour times';
@@ -11347,7 +11347,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
     const token = lead.raw?.curated_token || (typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
       : Math.random().toString(36).slice(2, 18));
-    const appBase = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://rentalsphilly.vercel.app';
+    const appBase = (typeof window !== 'undefined' ? window.location.origin : '') || 'https://rentalsphilly.com';
     const curatedUrl = `${appBase}/c/${token}`;
 
     const smsBody = `Rentals Philly: I checked availability — pick your tour times here: ${curatedUrl}`;
@@ -12095,7 +12095,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
       : Math.random().toString(36).slice(2, 18));
     const appBase =
       (typeof window !== 'undefined' ? window.location.origin : '') ||
-      'https://rentalsphilly.vercel.app';
+      'https://rentalsphilly.com';
     const curatedUrl = `${appBase}/c/${token}`;
 
     const smsBody = `Rentals Philly: Your hand-picked rentals are ready. View photos & request tours: ${curatedUrl}`;
@@ -13962,7 +13962,7 @@ function pickNextTour(tours) {
 
 function fillTemplate(tpl, lead, settings) {
   const firstName = (lead?.fullName || '').split(' ')[0] || 'there';
-  const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
+  const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.com/c/${lead?.raw?.curated_token || ''}`;
   const nextTour = pickNextTour(lead?.tours);
   // Fall back to visible [date] / [time] placeholders so Morgan SEES she
   // needs to fill these in. An empty string would silently render as
@@ -14993,7 +14993,7 @@ function SlashAwareTextarea({ value, onChange, placeholder, rows, onSubmit, onOp
 
   // Slash command definitions. Each one renders an insert into the textarea
   // when picked. {portalUrl} etc. resolve from the lead context.
-  const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.vercel.app/c/${lead?.raw?.curated_token || ''}`;
+  const portalUrl = lead?.raw?.curated_link_url || `https://rentalsphilly.com/c/${lead?.raw?.curated_token || ''}`;
   // Use pickNextTour so the slash-command tour template references the
   // earliest active tour (not whatever happens to be first in the array).
   const nextTour = pickNextTour(lead?.tours);
@@ -16028,7 +16028,7 @@ function CustomDomainCard() {
       title: 'Tell Twilio (A2P)',
       body: (
         <>
-          Once you have a real domain, edit your A2P campaign on Twilio and replace the rentalsphilly.vercel.app URLs with your new domain. This usually doesn&apos;t require re-approval but keeps things consistent. Privacy + terms URLs both need updating.
+          Once you have a real domain, edit your A2P campaign on Twilio and replace the rentalsphilly.com URLs with your new domain. This usually doesn&apos;t require re-approval but keeps things consistent. Privacy + terms URLs both need updating.
         </>
       ),
     },
@@ -16040,7 +16040,7 @@ function CustomDomainCard() {
     <Card className="p-5 space-y-4">
       <SectionHeader icon={ExternalLink}>Custom domain</SectionHeader>
       <div className="text-sm text-slate-600 leading-relaxed">
-        Move off <span className="font-mono text-xs">rentalsphilly.vercel.app</span> to a real domain you own. Boosts trust with leads, improves email deliverability, and lets you send from <span className="font-mono text-xs">morgan@yourdomain.com</span>. 5 steps, about 20 minutes once DNS propagates.
+        Move off <span className="font-mono text-xs">rentalsphilly.com</span> to a real domain you own. Boosts trust with leads, improves email deliverability, and lets you send from <span className="font-mono text-xs">morgan@yourdomain.com</span>. 5 steps, about 20 minutes once DNS propagates.
       </div>
 
       <div className="flex items-center gap-1.5 flex-wrap">

@@ -897,7 +897,7 @@ function downloadIcsForPick(p, agentLabel) {
   const ics = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Rentals Philly//EN',
     'BEGIN:VEVENT',
-    `UID:${p.slotDate}-${p.slotTime}-${(p.address || '').slice(0,20)}@rentalsphilly.vercel.app`,
+    `UID:${p.slotDate}-${p.slotTime}-${(p.address || '').slice(0,20)}@rentalsphilly.com`,
     `DTSTAMP:${icsDate(new Date())}`,
     `DTSTART:${icsDate(start)}`,
     `DTEND:${icsDate(end)}`,
@@ -921,7 +921,7 @@ function downloadAllTours(picks, agentLabel) {
     const end = new Date(start.getTime() + 60 * 60 * 1000);
     return [
       'BEGIN:VEVENT',
-      `UID:${p.slotDate}-${p.slotTime}-${(p.address || '').slice(0,20)}@rentalsphilly.vercel.app`,
+      `UID:${p.slotDate}-${p.slotTime}-${(p.address || '').slice(0,20)}@rentalsphilly.com`,
       `DTSTAMP:${icsDate(new Date())}`,
       `DTSTART:${icsDate(start)}`,
       `DTEND:${icsDate(end)}`,

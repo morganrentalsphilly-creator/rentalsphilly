@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Rentals Philly",
     description: "Hand-picked Philadelphia rentals. Real agent. Booked by text.",
-    url: "https://rentalsphilly.vercel.app",
+    url: "https://rentalsphilly.com",
     siteName: "Rentals Philly",
     type: "website",
   },
