@@ -2298,12 +2298,49 @@ export default function App() {
       notes: fileData.notes || '',
       reviewed: false,
     };
+    // BCMS workflow: application arriving unlocks the "Curate portal link"
+    // task. Mirror what markApplicationReceived does — same task shape, same
+    // dedup guard so we don't double-create if a curate task already exists.
+    const firstName = (lead.fullName || '').split(' ')[0] || 'lead';
+    const shouldCreateCurateTask = (lead.bucket === 'BCMS' || lead.bucket === 'BC75+')
+      && !(lead.tasks || []).some((t) =>
+        Array.isArray(t.flags) && t.flags.includes('curate-portal') && t.status !== 'done'
+      );
+    const newTasks = shouldCreateCurateTask
+      ? [
+          ...(lead.tasks || []),
+          {
+            id: `t_${Date.now()}_curate`,
+            lead_id: leadId,
+            title: `Curate portal link for ${firstName}`,
+            due_date: new Date().toISOString().split('T')[0],
+            status: 'pending',
+            priority: 'high',
+            auto: true,
+            flags: ['curate-portal'],
+          },
+        ]
+      : (lead.tasks || []);
     await updateLead(leadId, {
       application,
       applicationStatus: 'submitted',
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'application-uploaded', timestamp: new Date().toISOString(), message: `Application PDF uploaded: ${fileData.filename}` }],
+      tasks: newTasks,
+      activities: [
+        ...(lead.activities || []),
+        { id: `a_${Date.now()}`, type: 'application-uploaded', timestamp: new Date().toISOString(), message: `Application PDF uploaded: ${fileData.filename}` },
+        ...(shouldCreateCurateTask ? [{
+          id: `a_${Date.now()}_t`,
+          type: 'task-auto-created',
+          timestamp: new Date().toISOString(),
+          message: `Application uploaded → curate task created for ${firstName}`,
+        }] : []),
+      ],
     });
-    showToast('Application uploaded');
+    showToast(
+      shouldCreateCurateTask
+        ? 'Application uploaded · curate task added to Today'
+        : 'Application uploaded'
+    );
   };
 
   // Submissions: tracks an application → a specific landlord/property
@@ -2404,19 +2441,48 @@ export default function App() {
   // downloading + re-uploading it here. One tap flips the workflow gate so
   // nextMove() advances past "Waiting on application" → "Send curated link".
   // Pass action === 'clear' to undo.
+  //
+  // CRITICAL for the BCMS workflow: when the application IS received, we
+  // auto-create the "Curate portal link" task because BCMS leads don't get
+  // one at intake — their workflow is application-first, curate-second.
+  // Without this, Morgan would see the application come in but get no
+  // prompt to actually start curating. Same task shape as the GCMS one
+  // from addLead so the rest of the system (Today queue, badge counts,
+  // NBA recommendations) sees it identically.
   const markApplicationReceived = async (leadId, action) => {
     const lead = leads.find(l => l.id === leadId);
     if (!lead) return;
     const clearing = action === 'clear';
-    // If a real PDF is uploaded we don't touch anything — the PDF itself is
-    // the source of truth. This callback is only meaningful when there's no
-    // application object.
     if (lead.application) {
       showToast('Application PDF already on file — no change');
       return;
     }
+    const firstName = (lead.fullName || '').split(' ')[0] || 'lead';
+    const shouldCreateCurateTask = !clearing
+      && (lead.bucket === 'BCMS' || lead.bucket === 'BC75+')
+      // Don't double up if a curate task already exists (e.g. if Morgan
+      // un-marked + re-marked, or if the 75-day task already fired).
+      && !(lead.tasks || []).some((t) =>
+        Array.isArray(t.flags) && t.flags.includes('curate-portal') && t.status !== 'done'
+      );
+    const newTasks = shouldCreateCurateTask
+      ? [
+          ...(lead.tasks || []),
+          {
+            id: `t_${Date.now()}_curate`,
+            lead_id: leadId,
+            title: `Curate portal link for ${firstName}`,
+            due_date: new Date().toISOString().split('T')[0],
+            status: 'pending',
+            priority: 'high',
+            auto: true,
+            flags: ['curate-portal'],
+          },
+        ]
+      : (lead.tasks || []);
     await updateLead(leadId, {
       applicationStatus: clearing ? null : 'received',
+      tasks: newTasks,
       activities: [
         ...(lead.activities || []),
         {
@@ -2427,9 +2493,21 @@ export default function App() {
             ? 'Un-marked application as received via RentSpree'
             : 'Marked application as received via RentSpree (no PDF on file)',
         },
+        ...(shouldCreateCurateTask ? [{
+          id: `a_${Date.now()}_t`,
+          type: 'task-auto-created',
+          timestamp: new Date().toISOString(),
+          message: `Application received → curate task created for ${firstName}`,
+        }] : []),
       ],
     });
-    showToast(clearing ? 'Un-marked received' : 'Application marked received');
+    showToast(
+      clearing
+        ? 'Un-marked received'
+        : shouldCreateCurateTask
+          ? 'Application received · curate task added to Today'
+          : 'Application marked received'
+    );
   };
 
   const addLead = async (lead) => {
@@ -2466,13 +2544,19 @@ export default function App() {
       message: `Lead created · ${bucket}`,
     };
 
+    // Task creation by bucket. Each bucket has ONE correct first task; we
+    // never prompt Morgan to do work that doesn't fit the workflow yet.
+    //
+    //   GCMS   (good credit, moving soon)  → curate today
+    //   BCMS   (bad credit,  moving soon)  → NO task today; their welcome
+    //          shipped the application URL. We wait for the application to
+    //          come in (markApplicationReceived → auto-creates curate task)
+    //          before nudging Morgan to curate. If she wants to nudge them
+    //          on the app, she does it from the lead detail manually.
+    //   GCM75+ (good credit, moving later) → 75-day curate task
+    //   BC75+  (bad credit,  moving later) → 75-day application-link task
     const tasks = [];
     if (bucket === 'GCM75+' || bucket === 'BC75+') {
-      // 75-day pre-move-in outreach. Task title is bucket-specific so
-      // Morgan knows what to do on the day it fires:
-      //   GCM75+  → send curated link (no application yet, good qualifier)
-      //   BC75+   → send the general rental application link first
-      // Both fire as a pending task 75 days before move-in.
       const followUpDate = new Date(lead.moveInDate);
       followUpDate.setDate(followUpDate.getDate() - 75);
       const taskTitle = bucket === 'BC75+'
@@ -2487,9 +2571,7 @@ export default function App() {
         auto: true,
         flags: bucket === 'BC75+' ? ['75day-app-outreach'] : ['75day-curate-outreach'],
       });
-    } else {
-      // Moving-soon leads: agent needs to curate an MLS portal link.
-      // Show as today's task so it stays top-of-mind on the dashboard.
+    } else if (bucket === 'GCMS') {
       tasks.push({
         id: `t_${Date.now()}_curate`,
         lead_id: id,
@@ -2500,6 +2582,12 @@ export default function App() {
         auto: true,
         flags: ['curate-portal'],
       });
+    } else if (bucket === 'BCMS') {
+      // No immediate task. Their welcome SMS+email already shipped the
+      // application URL. The next prompt for Morgan is automatic: when the
+      // lead completes the application (we hear about it via the
+      // ApplicationUpload "Mark received via RentSpree" button OR a real
+      // PDF upload), markApplicationReceived → fires the curate task.
     }
 
     // LAUNCH-CRITICAL: the createLead call MUST succeed before we send any
@@ -6496,6 +6584,118 @@ function SetupChecklist({ settings, setSubview }) {
 // Renders as a tappable button right next to the AI summary card. Tapping
 // the suggested message routes to the compose modal pre-filled, so it's
 // a one-tap execute.
+// ============================================================
+// AUTOMATIONS CARD — at-a-glance visibility into what's queued + what's
+// already fired for this lead. Answers "what is the system doing about
+// this person?" so Morgan never wonders if a lead is being followed up.
+//
+// Shows:
+//   • Pending automated tasks (with due date — 75-day touches, post-tour
+//     follow-ups, BrightMLS confirms, application nudges, etc.)
+//   • Milestone touches that have ALREADY fired (welcome SMS, curated link,
+//     scheduling link, tour reminders), as a chronological "what's been
+//     done" timeline so she can see no automation got dropped.
+//   • Tour reminders scheduled (24h + 1h pre-tour, idempotency-flagged)
+//   • Nudge cadence — when the next quiet-lead nudge will fire (if any)
+// ============================================================
+function LeadAutomationsCard({ lead }) {
+  // PENDING auto-tasks — tasks where auto=true and status='pending'
+  const autoTasks = (lead.tasks || [])
+    .filter((t) => t.auto && t.status !== 'done')
+    .sort((a, b) => String(a.dueDate || a.due_date || '').localeCompare(String(b.dueDate || b.due_date || '')));
+
+  // FIRED milestones — read from the lead's raw + tour state. Each row is
+  // {label, at} sorted oldest first so it reads like a story.
+  const fired = [];
+  const w = (lead.messages || []).find((m) => m.kind === 'welcome' || (m.body || '').includes('Rentals Philly'));
+  if (w) fired.push({ label: 'Welcome SMS + email sent', at: w.timestamp });
+  if (lead.raw?.curated_link_sent_at) {
+    fired.push({ label: 'Curated portal link sent', at: lead.raw.curated_link_sent_at });
+  }
+  if (lead.raw?.scheduling_open_at) {
+    fired.push({ label: 'Scheduling link sent', at: lead.raw.scheduling_open_at });
+  }
+  if (lead.applicationStatus === 'received' || lead.application) {
+    fired.push({
+      label: lead.application ? 'Application PDF on file' : 'Application marked received',
+      at: lead.application?.uploadedAt || lead.raw?.application_received_at || null,
+    });
+  }
+  for (const t of (lead.tours || [])) {
+    const rs = t.reminders_sent || t.remindersSent || {};
+    if (rs['24h']) fired.push({ label: `24-hour tour reminder sent for ${t.date}`, at: rs['24h'] });
+    if (rs['1h']) fired.push({ label: `1-hour tour reminder sent for ${t.date}`, at: rs['1h'] });
+  }
+  fired.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+
+  // Show only when there's actually something to surface — avoids a noisy
+  // empty card on brand-new leads where only the welcome has fired.
+  if (autoTasks.length === 0 && fired.length === 0) return null;
+
+  const fmt = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+  const flagLabel = (flags) => {
+    const f = Array.isArray(flags) ? flags : [];
+    if (f.includes('75day-app-outreach')) return '75-day application outreach';
+    if (f.includes('75day-curate-outreach')) return '75-day curated link';
+    if (f.includes('curate-portal')) return 'Curate portal link';
+    if (f.includes('brightmls-confirm')) return 'Confirm tour in BrightMLS';
+    if (f.includes('post-tour-followup')) return 'Post-tour follow-up';
+    if (f.includes('no-show-followup')) return 'Re-engage after no-show';
+    if (f.includes('curate-portal')) return 'Curate portal';
+    return null;
+  };
+
+  return (
+    <Card className="p-4">
+      <SectionHeader icon={Zap}>Automations</SectionHeader>
+      {autoTasks.length > 0 && (
+        <div className="space-y-1.5 mb-3">
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Coming up</div>
+          {autoTasks.slice(0, 6).map((t) => {
+            const dueIso = t.dueDate || t.due_date;
+            const due = dueIso ? new Date(dueIso + (dueIso.length === 10 ? 'T12:00:00' : '')) : null;
+            const today = new Date(); today.setHours(0,0,0,0);
+            const days = due ? Math.round((due - today) / 86400000) : null;
+            const dueLabel = days === null ? '—'
+              : days < 0 ? `Overdue ${-days}d`
+              : days === 0 ? 'Today'
+              : days === 1 ? 'Tomorrow'
+              : `In ${days}d`;
+            const tone = days !== null && days < 0 ? 'text-red-600'
+              : days === 0 ? 'text-amber-700'
+              : 'text-slate-600';
+            const label = flagLabel(t.flags) || t.title;
+            return (
+              <div key={t.id} className="flex items-center gap-2 text-xs">
+                <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                <div className="flex-1 truncate text-slate-700">{label}</div>
+                <div className={`tabular-nums text-[11px] ${tone}`}>{dueLabel}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {fired.length > 0 && (
+        <div className="space-y-1 pt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 mb-1">Already fired</div>
+          {fired.slice(-6).map((f, i) => (
+            <div key={i} className="flex items-center gap-2 text-[11px] text-slate-500">
+              <Check className="w-3 h-3 text-emerald-500 shrink-0" />
+              <div className="flex-1 truncate">{f.label}</div>
+              <div className="tabular-nums text-slate-400">{fmt(f.at)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function NextBestActionCard({ lead, onCompose, showToast, updateLead, settings }) {
   const lastMsg = (lead.messages || []).filter((m) => !m.internal).slice(-1)[0];
   const cacheKey = `${lead.id}::${lastMsg?.id || 'no-msgs'}::${lead.stage || 'new'}`;
@@ -7358,7 +7558,7 @@ function TodaysWinsCard({ leads, onSelectLead }) {
   );
 }
 
-function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, onSelectLead, updateLead, showToast, setSubview, settings }) {
+function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, onSelectLead, updateLead, showToast, setSubview, settings, onCompose }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   const dateLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
@@ -7438,23 +7638,66 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
     showToast(`Snoozed ${days} day${days === 1 ? '' : 's'}`);
   };
 
-  const TaskRow = ({ task, lead, danger }) => (
-    <div className={`flex items-center gap-2 p-2.5 rounded-lg border ${danger ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'}`}>
-      <button
-        onClick={() => completeTask(task)}
-        className="w-4 h-4 rounded border-2 border-slate-300 hover:border-emerald-500 hover:bg-emerald-50 shrink-0"
-        title="Mark complete"
-      />
-      <button onClick={() => onSelectLead(lead.id)} className="flex-1 min-w-0 text-left">
-        <div className="text-sm text-slate-900 truncate">{task.title}</div>
-        <div className="text-[11px] text-slate-500">{lead.fullName}{task.priority === 'high' ? ' · HIGH' : ''}</div>
-      </button>
-      <div className="flex items-center gap-1 shrink-0">
-        <button onClick={() => snoozeTask(task, 1)} className="text-[10px] text-slate-500 hover:text-slate-900 px-1.5 py-0.5 rounded hover:bg-slate-100" title="Snooze 1 day">+1d</button>
-        <button onClick={() => snoozeTask(task, 7)} className="text-[10px] text-slate-500 hover:text-slate-900 px-1.5 py-0.5 rounded hover:bg-slate-100" title="Snooze 1 week">+1w</button>
+  const TaskRow = ({ task, lead, danger }) => {
+    // 75-day outreach tasks get a one-tap "Send" pill that opens the
+    // composer pre-filled with the bucket-correct template:
+    //   BC75+ → application link nudge (the URL set in Settings)
+    //   GCM75+ → curated-link intro nudge
+    // No more remembering which template goes with which lead. The composer
+    // still opens so Morgan can personalize before sending.
+    const flags = Array.isArray(task.flags) ? task.flags : [];
+    const is75AppOutreach = flags.includes('75day-app-outreach');
+    const is75CurateOutreach = flags.includes('75day-curate-outreach');
+    const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+    const appUrl = settings?.rentSpree?.applicationUrl
+      || settings?.rentspree_application_url
+      || settings?.application_url
+      || '';
+    const handleQuickSend = () => {
+      let prefill = '';
+      if (is75AppOutreach) {
+        prefill = appUrl
+          ? `Rentals Philly: Hi ${firstName} — your move is about 75 days out, so it's time to start the rental application: ${appUrl}\n\nOnce that's on file I'll begin hand-picking rentals that match your budget and neighborhoods. Reply STOP to opt out.`
+          : `Rentals Philly: Hi ${firstName} — your move is coming up. To get started I'll send you the rental application shortly. Reply STOP to opt out.`;
+      } else if (is75CurateOutreach) {
+        prefill = `Rentals Philly: Hi ${firstName} — your move is about 75 days out, so I'm starting to pull rentals for you now. You'll get a personalized link with hand-picked options shortly. Reply STOP to opt out.`;
+      }
+      onCompose({ kind: 'sms-custom', leadId: lead.id, prefill });
+      // Mark complete after Morgan actually sends would be ideal, but
+      // tracking "did they hit send in the composer" from here is messy.
+      // The composer's send path already logs the message; Morgan checks
+      // the task box manually when she's confident it shipped.
+    };
+    return (
+      <div className={`flex items-center gap-2 p-2.5 rounded-lg border ${danger ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'}`}>
+        <button
+          onClick={() => completeTask(task)}
+          className="w-4 h-4 rounded border-2 border-slate-300 hover:border-emerald-500 hover:bg-emerald-50 shrink-0"
+          title="Mark complete"
+        />
+        <button onClick={() => onSelectLead(lead.id)} className="flex-1 min-w-0 text-left">
+          <div className="text-sm text-slate-900 truncate">{task.title}</div>
+          <div className="text-[11px] text-slate-500">{lead.fullName}{task.priority === 'high' ? ' · HIGH' : ''}</div>
+        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {(is75AppOutreach || is75CurateOutreach) && (
+            <button
+              onClick={handleQuickSend}
+              className="px-2 py-0.5 rounded-full text-[10px] font-semibold text-white inline-flex items-center gap-1"
+              style={{ backgroundColor: 'var(--brand-gold)' }}
+              title={is75AppOutreach
+                ? 'Open composer with the application-link template pre-filled'
+                : 'Open composer with the curated-link intro pre-filled'}
+            >
+              <Send className="w-3 h-3" /> Send
+            </button>
+          )}
+          <button onClick={() => snoozeTask(task, 1)} className="text-[10px] text-slate-500 hover:text-slate-900 px-1.5 py-0.5 rounded hover:bg-slate-100" title="Snooze 1 day">+1d</button>
+          <button onClick={() => snoozeTask(task, 7)} className="text-[10px] text-slate-500 hover:text-slate-900 px-1.5 py-0.5 rounded hover:bg-slate-100" title="Snooze 1 week">+1w</button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-5">
@@ -8286,6 +8529,15 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
           showToast={showToast}
           setSubview={setSubview}
           settings={settings}
+          onCompose={(arg) => {
+            // Quick-send from a task row: open the lead detail + pop the
+            // compose modal in one go with the bucket-correct template
+            // pre-filled. Caller passes { leadId, kind, prefill }.
+            const lead = leads.find((l) => l.id === arg.leadId);
+            if (!lead) return;
+            setSelectedLeadId(arg.leadId);
+            setComposeModal({ lead, template: arg.kind || 'sms-custom', prefill: arg.prefill || '' });
+          }}
         />
       )}
       {subview === 'inbox' && <InboxView leads={leads} onSelectLead={setSelectedLeadId} updateLead={updateLead} settings={settings} showToast={showToast} />}
@@ -13202,6 +13454,29 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
             >
               Text
             </Button>
+            {/* One-tap Mark Lost — bypasses the Actions menu so Morgan can
+                kill a dead lead in a single tap without hunting for the ▾.
+                Confirms before flipping the stage so she can't fat-finger
+                a real lead into lost-land. */}
+            {lead.stage !== 'lost' && lead.stage !== 'leased' && lead.stage !== 'archived' && (
+              <button
+                onClick={() => {
+                  if (!confirm(`Mark ${lead.fullName.split(' ')[0]} as lost? This stops all auto-follow-ups for this lead.`)) return;
+                  updateLead(lead.id, {
+                    stage: 'lost',
+                    activities: [
+                      ...(lead.activities || []),
+                      { id: `a_${Date.now()}`, type: 'stage-change', timestamp: new Date().toISOString(), message: 'Marked lost (quick action)' },
+                    ],
+                  });
+                  showToast('Lead marked lost');
+                }}
+                title="Mark this lead as lost — stops all automations"
+                className="px-2.5 py-1 rounded-full text-[11px] font-medium border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 inline-flex items-center gap-1"
+              >
+                <X className="w-3 h-3" /> Lost
+              </button>
+            )}
           </div>
         </div>
 
@@ -13289,6 +13564,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               <LeadSummaryCard lead={lead} />
               {/* AI Next Best Action — one concrete recommended move */}
               <NextBestActionCard lead={lead} onCompose={onCompose} showToast={showToast} updateLead={updateLead} settings={settings} />
+              <LeadAutomationsCard lead={lead} />
               {/* Phase 1: send curated portal link. */}
               <CuratedLinkPanel lead={lead} updateLead={updateLead} showToast={showToast} />
               {/* Phase 2: after lead picks properties, agent reviews + sends scheduling link. */}
