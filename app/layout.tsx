@@ -21,11 +21,20 @@ export const metadata: Metadata = {
     url: "https://rentalsphilly.com",
     siteName: "Rentals Philly",
     type: "website",
+    images: [
+      {
+        url: "https://rentalsphilly.com/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "Rentals Philly — Hand-picked Philly rentals, scheduled by text",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Rentals Philly",
     description: "Hand-picked Philadelphia rentals. Real agent. Booked by text.",
+    images: ["https://rentalsphilly.com/og-image.png"],
   },
   // Web app manifest powers Android "Install app" + standalone PWA mode.
   manifest: "/manifest.json",

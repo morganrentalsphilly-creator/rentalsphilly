@@ -5797,18 +5797,20 @@ function ShareIntakeButton({ showToast }) {
     // SHARED link must always send the recipient to the real domain so
     // her audience sees the polished URL.
     const shareUrl = 'https://rentalsphilly.com/?start=1';
-    const shareText = `Looking for a Philly rental? Tell me what you want and I'll hand-pick options — no scrolling Zillow for hours: ${shareUrl}`;
 
     try {
       // Prefer the native share sheet (iPhone Safari, modern Android browsers)
       // which lets Morgan pick Messages / Mail / AirDrop / Instagram DM.
+      //
+      // IMPORTANT: pass ONLY `url` — not `text`. iOS Messages and most other
+      // apps concatenate `text` in front of `url`, producing
+      // "Looking for a Philly rental?... https://..." which is wordy and
+      // looks spammy. Morgan wants a clean link she can write her own intro
+      // around per-conversation. We also drop `title` because Mail uses it
+      // as a subject line — let Morgan choose what to write per-app.
       if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
         try {
-          await navigator.share({
-            title: 'Rentals Philly',
-            text: shareText,
-            url: shareUrl,
-          });
+          await navigator.share({ url: shareUrl });
           // Don't toast on native share — the share sheet IS the feedback.
           return;
         } catch (shareErr) {
