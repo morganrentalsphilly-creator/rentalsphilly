@@ -495,7 +495,11 @@ export default function CuratedPage() {
               onChange={(e) => setNote(e.target.value)}
               rows={3}
               placeholder="Questions, must-haves, or constraints…"
-              className="w-full border-2 border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-slate-400 resize-none bg-white"
+              // 16px font prevents iOS Safari from auto-zooming on focus,
+              // which jumps the layout + ruins the visual rhythm. Required on
+              // every customer-facing input.
+              style={{ fontSize: 16 }}
+              className="w-full border-2 border-slate-200 rounded-2xl px-4 py-3 focus:outline-none focus:border-slate-400 resize-none bg-white"
             />
           </section>
         </main>
@@ -730,7 +734,8 @@ export default function CuratedPage() {
               onChange={(e) => setNote2(e.target.value)}
               rows={3}
               placeholder="Constraints, parking notes, etc…"
-              className="w-full border-2 border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-slate-400 resize-none bg-white"
+              style={{ fontSize: 16 }}
+              className="w-full border-2 border-slate-200 rounded-2xl px-4 py-3 focus:outline-none focus:border-slate-400 resize-none bg-white"
             />
           </section>
         </main>

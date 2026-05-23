@@ -15296,21 +15296,28 @@ function TodayStrip({ metrics, upcomingTours, overdueTasks, todayTasks }) {
     const now = new Date();
     return d.toDateString() === now.toDateString();
   }).length;
+  // Full 6-stat strip for desktop survey-the-day. Mobile gets a compact 2-up
+  // strip showing only the action-driving counts (tours today + overdues)
+  // so the strip doesn't crowd out the content below it.
   const stats = [
-    { label: 'Tours today', value: today, icon: CalendarDays, tone: today > 0 ? 'accent' : 'neutral' },
-    { label: 'Upcoming', value: upcomingTours.length, icon: Clock },
-    { label: 'Overdue tasks', value: overdueTasks.length, icon: AlertTriangle, tone: overdueTasks.length > 0 ? 'danger' : 'neutral' },
-    { label: 'Today\'s tasks', value: todayTasks.length, icon: Flag },
-    { label: 'Active leads', value: metrics.total - metrics.leased, icon: Users },
-    { label: 'Leased', value: metrics.leased, icon: Award, tone: 'positive' },
+    { key: 'tours', label: 'Tours today', value: today, icon: CalendarDays, tone: today > 0 ? 'accent' : 'neutral', mobile: true },
+    { key: 'overdue', label: 'Overdue', value: overdueTasks.length, icon: AlertTriangle, tone: overdueTasks.length > 0 ? 'danger' : 'neutral', mobile: true },
+    { key: 'upcoming', label: 'Upcoming', value: upcomingTours.length, icon: Clock },
+    { key: 'today-tasks', label: "Today's tasks", value: todayTasks.length, icon: Flag },
+    { key: 'active', label: 'Active leads', value: metrics.total - metrics.leased, icon: Users },
+    { key: 'leased', label: 'Leased', value: metrics.leased, icon: Award, tone: 'positive' },
   ];
   return (
-    <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 mb-6">
       {stats.map((s, i) => (
         <div
-          key={i}
+          key={s.key}
           className={`rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-[0_1px_2px_0_rgba(15,23,42,0.04)] ${
-            s.tone === 'accent' ? 'ring-1 ring-offset-1 ring-amber-200' :
+            // Mobile: only show the 2 most-action-driving stats. Hide the
+            // rest with `hidden sm:block` so the strip stays at 2 cells wide.
+            !s.mobile ? 'hidden sm:block' : ''
+          } ${
+            s.tone === 'accent' && s.value > 0 ? 'ring-1 ring-offset-1 ring-amber-200' :
             s.tone === 'danger' && s.value > 0 ? 'ring-1 ring-offset-1 ring-red-200' :
             ''
           }`}
@@ -15377,7 +15384,101 @@ function CalendarView({ settings, leads, onSelectLead }) {
         }
       />
 
-      <Card className="p-4">
+      {/* MOBILE: agenda list. The 7-column grid below crushes to ~50px wide
+          cells on iPhone and is unreadable. The agenda groups dates with
+          something on them (tour, shift, or off) into a scannable vertical
+          list. Hidden at sm: and up, where the grid is fine. */}
+      <Card className="p-3 sm:hidden">
+        {(() => {
+          const allDates = weeks.flat();
+          const interesting = allDates.filter((d) => {
+            const dateStr = d.toISOString().slice(0, 10);
+            if (dateStr < todayStr) return false; // past — skip
+            return (toursByDate[dateStr]?.length > 0)
+              || (shiftsByDate[dateStr]?.length > 0)
+              || blockedDates.has(dateStr);
+          });
+          if (interesting.length === 0) {
+            return (
+              <div className="text-center py-10 text-sm text-slate-500">
+                <CalendarDays className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                Nothing scheduled in this window.
+                <div className="text-xs text-slate-400 mt-1">Tap forward to see future weeks.</div>
+              </div>
+            );
+          }
+          return (
+            <div className="divide-y divide-slate-100">
+              {interesting.map((d) => {
+                const dateStr = d.toISOString().slice(0, 10);
+                const isToday = dateStr === todayStr;
+                const dayTours = (toursByDate[dateStr] || []).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+                const dayShifts = shiftsByDate[dateStr] || [];
+                const blocked = blockedDates.has(dateStr);
+                const weekday = d.toLocaleDateString('en-US', { weekday: 'short' });
+                return (
+                  <div key={dateStr} className="py-3 first:pt-1 last:pb-1">
+                    <div className="flex items-baseline gap-2 mb-2">
+                      <div className={`text-base font-semibold ${isToday ? 'text-brand-gold' : 'text-slate-900'}`}>
+                        {weekday}, {d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </div>
+                      {isToday && (
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded" style={{ backgroundColor: 'var(--brand-gold)', color: 'white' }}>
+                          Today
+                        </span>
+                      )}
+                    </div>
+                    {blocked && (
+                      <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-2 py-1">
+                        <X className="w-3 h-3" /> Day off
+                      </div>
+                    )}
+                    {!blocked && dayShifts.length > 0 && (
+                      <div className="mb-1.5 flex flex-wrap gap-1.5">
+                        {dayShifts.map((s) => (
+                          <span key={s.id} className="inline-flex items-center gap-1 text-[11px] bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg px-2 py-1">
+                            <Clock className="w-3 h-3" />
+                            {fmt24to12(s.start).replace(':00', '')}–{fmt24to12(s.end).replace(':00', '')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {dayTours.length > 0 && (
+                      <div className="space-y-1.5">
+                        {dayTours.map((t) => {
+                          const tone = t.status === 'completed' ? 'bg-slate-100 text-slate-700 border-slate-200' :
+                                       t.status === 'no-show' ? 'bg-amber-50 text-amber-900 border-amber-200' :
+                                       'bg-blue-50 text-blue-900 border-blue-200';
+                          const firstAddr = (t.listings || [])[0]?.address;
+                          return (
+                            <button
+                              key={t.id}
+                              onClick={() => onSelectLead(t.lead.id)}
+                              className={`w-full text-left flex items-start gap-2 rounded-lg border px-2.5 py-2 ${tone}`}
+                            >
+                              <div className="text-sm font-bold tabular-nums shrink-0 w-14">{t.time || '—'}</div>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-medium truncate">{t.lead.fullName}</div>
+                                {firstAddr && (
+                                  <div className="text-[11px] opacity-80 truncate mt-0.5">{firstAddr}</div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </Card>
+
+      {/* DESKTOP: the 7-column grid stays as-is. Better for surveying capacity
+          across weeks at a glance. */}
+      <Card className="p-4 hidden sm:block">
         <div className="grid grid-cols-7 gap-1 mb-1">
           {DAYS.map((d) => (
             <div key={d} className="text-[10px] uppercase tracking-wider text-slate-400 text-center font-semibold py-1">{d}</div>
