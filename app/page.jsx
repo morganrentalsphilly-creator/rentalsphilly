@@ -61,10 +61,20 @@ const bucketInfo = {
 
 // Filter the active property pool against a lead's criteria.
 // Takes `pool` as a parameter so the caller passes in the live DB-backed
-// properties array (or MOCK_LISTINGS as a fallback if the DB is empty).
-// `excludedBrokerages` is a lowercased Set of brokerage names to hide globally.
+// properties array. `excludedBrokerages` is a lowercased Set of brokerage
+// names to hide globally.
+//
+// CRITICAL: there is NO MOCK_LISTINGS fallback. Previously this fell back
+// to fake demo data when the property pool was empty — which meant if
+// Morgan ever had zero active properties (day one before importing,
+// after archiving all stale listings), real leads would see a curated
+// portal stuffed with Unsplash stock photos and fake (215) 555-01XX
+// phone numbers. Far better to return an empty array and have the UI
+// show the proper "no matches" empty state. MOCK_LISTINGS is still
+// defined above for any future dev fixture use but is never silently
+// substituted in for production callers.
 const matchListings = (lead, pool, excludedBrokerages) => {
-  const source = (pool && pool.length > 0) ? pool : MOCK_LISTINGS;
+  const source = Array.isArray(pool) ? pool : [];
   const blocked = excludedBrokerages instanceof Set
     ? excludedBrokerages
     : new Set((excludedBrokerages || []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
