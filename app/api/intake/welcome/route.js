@@ -56,7 +56,7 @@ async function aiWelcomeDraft(lead, agentName, applicationUrl) {
   // Bucket-specific strategy. ZERO credit mentions.
   let strategyNote;
   if (bucket === 'GCMS') {
-    strategyNote = 'They are moving SOON. Tell them you are hand-picking rentals NOW and will send a personalized link with photos shortly. Warm and direct — they should expect to hear back fast.';
+    strategyNote = 'They are moving SOON. Tell them you have their criteria and will start hand-picking rentals AS SOON AS YOU CAN — they should expect a personalized link with photos within the next day or so. Warm and grounded, not "right this second" energy (you are a one-person operation, not a 24/7 service).';
   } else if (bucket === 'GCM75+') {
     strategyNote = 'They are moving LATER (75+ days out). Tell them you will reach out about 75 days before their move-in date with hand-picked rentals. Set expectations: light touch until then.';
   } else if (bucket === 'BCMS') {
@@ -140,9 +140,9 @@ Constraints:
 // double signature.
 const DEFAULT_TEMPLATES = {
   GCMS: {
-    sms: `Rentals Philly: Got it, {firstName} — I'm hand-picking rentals for you now. You'll get a personalized link with photos soon. Reply STOP to opt out.`,
-    emailSubject: `Hand-picked Philly rentals — incoming`,
-    email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,`,
+    sms: `Rentals Philly: Got it, {firstName} — I'll start hand-picking rentals for you as soon as I can and send a personalized link with photos. Reply STOP to opt out.`,
+    emailSubject: `Hand-picked Philly rentals — coming soon`,
+    email: `Hi {firstName},\n\nThanks for reaching out. I'll start hand-picking rentals that match what you described and send you a personalized link as soon as I can.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,`,
   },
   BCMS: {
     sms: `Rentals Philly: Got it, {firstName}! To get you ready fast, please submit a quick application here so we can move when the right place comes up: {applicationUrl} — Reply STOP to opt out.`,

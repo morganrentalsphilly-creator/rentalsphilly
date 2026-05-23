@@ -243,9 +243,9 @@ const DEFAULT_AGENT_SETTINGS = {
 
   welcomeMessages: {
     GCMS: {
-      sms: `Rentals Philly: Got it, {firstName} — I'm hand-picking rentals for you now. You'll get a personalized link with photos soon. Reply STOP to opt out.`,
-      emailSubject: 'Hand-picked Philly rentals — incoming',
-      email: `Hi {firstName},\n\nThanks for reaching out. Since you're moving soon, I'm prioritizing your search — I'll hand-pick rentals that match what you described and send you a personalized link.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,\n— {agentName}`,
+      sms: `Rentals Philly: Got it, {firstName} — I'll start hand-picking rentals for you as soon as I can and send a personalized link with photos. Reply STOP to opt out.`,
+      emailSubject: 'Hand-picked Philly rentals — coming soon',
+      email: `Hi {firstName},\n\nThanks for reaching out. I'll start hand-picking rentals that match what you described and send you a personalized link as soon as I can.\n\nWhen the link arrives, tap through to view photos and tell me which ones you'd like to tour. I'll handle the scheduling from there.\n\nTalk soon,\n— {agentName}`,
     },
     'GCM75+': {
       sms: `Rentals Philly: Thanks {firstName}! Since your move is further out, I'll reach out about 75 days before {moveInDate} with hand-picked rentals. Save my number for the meantime. Reply STOP to opt out.`,
@@ -5313,8 +5313,8 @@ function CuratingConfirmed({ lead, agentName, agentPhone /* unused, onDone */ })
           </div>
           <h1 className="text-3xl md:text-4xl font-semibold text-slate-900 mb-2">Got it, {firstName}!</h1>
           <p className="text-slate-600 max-w-md mx-auto leading-relaxed">
-            {agentLabel} is hand-picking rentals that match what you&apos;re looking for.
-            You&apos;ll get a personalized link by <strong>text and email</strong> soon.
+            {agentLabel} will start hand-picking rentals that match what you&apos;re looking for as soon as possible.
+            You&apos;ll get a personalized link by <strong>text and email</strong>.
           </p>
         </div>
 
