@@ -5770,6 +5770,96 @@ function NotificationPrompt() {
 //
 // Each alert has its own severity (error / warning / info) and a CTA that
 // jumps to the right view. Hides entirely when there are no signals.
+// ============================================================
+// SHARE INTAKE LINK — one-tap share button for the public intake URL.
+//
+// On iPhone Safari this triggers the native iOS share sheet (Messages, Mail,
+// Twitter, AirDrop, etc.) via navigator.share — making it trivial to drop
+// the link into a text to a referral. On desktop / unsupported browsers
+// it falls back to copy-to-clipboard with a confirmation toast.
+//
+// The URL is always the deployed app root (NEXT_PUBLIC_APP_URL when set,
+// otherwise window.location.origin). Lives in the Today view's action chip
+// row so it's always one tap from the home screen.
+// ============================================================
+function ShareIntakeButton({ showToast }) {
+  const [copied, setCopied] = useState(false);
+  const inFlightRef = useRef(false);
+
+  const handleShare = async (e) => {
+    e.stopPropagation();
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
+    // Resolve the URL on click (not at mount) so SSR doesn't crash on
+    // `window`. Prefer the explicit env-var if set so production deeplinks
+    // can use a custom domain even when accessed from staging.
+    const url = (typeof window !== 'undefined'
+      ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)
+      : 'https://rentalsphilly.vercel.app').replace(/\/$/, '');
+    const shareUrl = `${url}/?start=1`; // ?start=1 deep-links past the landing
+    const shareText = `Looking for a Philly rental? Tell me what you want and I'll hand-pick options — no scrolling Zillow for hours: ${shareUrl}`;
+
+    try {
+      // Prefer the native share sheet (iPhone Safari, modern Android browsers)
+      // which lets Morgan pick Messages / Mail / AirDrop / Instagram DM.
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        try {
+          await navigator.share({
+            title: 'Rentals Philly',
+            text: shareText,
+            url: shareUrl,
+          });
+          // Don't toast on native share — the share sheet IS the feedback.
+          return;
+        } catch (shareErr) {
+          // User cancelled the share sheet — silent abort. Only fall back to
+          // clipboard on actual errors (older browsers, no permission, etc.).
+          if (shareErr?.name === 'AbortError') return;
+          // Otherwise fall through to clipboard.
+        }
+      }
+      // Fallback: copy to clipboard.
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        setCopied(true);
+        showToast('Link copied to clipboard');
+        setTimeout(() => setCopied(false), 1800);
+      } else {
+        showToast({ message: shareUrl, kind: 'info' });
+      }
+    } catch (err) {
+      console.error('[share intake]', err);
+      showToast({ message: `Couldn't share — ${err.message}`, kind: 'error' });
+    } finally {
+      inFlightRef.current = false;
+    }
+  };
+
+  return (
+    <button
+      onClick={handleShare}
+      title="Share your public intake link"
+      className={`px-3 py-1.5 rounded-full font-medium inline-flex items-center gap-1.5 transition-colors ${
+        copied
+          ? 'bg-emerald-100 text-emerald-800'
+          : 'text-white hover:opacity-90'
+      }`}
+      style={copied ? undefined : { backgroundColor: 'var(--brand-gold)' }}
+    >
+      {copied ? (
+        <>
+          <Check className="w-3 h-3" /> Copied
+        </>
+      ) : (
+        <>
+          <Send className="w-3 h-3" /> Share my link
+        </>
+      )}
+    </button>
+  );
+}
+
 function HeadsUpBanner({ leads, overdueTasks, setSubview, onSelectLead }) {
   const alerts = useMemo(() => {
     const now = Date.now();
@@ -7381,6 +7471,7 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
+          <ShareIntakeButton showToast={showToast} />
           <button onClick={() => setSubview('inbox')} className="px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium inline-flex items-center gap-1.5">
             <Inbox className="w-3 h-3" /> Inbox
           </button>
