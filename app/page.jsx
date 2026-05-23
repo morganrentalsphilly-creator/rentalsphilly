@@ -2187,7 +2187,7 @@ export default function App() {
       // Only include the row if the email actually sent — otherwise the
       // lead's thread would show a confirmation they never received.
       messages: confirmRow ? [...(lead.messages || []), confirmRow] : (lead.messages || []),
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'waitlisted', timestamp: new Date().toISOString(), message: `Added to waitlist (${preferredDates.length} dates)` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'waitlisted', timestamp: new Date().toISOString(), message: `Added to waitlist (${preferredDates.length} dates)` }],
     });
   };
 
@@ -2273,14 +2273,14 @@ export default function App() {
     }
 
     const newTasks = interpretation.recommendation === 'flag'
-      ? [{ id: `t_${Date.now()}`, title: `Review ${firstName}'s screening report`, dueDate: new Date().toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', flags: interpretation.flags }]
+      ? [{ id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, title: `Review ${firstName}'s screening report`, dueDate: new Date().toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', flags: interpretation.flags }]
       : [];
     await updateLead(leadId, {
       screening: { status: 'completed', enteredAt: new Date().toISOString(), provider: 'RentSpree (manual entry)', report, interpretation },
       // Only include the SMS row if it actually sent — otherwise the lead's
       // thread would show a message the client never received.
       messages: [...(lead.messages || []), internalEmail, ...(clientSmsRow ? [clientSmsRow] : [])],
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'screening-logged', timestamp: new Date().toISOString(), message: `Screening logged — ${interpretation.summary}` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'screening-logged', timestamp: new Date().toISOString(), message: `Screening logged — ${interpretation.summary}` }],
       tasks: [...(lead.tasks || []), ...newTasks],
     });
     showToast(`Screening logged · ${interpretation.recommendation}`);
@@ -2327,7 +2327,7 @@ export default function App() {
       tasks: newTasks,
       activities: [
         ...(lead.activities || []),
-        { id: `a_${Date.now()}`, type: 'application-uploaded', timestamp: new Date().toISOString(), message: `Application PDF uploaded: ${fileData.filename}` },
+        { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'application-uploaded', timestamp: new Date().toISOString(), message: `Application PDF uploaded: ${fileData.filename}` },
         ...(shouldCreateCurateTask ? [{
           id: `a_${Date.now()}_t`,
           type: 'task-auto-created',
@@ -2348,7 +2348,7 @@ export default function App() {
     const lead = leads.find(l => l.id === leadId);
     if (!lead) return;
     const newSubmission = {
-      id: `sub_${Date.now()}`,
+      id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       listing: submission.listing,
       landlordEmail: submission.landlordEmail,
       landlordName: submission.landlordName,
@@ -2371,7 +2371,7 @@ export default function App() {
       submissions: [...(lead.submissions || []), newSubmission],
       stage: 'applied',
       tasks: [...(lead.tasks || []), ...newTasks],
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'submission-created', timestamp: new Date().toISOString(), message: `Application prepared for ${submission.listing.address} — email copied to clipboard` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'submission-created', timestamp: new Date().toISOString(), message: `Application prepared for ${submission.listing.address} — email copied to clipboard` }],
     });
     showToast('Submission logged · follow-ups scheduled');
   };
@@ -2394,7 +2394,7 @@ export default function App() {
       submissions,
       tasks,
       stage: newStage,
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'submission-status', timestamp: new Date().toISOString(), message: `${sub.listing.address}: status → ${newStatus}` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'submission-status', timestamp: new Date().toISOString(), message: `${sub.listing.address}: status → ${newStatus}` }],
     });
     showToast(`Status updated: ${newStatus}`);
   };
@@ -2409,7 +2409,7 @@ export default function App() {
     const sub = submissions.find(s => s.id === submissionId);
     await updateLead(leadId, {
       submissions,
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'submission-followup', timestamp: new Date().toISOString(), message: `Followed up on ${sub.listing.address}: ${note.slice(0, 60)}${note.length > 60 ? '…' : ''}` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'submission-followup', timestamp: new Date().toISOString(), message: `Followed up on ${sub.listing.address}: ${note.slice(0, 60)}${note.length > 60 ? '…' : ''}` }],
     });
     showToast('Follow-up logged');
   };
@@ -2420,7 +2420,7 @@ export default function App() {
     await updateLead(leadId, {
       application: null,
       applicationStatus: null,
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'application-removed', timestamp: new Date().toISOString(), message: `Application PDF removed` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'application-removed', timestamp: new Date().toISOString(), message: `Application PDF removed` }],
     });
     showToast('Application removed');
   };
@@ -2431,7 +2431,7 @@ export default function App() {
     const newReviewed = !lead.application.reviewed;
     await updateLead(leadId, {
       application: { ...lead.application, reviewed: newReviewed, reviewedAt: newReviewed ? new Date().toISOString() : null },
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: newReviewed ? 'application-reviewed' : 'application-unreviewed', timestamp: new Date().toISOString(), message: newReviewed ? 'Application marked as reviewed' : 'Application unmarked as reviewed' }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: newReviewed ? 'application-reviewed' : 'application-unreviewed', timestamp: new Date().toISOString(), message: newReviewed ? 'Application marked as reviewed' : 'Application unmarked as reviewed' }],
     });
     showToast(newReviewed ? 'Marked as reviewed' : 'Marked as unreviewed');
   };
@@ -2486,7 +2486,7 @@ export default function App() {
       activities: [
         ...(lead.activities || []),
         {
-          id: `a_${Date.now()}`,
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: clearing ? 'application-unmarked-received' : 'application-marked-received',
           timestamp: new Date().toISOString(),
           message: clearing
@@ -2538,7 +2538,7 @@ export default function App() {
     // just creates the lead row and kicks off the welcome flow.
 
     const welcomeActivity = {
-      id: `a_${Date.now()}`,
+      id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       lead_id: id,
       type: 'lead-created',
       message: `Lead created · ${bucket}`,
@@ -2568,7 +2568,7 @@ export default function App() {
         ? `75-day check-in: send application link to ${firstName}`
         : `75-day check-in: start curating for ${firstName}`;
       tasks.push({
-        id: `t_${Date.now()}`,
+        id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         lead_id: id,
         title: taskTitle,
         due_date: followUpDate.toISOString().split('T')[0],
@@ -2728,7 +2728,7 @@ export default function App() {
     if (!lead) return;
     const firstName = lead.fullName.split(' ')[0];
     const virtualTour = {
-      id: `tour_${Date.now()}`, type: 'virtual', tourType: 'virtual', listings,
+      id: `tour_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'virtual', tourType: 'virtual', listings,
       status: 'pending-videos', requestedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
     };
     // Send both via server wrappers.
@@ -2772,7 +2772,7 @@ export default function App() {
           automated: true,
         }] : []),
       ],
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'virtual-tour-requested', timestamp: new Date().toISOString(), message: `Virtual tour requested: ${listings.length} properties` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'virtual-tour-requested', timestamp: new Date().toISOString(), message: `Virtual tour requested: ${listings.length} properties` }],
       tasks: [...(lead.tasks || []), { id: `t_${Date.now()}_v`, title: `Send video tour to ${firstName}`, dueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', relatedTourId: virtualTour.id }],
     });
   };
@@ -2780,7 +2780,7 @@ export default function App() {
   const addTour = async (leadId, tour) => {
     const lead = leads.find(l => l.id === leadId);
     if (!lead) return;
-    const newTour = { ...tour, id: `tour_${Date.now()}`, status: 'scheduled', tourType: 'in-person', createdAt: new Date().toISOString(), brightMLSStatus: 'pending' };
+    const newTour = { ...tour, id: `tour_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, status: 'scheduled', tourType: 'in-person', createdAt: new Date().toISOString(), brightMLSStatus: 'pending' };
     const props = tour.listings || [];
     const firstName = lead.fullName.split(' ')[0];
     const startDT = parseSlotDateTime({ date: tour.date, time: tour.time });
@@ -2830,7 +2830,7 @@ export default function App() {
           automated: true,
         }] : []),
       ],
-      activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'tour-booked', timestamp: new Date().toISOString(), message: `Tour booked: ${props.length} properties for ${fmtDate(tour.date)}` }],
+      activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'tour-booked', timestamp: new Date().toISOString(), message: `Tour booked: ${props.length} properties for ${fmtDate(tour.date)}` }],
     });
     await saveSlots(slots.map(s => (s.date === tour.date && s.time === tour.time) ? { ...s, status: 'booked', bookedBy: leadId } : s));
   };
@@ -6884,7 +6884,7 @@ function NextBestActionCard({ lead, onCompose, showToast, updateLead, settings }
           curatedLinkSentAt: lead.curatedLinkSentAt || new Date().toISOString(),
           stage: lead.stage === 'new' || lead.stage === 'matched' ? 'tour-requested' : lead.stage,
           activities: [...(lead.activities || []), {
-            id: `a_${Date.now()}`,
+            id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
             type: 'scheduling-link-sent',
             timestamp: new Date().toISOString(),
             message: `Scheduling link sent to ${firstName} (${picks.length} ${picks.length === 1 ? 'property' : 'properties'}) — via Next Best Action`,
@@ -7493,7 +7493,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
             await updateLead(lead.id, {
               tasks,
               activities: [...(lead.activities || []), {
-                id: `a_${Date.now()}`,
+                id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                 type: 'task-completed',
                 timestamp: new Date().toISOString(),
                 message: `Task completed: ${item.action}`,
@@ -7552,7 +7552,7 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
                         raw: { ...(lead.raw || {}), snoozed_until: newDate, snoozed_reason: 'dismissed-from-focus' },
                         activities: [
                           ...(lead.activities || []),
-                          { id: `a_${Date.now()}`, type: 'snoozed', timestamp: new Date().toISOString(), message: 'Dismissed from Focus Now — snoozed 7d' },
+                          { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'snoozed', timestamp: new Date().toISOString(), message: 'Dismissed from Focus Now — snoozed 7d' },
                         ],
                       });
                       showToast('Dismissed · snoozed 7d');
@@ -8039,7 +8039,7 @@ function AddTaskQuickForm({ leads, updateLead, showToast }) {
     await updateLead(leadId, {
       tasks: [...(lead.tasks || []), newTask],
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'task-added',
         timestamp: new Date().toISOString(),
         message: `Task added: ${title.trim()}`,
@@ -8844,14 +8844,14 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
             timestamp: emailResult.message.created_at || new Date().toISOString(),
             automated: false,
           } : {
-            id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
+            id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, channel: 'email', direction: 'outbound', status: 'sent',
             to: lead.email, via: 'resend',
             subject: msg.subject, body: msg.body, timestamp: new Date().toISOString(),
           };
         }
         updateLead(lead.id, {
           messages: [...(lead.messages || []), newMsg],
-          activities: [...(lead.activities || []), { id: `a_${Date.now()}`, type: 'message-sent', timestamp: new Date().toISOString(), message: `${msg.channel === 'sms' ? 'SMS' : 'Email'} sent` }],
+          activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'message-sent', timestamp: new Date().toISOString(), message: `${msg.channel === 'sms' ? 'SMS' : 'Email'} sent` }],
         });
         showToast(`${msg.channel === 'sms' ? 'SMS' : 'Email'} sent`);
         setComposeModal(null);
@@ -9848,7 +9848,7 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast, setting
     const next = {
       tours: updatedTours,
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: `tour-${outcome}`,
         timestamp: new Date().toISOString(),
         message: `Tour ${outcome}: ${firstAddr}`,
@@ -11345,7 +11345,7 @@ function CommissionPanel({ lead, updateLead, showToast }) {
     await updateLead(lead.id, {
       raw: { ...(lead.raw || {}), commission: nextDraft },
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'commission-update',
         timestamp: new Date().toISOString(),
         message: `Commission ${nextDraft.status}${nextDraft.amount ? ` · $${Number(nextDraft.amount).toLocaleString()}` : ''}`,
@@ -11529,7 +11529,7 @@ function StageDropdown({ lead, updateLead, showToast }) {
     const updates = {
       stage: newStageId,
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'stage-change',
         timestamp: new Date().toISOString(),
         message: `Stage → ${PIPELINE_STAGES.find(s => s.id === newStageId)?.label || newStageId}${closeNote}`,
@@ -11832,7 +11832,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         curatedLinkSentAt: lead.curatedLinkSentAt || new Date().toISOString(),
         stage: lead.stage === 'new' || lead.stage === 'matched' ? 'tour-requested' : lead.stage,
         activities: [...(lead.activities || []), {
-          id: `a_${Date.now()}`,
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'scheduling-link-sent',
           timestamp: new Date().toISOString(),
           message: `Scheduling link sent to ${firstName} (${addressesToSend.length} ${addressesToSend.length === 1 ? 'property' : 'properties'})`,
@@ -12129,7 +12129,7 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
           },
         },
         activities: [...(lead.activities || []), {
-          id: `a_${Date.now()}`,
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'application-link-sent',
           timestamp: new Date().toISOString(),
           message: mode === 'rentspree'
@@ -12175,7 +12175,7 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
         },
       },
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'application-status-changed',
         timestamp: new Date().toISOString(),
         message: `Application → ${newLabel}`,
@@ -12203,7 +12203,7 @@ function ApplicationLinkPanel({ lead, updateLead, showToast, settings, allLeads 
         },
       },
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: 'application-followup',
         timestamp: new Date().toISOString(),
         message: `Application follow-up: ${note.slice(0, 100)}${note.length > 100 ? '…' : ''}`,
@@ -12577,7 +12577,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         stage: lead.stage === 'new' ? 'matched' : lead.stage,
         tasks: updatedTasks,
         activities: [...(lead.activities || []), {
-          id: `a_${Date.now()}`,
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'curated-link-sent',
           timestamp: new Date().toISOString(),
           message: `Curated link sent to ${firstName}`,
@@ -12735,7 +12735,7 @@ function LeadDocumentsPanel({ lead, updateLead, showToast }) {
       await updateLead(lead.id, {
         raw: { ...(lead.raw || {}), documents: next },
         activities: [...(lead.activities || []), {
-          id: `a_${Date.now()}`,
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'document-uploaded',
           timestamp: new Date().toISOString(),
           message: `Uploaded ${successCount} document${successCount === 1 ? '' : 's'}${failedNames.length ? ` (${failedNames.length} failed)` : ''}`,
@@ -13250,7 +13250,7 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
     await updateLead(lead.id, {
       raw: { ...(lead.raw || {}), automation_paused: !isAutomationPaused },
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`,
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: isAutomationPaused ? 'automation-resumed' : 'automation-paused',
         timestamp: new Date().toISOString(),
         message: isAutomationPaused ? 'Auto-nudges resumed for this lead' : 'Auto-nudges paused for this lead',
@@ -13264,7 +13264,7 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
     await updateLead(lead.id, {
       stage: newStage,
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`, type: 'stage-changed',
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'stage-changed',
         timestamp: new Date().toISOString(),
         message: `Stage → ${label}`,
       }],
@@ -13278,7 +13278,7 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
     await updateLead(lead.id, {
       raw: { ...(lead.raw || {}), snoozed_until: until.toISOString() },
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`, type: 'snoozed',
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'snoozed',
         timestamp: new Date().toISOString(),
         message: `Snoozed for ${days} day${days === 1 ? '' : 's'}`,
       }],
@@ -13290,7 +13290,7 @@ function LeadActionsMenu({ lead, updateLead, removeLead, showToast, onClose }) {
     await updateLead(lead.id, {
       raw: { ...(lead.raw || {}), snoozed_until: null },
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`, type: 'unsnoozed',
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'unsnoozed',
         timestamp: new Date().toISOString(),
         message: `Unsnoozed`,
       }],
@@ -13642,7 +13642,7 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
                     stage: 'lost',
                     activities: [
                       ...(lead.activities || []),
-                      { id: `a_${Date.now()}`, type: 'stage-change', timestamp: new Date().toISOString(), message: 'Marked lost (quick action)' },
+                      { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'stage-change', timestamp: new Date().toISOString(), message: 'Marked lost (quick action)' },
                     ],
                   });
                   showToast('Lead marked lost');
@@ -14099,7 +14099,7 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
       stage: stageId,
       tasks: [...(lead.tasks || []), ...newTasks],
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`, type: 'stage-changed',
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'stage-changed',
         timestamp: new Date().toISOString(),
         message: `Stage → ${target?.label || stageId} (drag)`,
       }],
@@ -14142,7 +14142,7 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
       stage: next.id,
       tasks: [...(lead.tasks || []), ...newTasks],
       activities: [...(lead.activities || []), {
-        id: `a_${Date.now()}`, type: 'stage-advanced',
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'stage-advanced',
         timestamp: new Date().toISOString(),
         message: `Stage → ${next.label}`,
       }],
@@ -14796,7 +14796,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
           subject: result.message.subject, body: result.message.body,
           timestamp: result.message.created_at || new Date().toISOString(), automated: false,
         } : {
-          id: `m_${Date.now()}`, channel: 'email', direction: 'outbound', status: 'sent',
+          id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, channel: 'email', direction: 'outbound', status: 'sent',
           to: lead.email, via: 'resend',
           subject: composerSubject, body, timestamp: new Date().toISOString(),
         };
@@ -14804,7 +14804,7 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
       await updateLead(lead.id, {
         messages: [...(lead.messages || []), newMsg],
         activities: [...(lead.activities || []), {
-          id: `a_${Date.now()}`, type: 'message-sent',
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'message-sent',
           timestamp: new Date().toISOString(),
           message: `${composerChannel === 'sms' ? 'SMS' : 'Email'} sent (from inbox)`,
         }],

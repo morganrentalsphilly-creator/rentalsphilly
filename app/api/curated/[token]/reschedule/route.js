@@ -65,7 +65,9 @@ export async function POST(request, ctx) {
     // Log activity
     const firstAddr = (tour.listings || []).map((l) => l.address).filter(Boolean)[0] || 'their tour';
     const { error: reschedActErr } = await db.from('activities').insert({
-      id: `a_${Date.now()}`,
+      // Random suffix — activities.id is the PK; same-ms collisions across
+      // leads would silently lose an activity row.
+      id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       lead_id: lead.id,
       type: 'tour-rescheduled',
       message: `Lead rescheduled ${firstAddr} from ${oldDate} ${oldTime} → ${slotDate} ${slotTime}`,

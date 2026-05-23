@@ -155,7 +155,10 @@ export async function POST(request, ctx) {
       if (phase1LeadErr) console.error('[curated POST phase 1] lead.update FAILED', { leadId: lead.id, error: phase1LeadErr.message, code: phase1LeadErr.code });
 
       const { error: phase1ActErr } = await db.from('activities').insert({
-        id: `a_${Date.now()}`,
+        // Same-millisecond collision risk if two leads submit concurrently —
+        // activities.id is the PK, so a duplicate would silently drop one
+        // activity row. Random suffix makes the ID effectively unique.
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         lead_id: lead.id,
         type: 'curated-properties-picked',
         message: `Lead picked ${addresses.length} ${addresses.length === 1 ? 'property' : 'properties'}: ${addresses.slice(0, 3).join(', ')}${addresses.length > 3 ? ` +${addresses.length - 3} more` : ''}${note ? ' · Note: ' + note.slice(0, 80) : ''}`,
@@ -225,7 +228,9 @@ export async function POST(request, ctx) {
       if (phase2LeadErr) console.error('[curated POST phase 2] lead.update FAILED — idempotency lost, tour-booked stage not set', { leadId: lead.id, error: phase2LeadErr.message, code: phase2LeadErr.code });
 
       const { error: phase2ActErr } = await db.from('activities').insert({
-        id: `a_${Date.now()}`,
+        // Random suffix — see phase 1 note. Multiple leads could finalize at
+        // the exact same instant.
+        id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         lead_id: lead.id,
         type: 'tour-times-picked',
         message: `Lead picked ${inserted.length} tour ${inserted.length === 1 ? 'time' : 'times'}${note ? ' · Note: ' + note.slice(0, 80) : ''}`,
