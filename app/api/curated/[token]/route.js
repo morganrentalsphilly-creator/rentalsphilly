@@ -251,7 +251,9 @@ export async function POST(request, ctx) {
           ? `Confirm tour in BrightMLS for ${firstName} — ${picks[0].address} at ${picks[0].slotTime} on ${picks[0].slotDate}`
           : `Confirm ${inserted.length} tours in BrightMLS for ${firstName} — ${addrList}`;
         const { error: confirmTaskErr } = await db.from('tasks').insert({
-          id: `t_${Date.now()}_bml`,
+          // Random suffix — same-ms collision protection if multiple leads
+          // finalize phase 2 concurrently. tasks.id is the PK.
+          id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_bml`,
           lead_id: lead.id,
           title: taskTitle,
           due_date: new Date().toISOString().slice(0, 10),

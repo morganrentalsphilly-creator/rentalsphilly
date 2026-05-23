@@ -2310,7 +2310,7 @@ export default function App() {
       ? [
           ...(lead.tasks || []),
           {
-            id: `t_${Date.now()}_curate`,
+            id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_curate`,
             lead_id: leadId,
             title: `Curate portal link for ${firstName}`,
             due_date: new Date().toISOString().split('T')[0],
@@ -2469,7 +2469,7 @@ export default function App() {
       ? [
           ...(lead.tasks || []),
           {
-            id: `t_${Date.now()}_curate`,
+            id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_curate`,
             lead_id: leadId,
             title: `Curate portal link for ${firstName}`,
             due_date: new Date().toISOString().split('T')[0],
@@ -2578,7 +2578,10 @@ export default function App() {
       });
     } else if (bucket === 'GCMS') {
       tasks.push({
-        id: `t_${Date.now()}_curate`,
+        // Random suffix on the task ID — without it, two GCMS leads submitting
+        // intake in the same millisecond would generate identical task IDs and
+        // one would silently drop on insert (tasks.id is the PK).
+        id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_curate`,
         lead_id: id,
         title: `Curate portal link for ${firstName}`,
         due_date: new Date().toISOString().split('T')[0],
