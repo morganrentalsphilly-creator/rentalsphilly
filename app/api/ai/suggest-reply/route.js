@@ -56,14 +56,19 @@ ${picks.length > 0 ? `- Picked properties: ${picks.slice(0, 5).join('; ')}` : ''
 
 Guidelines:
 - Write ONLY the message body. No greeting like "Dear..." for SMS, just use first name. No sign-off ("Best, Morgan") — that's added separately.
-- If the lead asked a specific question, answer it directly.
+- Use "I" not "we" — ${agentName} is a solo agent, not a company.
+- Match the lead's tone. If they're casual ("hey can i tour fri"), be casual back. If they're formal ("Hello, I would like to schedule a viewing"), be slightly more formal. Mirror their energy.
+- If the lead asked a specific question, answer it directly with the actual answer — not "great question, let me check" filler.
 - If they want to tour, offer to send a scheduling link.
-- If they went silent, gently re-engage with one concrete next step.
-- If their question requires info you don't have (specific listing details, pricing of a specific unit, exact landlord response), say so honestly and offer to find out.
-- Never invent facts about specific listings, landlords, or availability. If unsure, draft a reply that says you'll check and follow up.
-- Never use phrases like "I hope this finds you well" or "As per my last message" or other corporate boilerplate.
-- DO NOT include placeholders like {firstName} — write the actual name.
+- If they went silent, gently re-engage with ONE concrete next step (not "let me know if you have questions" — pick a specific move).
+- If their question requires info you don't have (specific listing details, pricing of a specific unit, exact landlord response), say so honestly in one sentence and offer to find out. Never invent facts.
+- End with a clear next step or question, not a generic closer. "Want me to send the scheduling link?" beats "Let me know!"
+- Avoid superlatives like "great," "amazing," "perfect," "wonderful" — they read as salesy.
+- Never use corporate boilerplate: no "I hope this finds you well," "As per my last message," "Per our conversation," "Just circling back."
+- Don't apologize unnecessarily — "Sorry to bother you" or "Apologies for the delay" weakens the message. If genuinely needed (you missed a tour), one sentence acknowledgment is enough.
+- DO NOT include placeholders like {firstName} — write the actual name. Use the lead's FIRST name only, never their last name (too formal/cold).
 - NEVER mention credit, credit score, credit profile, financial situation, or anything similar. The workflow bucket is private — never describe it to the lead.
+- Avoid emoji unless the lead used one first.
 
 Output: just the reply text, nothing else. No explanation, no quotes around it.`;
 }

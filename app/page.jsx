@@ -8481,6 +8481,16 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
   const todayTasks = allTasks.filter(t => new Date(t.dueDate + 'T00:00:00').toDateString() === new Date().toDateString());
   const flagCount = overdueTasks.length + todayTasks.length;
 
+  // Memoize the active-pipeline count. Was inlined in the tab nav as
+  // `leads.filter(...).length` and recomputed on every render — including
+  // every keystroke in the search box, every inbox composer change, every
+  // realtime tick. For a 500-lead account that's 500 ops × 60 fps = wasted
+  // work. Now O(1) lookup after the first render.
+  const pipelineCount = useMemo(
+    () => leads.filter(l => l.stage && !['lost', 'paid'].includes(l.stage)).length,
+    [leads]
+  );
+
   const upcomingTours = useMemo(() => {
     return leads.flatMap(l => (l.tours || []).filter(t => t.status === 'scheduled').map(t => ({ ...t, lead: l })))
       .sort((a, b) => new Date(a.date + 'T00:00:00') - new Date(b.date + 'T00:00:00'));
@@ -8581,7 +8591,7 @@ function AdminCRM({ leads, addLead, updateLead, removeLead, saveLeads, slots, op
           {[
             { k: 'today', label: 'Today', icon: Sparkles, badge: flagCount + needsReplyBadge },
             { k: 'inbox', label: 'Inbox', icon: Inbox, badge: needsReplyBadge },
-            { k: 'pipeline', label: 'Pipeline', icon: Activity, count: leads.filter(l => l.stage && !['lost', 'paid'].includes(l.stage)).length },
+            { k: 'pipeline', label: 'Pipeline', icon: Activity, count: pipelineCount },
             { k: 'leads', label: 'Leads', icon: Users, count: leads.length },
             { k: 'tours', label: 'Tours', icon: CalendarDays, count: upcomingTours.length },
             { k: 'settings', label: 'Settings', icon: Settings },
@@ -9362,13 +9372,15 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
             'BCMS':   { label: 'BCMS',   tone: 'amber',   desc: 'Limited credit · moving soon — application first, then curate' },
             'BC75+':  { label: 'BC75+',  tone: 'slate',   desc: 'Limited credit · 75+ days out — application link at 75 days out' },
           };
-          const counts = {
-            'all':    leads.length,
-            'GCMS':   leads.filter((l) => l.bucket === 'GCMS').length,
-            'GCM75+': leads.filter((l) => l.bucket === 'GCM75+').length,
-            'BCMS':   leads.filter((l) => l.bucket === 'BCMS').length,
-            'BC75+':  leads.filter((l) => l.bucket === 'BC75+').length,
-          };
+          // Single pass through leads to count all buckets — was 4 passes,
+          // recomputed every render including on every keystroke in the
+          // search box. With 500+ leads this becomes a hot path during
+          // typing. The IIFE keeps this calculation scoped to the chip
+          // render so it doesn't add a useMemo at component scope.
+          const counts = { 'all': leads.length, 'GCMS': 0, 'GCM75+': 0, 'BCMS': 0, 'BC75+': 0 };
+          for (const l of leads) {
+            if (counts[l.bucket] !== undefined) counts[l.bucket]++;
+          }
           const toneActive = {
             slate:   { bg: 'bg-slate-900',  text: 'text-white' },
             emerald: { bg: '',              text: 'text-white', style: { backgroundColor: '#059669' } },
@@ -14197,38 +14209,44 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
 
   return (
     <div className="space-y-4">
-      {/* Top summary bar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[200px] max-w-md">
+      {/* Top summary bar — search takes full row on mobile so the input
+          isn't squeezed; toggles wrap onto a second row. On desktop they
+          all sit on one line. iOS-friendly: 16px font on the input
+          prevents auto-zoom on focus. */}
+      <div className="space-y-2 sm:space-y-0 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+        <div className="relative sm:flex-1 sm:min-w-[200px] sm:max-w-md">
           <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by name, email, phone…"
-            className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 bg-white"
+            style={{ fontSize: 16 }}
+            className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-full focus:outline-none focus:border-slate-400 bg-white sm:text-sm"
           />
         </div>
-        <button
-          onClick={() => setHotOnly(!hotOnly)}
-          className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors border-2 ${
-            hotOnly
-              ? 'bg-amber-100 text-amber-900 border-amber-400'
-              : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
-          }`}
-        >
-          🔥 Hot only{hotOnly ? ' ✓' : ''}
-        </button>
-        <label className="text-xs text-slate-600 inline-flex items-center gap-1.5 cursor-pointer">
-          <input type="checkbox" checked={showWon} onChange={(e) => setShowWon(e.target.checked)} className="rounded" />
-          Show Won / Lost
-        </label>
-        {totalCommission > 0 && (
-          <div className="text-xs text-emerald-700 font-medium ml-auto">
-            <Award className="w-3.5 h-3.5 inline mr-1" />
-            {fmtCurrency(totalCommission)} earned this period
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <button
+            onClick={() => setHotOnly(!hotOnly)}
+            className={`px-3 py-1 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 transition-colors border-2 ${
+              hotOnly
+                ? 'bg-amber-100 text-amber-900 border-amber-400'
+                : 'bg-white text-slate-700 border-slate-200 hover:border-slate-400'
+            }`}
+          >
+            🔥 Hot only{hotOnly ? ' ✓' : ''}
+          </button>
+          <label className="text-xs text-slate-600 inline-flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={showWon} onChange={(e) => setShowWon(e.target.checked)} className="rounded" />
+            Show Won / Lost
+          </label>
+          {totalCommission > 0 && (
+            <div className="text-xs text-emerald-700 font-medium sm:ml-auto">
+              <Award className="w-3.5 h-3.5 inline mr-1" />
+              {fmtCurrency(totalCommission)} earned
+            </div>
+          )}
+        </div>
       </div>
 
       {leads.length === 0 && (
@@ -14347,7 +14365,21 @@ function PipelineView({ leads, updateLead, onSelectLead, showToast }) {
                           ? `${fmtCurrency(Number(lead.budgetMin))}–${fmtCurrency(Number(lead.budgetMax))}`
                           : 'No budget'}
                         {' · '}
-                        {lead.beds === '0' ? 'Studio' : `${lead.beds || '?'}+ bd`}
+                        {(() => {
+                          // Bed display uses the new bedsMin/bedsMax range
+                          // picker output (intake v2). Falls back to the
+                          // legacy `beds` field for older leads imported
+                          // before the picker change. Without this branch
+                          // every card showed "1+ bd" or worse "0+ bd"
+                          // even when the lead picked "Exactly 2 bd."
+                          const lo = lead.bedsMin || lead.beds;
+                          const hi = lead.bedsMax;
+                          if (!lo && !hi) return '? bd';
+                          if (lo === '0' && (!hi || hi === '0')) return 'Studio';
+                          if (lo && hi && lo === hi) return `${lo} bd`;
+                          if (lo && hi) return `${lo}–${hi} bd`;
+                          return `${lo}+ bd`;
+                        })()}
                       </div>
                       {lead.moveInDate && (
                         <div className="text-[10px] text-slate-400 mb-1">Move {fmtDate(lead.moveInDate)}</div>
@@ -16166,15 +16198,18 @@ function SettingsSection({
   const goToTemplates = (bucket) => { setTemplateFocus(bucket); setTab('templates'); };
   return (
     <div className="space-y-5">
+      {/* Tab order = frequency of use. Most-edited tabs are first/left so
+          Morgan doesn't have to scroll the nav rail to find them. Help is
+          last because it's reference material accessed rarely. */}
       <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
         {[
           { k: 'agent',         label: 'Agent & automation' },
           { k: 'templates',     label: 'Templates' },
+          { k: 'integrations',  label: 'Integrations' },
+          { k: 'blast',         label: 'Bulk SMS' },
           { k: 'analytics',     label: 'Analytics' },
           { k: 'activity',      label: 'Activity feed' },
-          { k: 'integrations',  label: 'Integrations' },
           { k: 'help',          label: 'Help' },
-          { k: 'blast',         label: 'Bulk SMS' },
         ].map(t => (
           <button
             key={t.k}
@@ -16249,7 +16284,6 @@ function HelpView() {
         { label: '/tour', desc: 'Insert a tour-confirmation snippet (with date + time)' },
         { label: '/sched', desc: 'Insert scheduling link' },
         { label: '/hi', desc: "Greet the lead with their first name" },
-        { label: '/sig', desc: 'Insert your email signature' },
         { label: '/template', desc: 'Open the full template picker' },
         { label: '/{custom}', desc: 'Any user-defined template shows as a slash command' },
       ],
