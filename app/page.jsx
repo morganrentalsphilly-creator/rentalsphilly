@@ -7494,8 +7494,21 @@ function TodayView({ leads, allTasks, overdueTasks, todayTasks, upcomingTours, o
                           <MapPin className="w-4 h-4" />
                         </a>
                       )}
-                      {t.lead.phone && <a href={`tel:${t.lead.phone}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Call lead"><Phone className="w-4 h-4" /></a>}
+                      {t.lead.phone && <a href={`tel:${t.lead.phone.replace(/[^\d+]/g, '')}`} onClick={(e) => e.stopPropagation()} className="text-emerald-700 hover:text-emerald-900" title="Call lead"><Phone className="w-4 h-4" /></a>}
                     </button>
+                    {/* Field-action toolbar for the tour-day workflow. Mobile-
+                        first: 2-column grid of fat-tap buttons (Call, On my
+                        way, I'm here, Ask ETA, Directions). See
+                        TourFieldActions for the canned-message logic. */}
+                    <div className="px-3 pb-3">
+                      <TourFieldActions
+                        tour={t}
+                        lead={t.lead}
+                        settings={settings}
+                        sendSMS={sendSMS}
+                        showToast={showToast}
+                      />
+                    </div>
                     <TourPrepBriefing leadId={t.lead.id} tourId={t.id} />
                   </div>
                 );
@@ -9105,7 +9118,137 @@ function FlagsView({ allTasks, updateLead, onSelectLead, showToast }) {
 // ============================================================
 // TOURS
 // ============================================================
-function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
+// ============================================================
+// TOUR FIELD ACTIONS — the toolbar an agent uses ON THE WAY to / AT a tour.
+//
+// One tap each:
+//   1. Call lead       — tel: link, dials from Morgan's cell
+//   2. "On my way"     — pre-canned SMS via the CRM (Twilio number)
+//   3. "I'm here"      — pre-canned SMS, sent from outside the building
+//   4. "Ask their ETA" — pre-canned SMS, when the lead is running late
+//   5. Directions      — opens Apple Maps / Google Maps to the address
+//
+// All SMS sends go through the same sendSMS server wrapper as the inbox, so
+// they're logged on the lead's thread, count toward the daily touch tracker,
+// and honor the opted_out / kill-switch flags. Each canned message uses an
+// idempotency key that includes the tour id + action key + minute bucket
+// so a double-tap can't fire twice but a deliberate retry 60s later can.
+//
+// Mounted inside the tour card on ToursView (and reusable elsewhere). On
+// mobile the buttons wrap into a 2-column grid for fat-finger taps.
+// ============================================================
+function TourFieldActions({ tour, lead, settings, sendSMS, showToast }) {
+  const [busyAction, setBusyAction] = useState(null);
+  const inFlightRef = useRef(false);
+
+  if (!lead) return null;
+  const firstName = (lead.fullName || '').split(' ')[0] || 'there';
+  const firstStop = (tour.listings || [])[0];
+  const address = firstStop?.address || '';
+  const tourTime = tour.time || '';
+  const phone = lead.phone || '';
+  const telHref = phone ? `tel:${phone.replace(/[^\d+]/g, '')}` : null;
+  // Universal maps URL — opens Apple Maps on iPhone, Google Maps on Android.
+  // Falls back to Google Maps web if no map app is installed.
+  const mapsHref = address
+    ? `https://maps.apple.com/?daddr=${encodeURIComponent(address + ', Philadelphia, PA')}`
+    : null;
+  // Anchor a stable minute bucket into the idempotency key so a double-tap
+  // can't fire twice, but a genuine retry a minute later still goes through.
+  const bucket = () => Math.floor(Date.now() / 60_000);
+
+  const fireSms = async (key, body) => {
+    if (inFlightRef.current) return;
+    if (!phone) {
+      showToast({ message: 'No phone on file for this lead', kind: 'error' });
+      return;
+    }
+    inFlightRef.current = true;
+    setBusyAction(key);
+    try {
+      const result = await sendSMS({
+        leadId: lead.id,
+        body,
+        kind: `tour_${key}`,
+        idempotencyKey: `tour-${tour.id}-${key}-${bucket()}`,
+        automated: false,
+      });
+      if (!result?.ok) {
+        showToast({ message: `Couldn't send — ${result?.error || 'try again'}`, kind: 'error' });
+      } else if (result.simulated) {
+        showToast('Test mode — would have sent SMS');
+      } else {
+        showToast('Sent ✓');
+      }
+    } catch (err) {
+      console.error('[tour field action]', key, err);
+      showToast({ message: `Send failed: ${err.message}`, kind: 'error' });
+    } finally {
+      setBusyAction(null);
+      inFlightRef.current = false;
+    }
+  };
+
+  const onMyWay = () => fireSms(
+    'on-my-way',
+    `Rentals Philly: On my way, ${firstName}! ${address ? `Meeting at ${address}` : 'Meeting at the property'}${tourTime ? ` at ${tourTime}` : ''}. See you soon. Reply STOP to opt out.`,
+  );
+  const arrived = () => fireSms(
+    'arrived',
+    `Rentals Philly: Just arrived${address ? ` at ${address}` : ''}, ${firstName}. I'll be out front — let me know when you're close. Reply STOP to opt out.`,
+  );
+  const askEta = () => fireSms(
+    'ask-eta',
+    `Rentals Philly: Hi ${firstName} — what's your ETA${address ? ` to ${address}` : ''}? Tour is at ${tourTime || 'the scheduled time'}. Reply STOP to opt out.`,
+  );
+
+  // Button-row layout: a single horizontal flex on desktop, 2-column grid
+  // with bigger tap targets on mobile.
+  const ActionBtn = ({ icon: Icon, label, onClick, href, tone = 'slate', busy }) => {
+    const toneClass = {
+      slate:  'bg-slate-100 hover:bg-slate-200 text-slate-800',
+      gold:   'text-white hover:opacity-90',
+      blue:   'bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200',
+      green:  'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200',
+      amber:  'bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200',
+    }[tone] || '';
+    const goldStyle = tone === 'gold' ? { backgroundColor: 'var(--brand-gold)' } : undefined;
+    const inner = (
+      <>
+        <Icon className="w-4 h-4 shrink-0" />
+        <span className="font-medium truncate">{busy ? 'Sending…' : label}</span>
+      </>
+    );
+    const cls = `inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm transition-colors disabled:opacity-50 min-h-[44px] ${toneClass}`;
+    if (href) return (
+      <a href={href} className={cls} style={goldStyle} onClick={(e) => e.stopPropagation()}>{inner}</a>
+    );
+    return (
+      <button onClick={(e) => { e.stopPropagation(); onClick(); }} disabled={busy} className={cls} style={goldStyle}>
+        {inner}
+      </button>
+    );
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Field actions</div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        {telHref && (
+          <ActionBtn icon={PhoneCall} label="Call" href={telHref} tone="gold" />
+        )}
+        <ActionBtn icon={Send} label="On my way" onClick={onMyWay} tone="green" busy={busyAction === 'on-my-way'} />
+        <ActionBtn icon={MapPin} label="I'm here" onClick={arrived} tone="blue" busy={busyAction === 'arrived'} />
+        <ActionBtn icon={Clock} label="Ask ETA" onClick={askEta} tone="amber" busy={busyAction === 'ask-eta'} />
+        {mapsHref && (
+          <ActionBtn icon={MapPin} label="Directions" href={mapsHref} tone="slate" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToursView({ upcomingTours, onSelectLead, updateLead, showToast, settings }) {
   if (upcomingTours.length === 0) return (
     <EmptyState
       icon={CalendarDays}
@@ -9169,6 +9312,12 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
         const tourEnd = parseSlotDateTime({ date: t.date, time: t.time });
         if (tourEnd) tourEnd.setHours(tourEnd.getHours() + 1);
         const isPast = tourEnd && new Date() > tourEnd;
+        const today = new Date(); today.setHours(0,0,0,0);
+        const tourDay = new Date(t.date + 'T00:00:00');
+        // "Today's tours" get the field actions inline so Morgan can act
+        // without an extra tap. Future tours collapse them under "Add to
+        // calendar / Show details" to keep the card light.
+        const isTodayOrNext24h = (tourDay.getTime() - today.getTime()) < 86_400_000 * 1.5;
         return (
           <Card key={t.id} className="p-4">
             <div className="flex items-start gap-4">
@@ -9179,6 +9328,12 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
               <div className="min-w-0 flex-1">
                 <button onClick={() => onSelectLead(t.lead.id)} className="font-semibold text-slate-900 hover:underline">{t.lead.fullName}</button>
                 <div className="text-sm text-slate-500 mt-0.5">{t.time} · {props.length} {props.length === 1 ? 'stop' : 'stops'}</div>
+                {/* First stop's address as a quick orientation cue on the
+                    card — without expanding the lead detail. Helps Morgan
+                    scan a list of today's tours without tapping each one. */}
+                {props[0]?.address && (
+                  <div className="text-[11px] text-slate-400 mt-0.5 truncate">{props[0].address}</div>
+                )}
               </div>
               <div className="flex items-center gap-1.5 flex-wrap shrink-0">
                 {t.tourType === 'virtual' && <Pill icon={Video}>Virtual</Pill>}
@@ -9213,6 +9368,18 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast }) {
                 )}
               </div>
             </div>
+            {/* Field-action toolbar — only for upcoming or today's tours
+                (skip on already-completed past tours). On mobile this is
+                THE bar Morgan uses while in the field. */}
+            {isTodayOrNext24h && !isPast && (
+              <TourFieldActions
+                tour={t}
+                lead={t.lead}
+                settings={settings}
+                sendSMS={sendSMS}
+                showToast={showToast}
+              />
+            )}
           </Card>
         );
       })}
@@ -15295,7 +15462,7 @@ function ToursSection({ upcomingTours, leads, settings, onSelectLead, updateSubm
         ))}
       </div>
       {tab === 'calendar' && <CalendarView settings={settings} leads={leads} onSelectLead={onSelectLead} />}
-      {tab === 'upcoming' && <ToursView upcomingTours={upcomingTours} onSelectLead={onSelectLead} updateLead={updateLead} showToast={showToast} />}
+      {tab === 'upcoming' && <ToursView upcomingTours={upcomingTours} onSelectLead={onSelectLead} updateLead={updateLead} showToast={showToast} settings={settings} />}
       {tab === 'apps' && <SubmissionsView leads={leads} onSelectLead={onSelectLead} updateSubmissionStatus={updateSubmissionStatus} />}
     </div>
   );
