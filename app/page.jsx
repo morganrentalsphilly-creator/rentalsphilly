@@ -2559,9 +2559,14 @@ export default function App() {
     if (bucket === 'GCM75+' || bucket === 'BC75+') {
       const followUpDate = new Date(lead.moveInDate);
       followUpDate.setDate(followUpDate.getDate() - 75);
+      // Future-tense titles so the task NEVER reads as "do this now" when
+      // Morgan glances at a 75+-day lead's detail. Previous titles like
+      // "Send curated link to Sarah (75-day outreach)" looked actionable
+      // even though the task wasn't due for months. The new format leads
+      // with "75-day check-in" so the temporal context comes first.
       const taskTitle = bucket === 'BC75+'
-        ? `Send application link to ${firstName} (75-day outreach)`
-        : `Send curated link to ${firstName} (75-day outreach)`;
+        ? `75-day check-in: send application link to ${firstName}`
+        : `75-day check-in: start curating for ${firstName}`;
       tasks.push({
         id: `t_${Date.now()}`,
         lead_id: id,
@@ -6357,15 +6362,34 @@ function HotProspectsCard({ leads, onSelectLead }) {
   // One-line "next move" hint per lead — picks the action that aligns with stage.
   const nextMove = (lead) => {
     const stage = lead.stage || 'new';
-    // BCMS leads (limited credit, moving soon) require an application
-    // BEFORE we start curating. Their welcome already includes the
-    // application link — we wait for the lead to fill it out and only
-    // then move to the curation step. If we already have an application
-    // on file, fall through to the normal "send curated link" path.
-    if (stage === 'new' && lead.bucket === 'BCMS' && !lead.application && !lead.applicationStatus) {
-      return 'Waiting on application';
+    // Bucket-aware "what to do next" — without this, Morgan saw
+    // "Send curated link" for every new lead including those moving in
+    // 4 months. The workflow per bucket:
+    //   GCMS  (good credit, soon)   → send curated link now
+    //   GCM75+(good credit, later)  → wait until 75 days before move-in
+    //   BCMS  (bad credit,  soon)   → wait for application, THEN curate
+    //   BC75+ (bad credit,  later)  → wait until 75 days, THEN application
+    if (stage === 'new') {
+      const moveInIso = lead.moveInDate || lead.move_in_date || lead.raw?.moveInDate;
+      if (moveInIso) {
+        const moveIn = new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : ''));
+        const daysToMove = Math.round((moveIn - new Date()) / 86400000);
+        const inSeventyFiveWindow = daysToMove <= 75;
+        // 75+ days out — system handles it on cadence, no manual action.
+        if (!inSeventyFiveWindow) {
+          if (lead.bucket === 'GCM75+' || lead.bucket === 'BC75+') {
+            return `Hold · ${daysToMove - 75}d until 75-day window`;
+          }
+        }
+        // Within 75 days — apply per-bucket rules.
+        if (lead.bucket === 'BCMS' || lead.bucket === 'BC75+') {
+          if (!lead.application && !lead.applicationStatus) {
+            return lead.bucket === 'BC75+' ? 'Send application link' : 'Waiting on application';
+          }
+        }
+      }
+      if (!lead.curatedLinkSentAt) return 'Send curated link';
     }
-    if (stage === 'new' && !lead.curatedLinkSentAt) return 'Send curated link';
     if (stage === 'tour-requested') return 'Send scheduling link';
     if (stage === 'tour-booked') {
       // Sort by date ASC to pick the EARLIEST upcoming tour. .find() on the
@@ -6650,17 +6674,35 @@ function LeadAutomationsCard({ lead }) {
     return null;
   };
 
+  // Split pending tasks into NEAR-TERM (≤7 days, actionable now) and
+  // SCHEDULED (> 7 days, visibility only — Morgan should not act yet).
+  // This matters because the 75-day-out tasks were appearing alongside
+  // due-now tasks and looking like "do this immediately" prompts when
+  // they're really 60+ days away.
+  const today0 = new Date(); today0.setHours(0,0,0,0);
+  const daysUntil = (t) => {
+    const dueIso = t.dueDate || t.due_date;
+    if (!dueIso) return null;
+    const due = new Date(dueIso + (dueIso.length === 10 ? 'T12:00:00' : ''));
+    return Math.round((due - today0) / 86400000);
+  };
+  const dueNow = autoTasks.filter((t) => {
+    const d = daysUntil(t);
+    return d === null || d <= 7;
+  });
+  const scheduled = autoTasks.filter((t) => {
+    const d = daysUntil(t);
+    return d !== null && d > 7;
+  });
+
   return (
     <Card className="p-4">
       <SectionHeader icon={Zap}>Automations</SectionHeader>
-      {autoTasks.length > 0 && (
+      {dueNow.length > 0 && (
         <div className="space-y-1.5 mb-3">
-          <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Coming up</div>
-          {autoTasks.slice(0, 6).map((t) => {
-            const dueIso = t.dueDate || t.due_date;
-            const due = dueIso ? new Date(dueIso + (dueIso.length === 10 ? 'T12:00:00' : '')) : null;
-            const today = new Date(); today.setHours(0,0,0,0);
-            const days = due ? Math.round((due - today) / 86400000) : null;
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">Due now</div>
+          {dueNow.slice(0, 6).map((t) => {
+            const days = daysUntil(t);
             const dueLabel = days === null ? '—'
               : days < 0 ? `Overdue ${-days}d`
               : days === 0 ? 'Today'
@@ -6675,6 +6717,29 @@ function LeadAutomationsCard({ lead }) {
                 <Clock className="w-3 h-3 text-slate-400 shrink-0" />
                 <div className="flex-1 truncate text-slate-700">{label}</div>
                 <div className={`tabular-nums text-[11px] ${tone}`}>{dueLabel}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {scheduled.length > 0 && (
+        <div className="space-y-1.5 mb-3 pt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">Scheduled · not actionable yet</div>
+          {scheduled.slice(0, 4).map((t) => {
+            const days = daysUntil(t);
+            const dueIso = t.dueDate || t.due_date;
+            const dueDate = dueIso ? new Date(dueIso + (dueIso.length === 10 ? 'T12:00:00' : '')) : null;
+            const dateLabel = dueDate
+              ? dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+              : '—';
+            const label = flagLabel(t.flags) || t.title;
+            return (
+              <div key={t.id} className="flex items-center gap-2 text-xs opacity-60">
+                <Hourglass className="w-3 h-3 text-slate-400 shrink-0" />
+                <div className="flex-1 truncate text-slate-600">{label}</div>
+                <div className="tabular-nums text-[11px] text-slate-500">
+                  {dateLabel}{days !== null ? ` · in ${days}d` : ''}
+                </div>
               </div>
             );
           })}
@@ -9230,9 +9295,53 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
       <div className="flex flex-wrap gap-2 mb-3 items-center">
         <Filter className="w-3.5 h-3.5 text-slate-400" />
         <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium mr-1">Bucket</span>
-        {['all', 'GCMS', 'GCM75+', 'BCMS', 'BC75+'].map(k => (
-          <button key={k} onClick={() => setBucketFilter(k)} className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${bucketFilter === k ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{k === 'all' ? 'All' : k}</button>
-        ))}
+        {/* Bucket chips with per-bucket counts + hover descriptions so
+            Morgan can instantly see "how many GCMS leads do I have?"
+            without scrolling the list. Each bucket has its own color so
+            the four workflows are visually distinct at a glance. */}
+        {(() => {
+          const bucketMeta = {
+            'all':    { label: 'All',    tone: 'slate',   desc: 'Every lead' },
+            'GCMS':   { label: 'GCMS',   tone: 'emerald', desc: 'Good credit · moving soon — curate now' },
+            'GCM75+': { label: 'GCM75+', tone: 'blue',    desc: 'Good credit · 75+ days out — light touch until 75-day window' },
+            'BCMS':   { label: 'BCMS',   tone: 'amber',   desc: 'Limited credit · moving soon — application first, then curate' },
+            'BC75+':  { label: 'BC75+',  tone: 'slate',   desc: 'Limited credit · 75+ days out — application link at 75 days out' },
+          };
+          const counts = {
+            'all':    leads.length,
+            'GCMS':   leads.filter((l) => l.bucket === 'GCMS').length,
+            'GCM75+': leads.filter((l) => l.bucket === 'GCM75+').length,
+            'BCMS':   leads.filter((l) => l.bucket === 'BCMS').length,
+            'BC75+':  leads.filter((l) => l.bucket === 'BC75+').length,
+          };
+          const toneActive = {
+            slate:   { bg: 'bg-slate-900',  text: 'text-white' },
+            emerald: { bg: '',              text: 'text-white', style: { backgroundColor: '#059669' } },
+            blue:    { bg: '',              text: 'text-white', style: { backgroundColor: '#2563eb' } },
+            amber:   { bg: '',              text: 'text-white', style: { backgroundColor: '#d97706' } },
+          };
+          return Object.keys(bucketMeta).map((k) => {
+            const m = bucketMeta[k];
+            const active = bucketFilter === k;
+            const a = toneActive[m.tone] || toneActive.slate;
+            return (
+              <button
+                key={k}
+                onClick={() => setBucketFilter(k)}
+                title={m.desc}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
+                  active ? `${a.bg} ${a.text}` : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+                style={active && a.style ? a.style : undefined}
+              >
+                {m.label}
+                <span className={`text-[10px] tabular-nums ${active ? 'opacity-90' : 'text-slate-400'}`}>
+                  {counts[k]}
+                </span>
+              </button>
+            );
+          });
+        })()}
         <button
           onClick={() => setHotOnly(!hotOnly)}
           className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors border-2 ${
