@@ -469,9 +469,14 @@ async function runStageNudges(db, settings) {
 
   for (const rule of rules) {
     if (sent >= SEND_CAP) break;
+    // SELECT must include every column my rule.check() callbacks read,
+    // or the check will silently see `undefined` and never fire.
+    // bucket / application / move_in_date are needed by the BCMS-no-app
+    // and 75+ light-touch cadences added in the same PR as the column
+    // expansion. Without these the new drip rules would be silent no-ops.
     const { data: candidates } = await db
       .from('leads')
-      .select('id, full_name, phone, raw, opted_out, stage, created_at')
+      .select('id, full_name, phone, raw, opted_out, stage, created_at, bucket, application, application_status, move_in_date')
       .eq('stage', rule.stage)
       .eq('opted_out', false)
       .limit(50);

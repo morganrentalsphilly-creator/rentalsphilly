@@ -36,7 +36,11 @@ export async function GET(request) {
 
   // Load everything needed to build the brief.
   const [leadsRes, toursRes, messagesRes, tasksRes, settingsRes] = await Promise.all([
-    db.from('leads').select('id, full_name, email, phone, stage, raw, created_at').order('created_at', { ascending: false }).limit(500),
+    // SELECT must include every column the bucket-aware filter below reads.
+    // Without bucket / application / application_status / move_in_date,
+    // the "needs curated link" section would silently miss the filter
+    // and count every new lead — exactly the bug we just fixed.
+    db.from('leads').select('id, full_name, email, phone, stage, raw, created_at, bucket, application, application_status, move_in_date').order('created_at', { ascending: false }).limit(500),
     db.from('tours').select('id, lead_id, date, time, status, listings').gte('date', new Date().toISOString().slice(0, 10)).lte('date', new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10)),
     db.from('messages').select('lead_id, direction, body, created_at, channel').order('created_at', { ascending: false }).limit(500),
     db.from('tasks').select('id, lead_id, title, due_date, status, priority').eq('status', 'pending'),
