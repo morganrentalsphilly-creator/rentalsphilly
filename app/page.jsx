@@ -17700,7 +17700,17 @@ function PropertyFormModal({ property, onClose, onSave, onDelete }) {
   const upd = (k, v) => setForm({ ...form, [k]: v });
   const isNew = !property.id;
   const submit = async () => {
+    // Validation must mirror the asterisks on the labels — address, price,
+    // beds, and baths are all required. Previously only address + price were
+    // checked; a property saved with blank beds would land in the DB as
+    // `Number('') = 0`, then matchListings would silently show it to
+    // studio-seekers regardless of what it actually was. (Number('') === 0
+    // is the trap — null/undefined would be NaN and fail comparisons safely,
+    // but the empty string from a blank input slips through as zero.)
+    // `form.beds === '0'` is a legitimate studio so we don't reject that.
     if (!form.address || !form.price) return;
+    if (form.beds === '' || form.beds == null) return;
+    if (form.baths === '' || form.baths == null) return;
     // hydrateProperties concatenates `unit` into `address` for display, so the
     // form opens with address="123 Main, Apt 5" + unit="" (or unit="Apt 5"
     // if the form was previously saved separately). Without this strip, each
@@ -17772,7 +17782,7 @@ function PropertyFormModal({ property, onClose, onSave, onDelete }) {
             {onDelete && <Button variant="danger" onClick={onDelete}>Delete</Button>}
             <div className="flex-1" />
             <Button variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button onClick={submit} disabled={!form.address || !form.price}>{isNew ? 'Add property' : 'Save changes'}</Button>
+            <Button onClick={submit} disabled={!form.address || !form.price || form.beds === '' || form.beds == null || form.baths === '' || form.baths == null}>{isNew ? 'Add property' : 'Save changes'}</Button>
           </div>
         </div>
       </div>
