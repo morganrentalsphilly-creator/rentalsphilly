@@ -306,7 +306,7 @@ async function runBlastDrain(db) {
 // Per-stage nudge engine. Finds leads stuck in a given stage past the
 // cooldown and fires the appropriate re-engagement message. Idempotent via
 // lead.raw.nudge_history (keyed by stage+rule so we don't re-nudge).
-async function runStageNudges(db) {
+async function runStageNudges(db, settings) {
   const now = new Date();
   const hoursAgo = (h) => new Date(now.getTime() - h * 60 * 60 * 1000);
 
@@ -358,6 +358,109 @@ async function runStageNudges(db) {
     },
     // 6. Applied but no decision in 7 days — nudge the AGENT (no SMS)
     //    Implemented passively via the auto-task created on stage change.
+
+    // -------------------------------------------------------------------
+    // BUCKET-SPECIFIC DRIP CADENCES — added so leads stuck at stage='new'
+    // (waiting on application OR waiting for their 75-day window) still
+    // hear from us periodically. The principle: "make sure we exist
+    // without bombarding." Each cadence fires AT MOST one SMS at a given
+    // milestone, gated by nudge_history so it never repeats.
+    // -------------------------------------------------------------------
+
+    // 7a-7c. BCMS waiting on application — 3d, 7d, 14d nudges.
+    //   Bucket: BCMS, stage: new, no application yet.
+    //   These leads are HOT (moving soon) but stalled on the application,
+    //   so the cadence is tighter — every few days until either they
+    //   submit or hit 14 days, then we go quiet.
+    {
+      key: 'bcms_app_nudge_3d',
+      stage: 'new',
+      stuckHours: 72,
+      check: (lead) => lead.bucket === 'BCMS'
+        && !lead.application
+        && !(lead.application_status === 'received' || lead.raw?.application_status === 'received'),
+      message: (firstName) => {
+        const url = settings?.rentspree_application_url || settings?.raw?.rentspree_application_url || '';
+        return url
+          ? `Rentals Philly: Hi ${firstName} — quick reminder to fill out the rental application so I can start hunting in your neighborhoods: ${url}\n\nTakes about 10 min. Reply STOP to opt out.`
+          : `Rentals Philly: Hi ${firstName} — checking in. Ready to start your Philly rental search? Reply YES and I'll send the application. Reply STOP to opt out.`;
+      },
+    },
+    {
+      key: 'bcms_app_nudge_7d',
+      stage: 'new',
+      stuckHours: 168,
+      check: (lead) => lead.bucket === 'BCMS'
+        && !lead.application
+        && !(lead.application_status === 'received' || lead.raw?.application_status === 'received'),
+      message: (firstName) => {
+        const url = settings?.rentspree_application_url || settings?.raw?.rentspree_application_url || '';
+        return url
+          ? `Rentals Philly: Hi ${firstName} — still looking? The Philly rental market moves fast. Once your application's on file I can start picking places that fit. App: ${url}\n\nReply STOP to opt out.`
+          : `Rentals Philly: Hi ${firstName} — still looking for a place? Let me know and I'll pick up where we left off. Reply STOP to opt out.`;
+      },
+    },
+    {
+      key: 'bcms_app_nudge_14d',
+      stage: 'new',
+      stuckHours: 336,
+      check: (lead) => lead.bucket === 'BCMS'
+        && !lead.application
+        && !(lead.application_status === 'received' || lead.raw?.application_status === 'received'),
+      message: (firstName) => {
+        const url = settings?.rentspree_application_url || settings?.raw?.rentspree_application_url || '';
+        return url
+          ? `Rentals Philly: Hi ${firstName} — last check-in from me. If you're still hunting, the application takes 10 min and unlocks the search: ${url}\n\nOtherwise I'll let you focus. Reply STOP to opt out.`
+          : `Rentals Philly: Hi ${firstName} — last check-in. Reply if you'd still like help with your Philly rental search. Reply STOP to opt out.`;
+      },
+    },
+
+    // 8a-8b. 75+ day leads — light-touch "we exist" check-ins at 30d
+    //    and 60d after intake, until the 75-day window opens (at which
+    //    point the 75-day task takes over). Gentle cadence so they
+    //    remember us when they're ready to act. Applies to BOTH GCM75+
+    //    and BC75+ — same copy.
+    {
+      key: 'longtail_30d_checkin',
+      stage: 'new',
+      stuckHours: 720,
+      check: (lead) => {
+        if (lead.bucket !== 'GCM75+' && lead.bucket !== 'BC75+') return false;
+        const moveInIso = lead.move_in_date || lead.raw?.moveInDate;
+        if (!moveInIso) return false;
+        const moveIn = new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : ''));
+        const daysToMove = Math.round((moveIn - new Date()) / 86400000);
+        return daysToMove > 75; // only if still in light-touch window
+      },
+      message: (firstName, lead) => {
+        const moveInIso = lead?.move_in_date || lead?.raw?.moveInDate;
+        const moveLabel = moveInIso
+          ? new Date(moveInIso + 'T12:00:00').toLocaleDateString('en-US', { month: 'long' })
+          : 'your move';
+        return `Rentals Philly: Hi ${firstName} — just keeping in touch about your ${moveLabel} move. I'll start curating about 75 days before then. Save my number if you have questions. Reply STOP to opt out.`;
+      },
+    },
+    {
+      key: 'longtail_60d_checkin',
+      stage: 'new',
+      stuckHours: 1440,
+      check: (lead) => {
+        if (lead.bucket !== 'GCM75+' && lead.bucket !== 'BC75+') return false;
+        const moveInIso = lead.move_in_date || lead.raw?.moveInDate;
+        if (!moveInIso) return false;
+        const moveIn = new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : ''));
+        const daysToMove = Math.round((moveIn - new Date()) / 86400000);
+        return daysToMove > 75;
+      },
+      message: (firstName, lead) => {
+        const moveInIso = lead?.move_in_date || lead?.raw?.moveInDate;
+        const moveIn = moveInIso ? new Date(moveInIso + 'T12:00:00') : null;
+        const daysToWindow = moveIn ? Math.round((moveIn - new Date()) / 86400000) - 75 : null;
+        return daysToWindow !== null
+          ? `Rentals Philly: Hi ${firstName} — checking in. About ${daysToWindow} days until I start sending hand-picked rentals for you. Reach out anytime. Reply STOP to opt out.`
+          : `Rentals Philly: Hi ${firstName} — checking in on your Philly rental search. Reach out anytime. Reply STOP to opt out.`;
+      },
+    },
   ];
 
   let sent = 0;
@@ -516,7 +619,7 @@ export async function GET(request) {
 
   const reminders = remindersOn ? await runReminders(db) : { skipped: 'tourReminders disabled' };
   const blast = await runBlastDrain(db);
-  const nudges = nudgesOn ? await runStageNudges(db) : { skipped: 'autoNudgeNoResponse disabled' };
+  const nudges = nudgesOn ? await runStageNudges(db, settingsRow) : { skipped: 'autoNudgeNoResponse disabled' };
   const tourOutcomes = autoCompleteOn ? await runTourOutcomePrompts(db) : { skipped: 'autoCompleteTours disabled' };
 
   // Heartbeat — stash the tick timestamp + last-run summary into settings.raw
