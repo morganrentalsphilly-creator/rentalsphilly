@@ -2207,7 +2207,22 @@ export default function App() {
         }
       }
     } catch (e) {
+      // CRITICAL: previously this was silent — state updated optimistically
+      // at the top, then if any DB write failed mid-flight the user saw
+      // their change "succeed" but on refresh it was gone. That's a recipe
+      // for losing stage transitions, task completions, follow-ups, and
+      // submission status updates without ever knowing. Now we surface a
+      // toast so Morgan can retry. The full error stays in the console for
+      // diagnosis. Stage changes + writes are still partially-applied (the
+      // ones that succeeded before the failure landed), which is the best
+      // we can do without per-table rollback.
       console.error('[app] Failed to update lead', e);
+      try {
+        showToast?.({
+          message: `Couldn't save changes — please refresh and try again (${e?.message?.slice(0, 60) || 'network error'})`,
+          kind: 'error',
+        });
+      } catch {}
     }
   };
 
@@ -17494,7 +17509,12 @@ function PropertiesView({ properties, saveProperty, removeProperty, bulkImportPr
 
   const onSavePortals = async () => {
     const list = portalText.split('\n').map((s) => s.trim()).filter((s) => s && /^https?:\/\//.test(s));
-    await saveSettings({ ...settings, bright_portal_urls: list, bright_portal_url: list[0] || null });
+    // bright_portal_urls is the source of truth (jsonb array, persisted via
+    // migration 0010). The legacy singular `bright_portal_url` is no longer
+    // written here — every read site already falls back to it from the
+    // array, so writing it was creating an unbacked-by-DB field that just
+    // got silently dropped by saveSettings. Cleaner to send only the array.
+    await saveSettings({ ...settings, bright_portal_urls: list });
     showToast(`Saved ${list.length} portal URL${list.length === 1 ? '' : 's'}`);
   };
 
