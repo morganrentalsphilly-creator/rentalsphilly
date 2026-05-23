@@ -113,6 +113,20 @@ export async function GET(request) {
       items: newLeadsNoCurate.slice(0, 8).map((l) => `${l.full_name} — submitted ${new Date(l.created_at).toLocaleDateString()}`),
     });
   }
+  // BCMS leads still owing an application — system is correctly idle on
+  // these (the bucket workflow says wait for the app before curating), but
+  // Morgan should see they exist so she can manually nudge if a lead's
+  // gone quiet on the app for a while. Drip cron handles the automated
+  // 3d/7d/14d reminders; this surface is just visibility.
+  if (bcmsWaitingOnApp.length > 0) {
+    sections.push({
+      title: `📝 ${bcmsWaitingOnApp.length} lead${bcmsWaitingOnApp.length === 1 ? '' : 's'} we're waiting on (application not yet submitted)`,
+      items: bcmsWaitingOnApp.slice(0, 8).map((l) => {
+        const days = Math.floor((Date.now() - new Date(l.created_at).getTime()) / 86400000);
+        return `${l.full_name} — ${days}d since intake`;
+      }),
+    });
+  }
   if (requestedTours.length > 0) {
     sections.push({
       title: `🟦 ${requestedTours.length} lead${requestedTours.length === 1 ? '' : 's'} requested tours`,
