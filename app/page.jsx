@@ -1395,22 +1395,23 @@ function hydrateProperties(rows) {
 // ============================================================
 
 export default function App() {
-  const [view, setView] = useState('landing');
   // Deep-link: visiting /?start=1 (or /?intake) drops the user straight into
   // the intake form, skipping the landing page. Useful for SMS, email
   // signatures, business cards, social bios — anywhere we want one tap
-  // between the prospect and the first question. We read window.location on
-  // mount to avoid SSR/hydration mismatch.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
+  // between the prospect and the first question.
+  //
+  // We compute the initial view in a lazy useState initializer so the very
+  // first render lands directly on the IntakeForm — no flash of landing
+  // page before the useEffect fires. SSR returns 'landing' (no window), but
+  // React's hydration then matches against the client value on mount.
+  const [view, setView] = useState(() => {
+    if (typeof window === 'undefined') return 'landing';
     try {
       const sp = new URLSearchParams(window.location.search);
-      if (sp.has('start') || sp.has('intake')) {
-        setView('intake');
-      }
+      if (sp.has('start') || sp.has('intake')) return 'intake';
     } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return 'landing';
+  });
   const [leads, setLeads] = useState([]);
   const [slots, setSlots] = useState([]);
   const [waitlist, setWaitlist] = useState([]);
@@ -5791,13 +5792,11 @@ function ShareIntakeButton({ showToast }) {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
 
-    // Resolve the URL on click (not at mount) so SSR doesn't crash on
-    // `window`. Prefer the explicit env-var if set so production deeplinks
-    // can use a custom domain even when accessed from staging.
-    const url = (typeof window !== 'undefined'
-      ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)
-      : 'https://rentalsphilly.vercel.app').replace(/\/$/, '');
-    const shareUrl = `${url}/?start=1`; // ?start=1 deep-links past the landing
+    // Hardcoded to the production domain — even if Morgan is viewing the
+    // CRM from rentalsphilly.vercel.app or localhost during a test, the
+    // SHARED link must always send the recipient to the real domain so
+    // her audience sees the polished URL.
+    const shareUrl = 'https://rentalsphilly.com/?start=1';
     const shareText = `Looking for a Philly rental? Tell me what you want and I'll hand-pick options — no scrolling Zillow for hours: ${shareUrl}`;
 
     try {
@@ -15970,8 +15969,9 @@ function IntegrationsView({ showToast }) {
       {/* iCal calendar subscribe URL */}
       <CalendarFeedCard showToast={showToast} />
 
-      {/* Custom domain setup helper */}
-      <CustomDomainCard />
+      {/* Custom domain setup card was removed — rentalsphilly.com is live.
+          The CustomDomainCard component is kept below for reference but
+          no longer rendered anywhere. */}
     </div>
   );
 }
