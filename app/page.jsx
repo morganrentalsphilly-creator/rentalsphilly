@@ -2304,7 +2304,7 @@ export default function App() {
     // The agent-side audit email (stored in-memory only, marked internal so
     // it doesn't appear in the lead's customer-facing thread).
     const internalEmail = {
-      id: `m_${Date.now()}_rsd`, channel: 'email', direction: 'internal', status: 'sent',
+      id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_rsd`, channel: 'email', direction: 'internal', status: 'sent',
       to: settings.agentEmail, via: 'gmail',
       subject: `[SCREENING LOGGED] ${lead.fullName} — ${interpretation.summary}`,
       body: `Recommendation: ${interpretation.recommendation.toUpperCase()}\n\n${interpretation.flags.length > 0 ? `Flags:\n${interpretation.flags.map(f => `• ${f}`).join('\n')}\n\n` : ''}${interpretation.strengths.length > 0 ? `Strengths:\n${interpretation.strengths.map(s => `• ${s}`).join('\n')}\n\n` : ''}`,
@@ -2412,7 +2412,12 @@ export default function App() {
         ...(lead.activities || []),
         { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'application-uploaded', timestamp: new Date().toISOString(), message: `Application PDF uploaded: ${fileData.filename}` },
         ...(shouldCreateCurateTask ? [{
-          id: `a_${Date.now()}_t`,
+          // Random suffix — straggler from the PK collision sweep. Same
+          // potential bug as the others: two leads triggering the
+          // task-auto-created activity in the same millisecond would
+          // generate identical `a_${ms}_t` IDs and one would silently
+          // drop on activities.id (PK violation).
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_t`,
           type: 'task-auto-created',
           timestamp: new Date().toISOString(),
           message: `Application uploaded → curate task created for ${firstName}`,
@@ -2577,7 +2582,12 @@ export default function App() {
             : 'Marked application as received via RentSpree (no PDF on file)',
         },
         ...(shouldCreateCurateTask ? [{
-          id: `a_${Date.now()}_t`,
+          // Random suffix — straggler from the PK collision sweep. Same
+          // potential bug as the others: two leads triggering the
+          // task-auto-created activity in the same millisecond would
+          // generate identical `a_${ms}_t` IDs and one would silently
+          // drop on activities.id (PK violation).
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_t`,
           type: 'task-auto-created',
           timestamp: new Date().toISOString(),
           message: `Application received → curate task created for ${firstName}`,
@@ -2859,7 +2869,7 @@ export default function App() {
         }] : []),
       ],
       activities: [...(lead.activities || []), { id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type: 'virtual-tour-requested', timestamp: new Date().toISOString(), message: `Virtual tour requested: ${listings.length} properties` }],
-      tasks: [...(lead.tasks || []), { id: `t_${Date.now()}_v`, title: `Send video tour to ${firstName}`, dueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', relatedTourId: virtualTour.id }],
+      tasks: [...(lead.tasks || []), { id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_v`, title: `Send video tour to ${firstName}`, dueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0], status: 'pending', auto: true, priority: 'high', relatedTourId: virtualTour.id }],
     });
   };
 
@@ -9918,14 +9928,14 @@ function ToursView({ upcomingTours, onSelectLead, updateLead, showToast, setting
     let followUpTask = null;
     if (outcome === 'showed') {
       followUpTask = {
-        id: `t_${Date.now()}_post`,
+        id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_post`,
         title: `Post-tour follow-up with ${lead.fullName.split(' ')[0]} re: ${firstAddr}`,
         dueDate: new Date(Date.now() + 1 * 86400000).toISOString().split('T')[0],
         status: 'pending', auto: true, priority: 'high', flags: ['post-tour-followup'],
       };
     } else if (outcome === 'no-show') {
       followUpTask = {
-        id: `t_${Date.now()}_noshow`,
+        id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_noshow`,
         title: `Re-engage ${lead.fullName.split(' ')[0]} — they no-showed ${firstAddr}`,
         dueDate: new Date(Date.now() + 1 * 86400000).toISOString().split('T')[0],
         status: 'pending', auto: true, priority: 'medium', flags: ['no-show-followup'],
