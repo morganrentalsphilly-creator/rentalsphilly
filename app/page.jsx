@@ -12792,7 +12792,31 @@ function LeadDetailCRM({ lead, onClose, updateLead, removeLead, onCompose, showT
               <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center font-semibold text-sm shrink-0">{initials}</div>
               <div className="min-w-0">
                 <div className="font-semibold text-slate-900 truncate">{lead.fullName}</div>
-                <div className="text-xs text-slate-500 truncate">{lead.email} · {lead.phone}</div>
+                <div className="text-xs text-slate-500 truncate">
+                  {lead.email && (
+                    <a
+                      href={`mailto:${lead.email}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="hover:text-slate-900 hover:underline"
+                    >
+                      {lead.email}
+                    </a>
+                  )}
+                  {lead.email && lead.phone && ' · '}
+                  {lead.phone && (
+                    // tel: link gives Morgan one-tap dial on iPhone in the
+                    // field. NOTE: this calls FROM her personal cell — see
+                    // LAUNCH_READINESS.md "Working leads from the field"
+                    // section for the trade-off vs Twilio Voice forwarding.
+                    <a
+                      href={`tel:${lead.phone.replace(/[^\d+]/g, '')}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="hover:text-slate-900 hover:underline font-medium"
+                    >
+                      {lead.phone}
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0">

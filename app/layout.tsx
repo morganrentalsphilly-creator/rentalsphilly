@@ -27,7 +27,18 @@ export const metadata: Metadata = {
     title: "Rentals Philly",
     description: "Hand-picked Philadelphia rentals. Real agent. Booked by text.",
   },
-  // Apple touch icon falls back to /apple-icon if you add one in /public
+  // Web app manifest powers Android "Install app" + standalone PWA mode.
+  manifest: "/manifest.json",
+  // Icons. iOS uses apple-touch-icon for "Add to Home Screen"; Android and
+  // PWA-capable browsers use the manifest icons (192/512). All three live
+  // in /public and are checked in.
+  icons: {
+    icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  // iOS-specific "Add to Home Screen" config. statusBarStyle="default" keeps
+  // the system status bar visible (vs "black-translucent" which overlays the
+  // page content) so our sticky top nav doesn't collide with the clock.
   appleWebApp: {
     title: "Rentals Philly",
     statusBarStyle: "default",

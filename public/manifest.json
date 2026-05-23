@@ -1,0 +1,25 @@
+{
+  "name": "Rentals Philly",
+  "short_name": "Rentals Philly",
+  "description": "Hand-picked Philly rentals — CRM for the agent.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1c1f2a",
+  "theme_color": "#b58e54",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
