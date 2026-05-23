@@ -1709,12 +1709,61 @@ export default function App() {
         (payload) => {
           const row = payload.new;
           if (!row?.id) return;
-          // Reflect opt-out status changes immediately in the UI.
-          setLeads((prev) => prev.map((l) =>
-            l.id === row.id
-              ? { ...l, opted_out: row.opted_out, opted_out_at: row.opted_out_at }
-              : l
-          ));
+          // Propagate scalar field changes — NOT just opt-out. Previously
+          // this handler only carried opted_out/opted_out_at, which meant
+          // any DB-side stage change (customer submits phase 2 → stage
+          // becomes 'tour-booked'; cron writes nudge_history into raw; the
+          // inbound webhook flips bucket on a stub) was invisible until
+          // Morgan refreshed. Pipeline cards would stay in the wrong column,
+          // Today's "needs curated link" list would lie, and nudge history
+          // wouldn't reflect what just fired.
+          //
+          // We carefully preserve the nested arrays (tours / messages /
+          // activities / tasks / submissions / scheduledNudges) because
+          // those are accumulated by their own Realtime handlers — merging
+          // them in from `row` would wipe them out (row only has the
+          // top-level lead columns, not the joined child rows).
+          setLeads((prev) => prev.map((l) => {
+            if (l.id !== row.id) return l;
+            return {
+              ...l,
+              // Original snake_case (some code reads these directly).
+              ...row,
+              // Re-derive the camelCase aliases that hydrateLeads produces
+              // on regular load, so UI components that read camelCase see
+              // fresh values immediately. Keep the existing ones as a
+              // fallback when the DB row omits a field.
+              fullName: row.full_name || l.fullName,
+              moveInDate: row.move_in_date || l.moveInDate,
+              budgetMin: row.budget_min ?? l.budgetMin,
+              budgetMax: row.budget_max ?? l.budgetMax,
+              creditScore: row.credit_score || l.creditScore,
+              tourType: row.tour_type || l.tourType,
+              applicationStatus: row.application_status,
+              opted_out: !!row.opted_out,
+              opted_out_at: row.opted_out_at,
+              bedsMin: row.raw?.beds_min ?? l.bedsMin ?? null,
+              bedsMax: row.raw?.beds_max ?? l.bedsMax ?? null,
+              bathsMin: row.raw?.baths_min ?? l.bathsMin ?? null,
+              bathsMax: row.raw?.baths_max ?? l.bathsMax ?? null,
+              tourAvailability: Array.isArray(row.raw?.tour_availability) ? row.raw.tour_availability : l.tourAvailability || [],
+              curatedLinkUrl: row.raw?.curated_link_url || l.curatedLinkUrl || null,
+              curatedLinkSentAt: row.raw?.curated_link_sent_at || l.curatedLinkSentAt || null,
+              source: row.raw?.source || l.source || 'Unknown',
+              tags: Array.isArray(row.raw?.tags) ? row.raw.tags : (l.tags || []),
+              notes: row.raw?.notes ?? l.notes ?? '',
+              // CRITICAL: preserve the nested arrays. `...row` above only
+              // contains lead-table columns; the joined child arrays
+              // (tours, messages, etc) live on `l` and must survive
+              // unchanged.
+              tours: l.tours,
+              messages: l.messages,
+              activities: l.activities,
+              tasks: l.tasks,
+              submissions: l.submissions,
+              scheduledNudges: l.scheduledNudges,
+            };
+          }));
         }
       )
       .on(
