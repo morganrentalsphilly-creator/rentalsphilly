@@ -7284,22 +7284,52 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
       });
     }
 
-    // 7. New leads, no curated link sent yet
+    // 7. New leads with a real next move available right now. Bucket-aware
+    // gating so Morgan doesn't see "Send curated link" prompts for leads
+    // who are 75+ days out OR are BCMS still waiting on an application.
+    // Mirrors the per-bucket workflow rules:
+    //   GCMS                          → curate now ✓
+    //   BCMS, application received    → curate now ✓ (gate cleared)
+    //   BCMS, no application yet      → skip (Morgan is waiting on them)
+    //   GCM75+, > 75 days out         → skip (light-touch window)
+    //   GCM75+, ≤ 75 days out         → curate now ✓ (window opened)
+    //   BC75+,  > 75 days out         → skip
+    //   BC75+,  ≤ 75 days, no app     → "Send application link" (not curate)
     for (const lead of leads) {
       if (isLeadSnoozed(lead)) continue;
       if (lead.stage !== 'new') continue;
       if (lead.curatedLinkSentAt) continue;
       const ageHrs = (now - new Date(lead.createdAt || now).getTime()) / 3600000;
       if (ageHrs > 48) continue; // older than 2d → falls into cadence/stuck
+
+      // Compute days to move-in. Missing date → treat as "near term" so
+      // we don't lose visibility on a lead without a date.
+      const moveInIso = lead.moveInDate || lead.move_in_date || lead.raw?.moveInDate;
+      const moveIn = moveInIso ? new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : '')) : null;
+      const daysToMove = moveIn ? Math.round((moveIn - new Date()) / 86400000) : 0;
+      const hasApplication = !!lead.application || lead.applicationStatus === 'received';
+
+      // 75+ day buckets outside their window — quiet, no prompt.
+      if ((lead.bucket === 'GCM75+' || lead.bucket === 'BC75+') && daysToMove > 75) {
+        continue;
+      }
+      // BCMS still waiting on application — quiet, no prompt.
+      if (lead.bucket === 'BCMS' && !hasApplication) {
+        continue;
+      }
+
+      // BC75+ within 75 days needs an APPLICATION LINK first, not a curated.
+      const isAppPrompt = lead.bucket === 'BC75+' && !hasApplication;
+
       out.push({
         id: `new-${lead.id}`,
         leadId: lead.id,
         priority: 7,
         kind: 'new-lead',
         leadName: lead.fullName,
-        action: 'Send curated link',
+        action: isAppPrompt ? 'Send application link' : 'Send curated link',
         subtitle: `New lead · ${Math.round(ageHrs)}h ago`,
-        meta: 'curate',
+        meta: isAppPrompt ? 'app' : 'curate',
         tone: 'gold',
         icon: Sparkles,
         paused: !!lead.raw?.automation_paused,
@@ -7506,6 +7536,31 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
                     className="w-7 h-7 rounded-full bg-white border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50 flex items-center justify-center transition"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5 text-slate-400 hover:text-emerald-600" />
+                  </button>
+                )}
+                {/* "new-lead" prompts get a dismiss button. Snoozes the lead
+                    for 7 days so the prompt disappears from Focus Now without
+                    requiring Morgan to actually fire the curated link. Useful
+                    when she's already curated externally OR wants to delay. */}
+                {item.kind === 'new-lead' && lead && (
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const newDate = new Date(Date.now() + 7 * 86400000).toISOString();
+                      await updateLead(lead.id, {
+                        snoozed_until: newDate,
+                        raw: { ...(lead.raw || {}), snoozed_until: newDate, snoozed_reason: 'dismissed-from-focus' },
+                        activities: [
+                          ...(lead.activities || []),
+                          { id: `a_${Date.now()}`, type: 'snoozed', timestamp: new Date().toISOString(), message: 'Dismissed from Focus Now — snoozed 7d' },
+                        ],
+                      });
+                      showToast('Dismissed · snoozed 7d');
+                    }}
+                    title="Dismiss this prompt (snooze 7 days)"
+                    className="w-7 h-7 rounded-full bg-white border border-slate-200 hover:border-slate-400 hover:bg-slate-50 flex items-center justify-center transition"
+                  >
+                    <X className="w-3.5 h-3.5 text-slate-400 hover:text-slate-700" />
                   </button>
                 )}
                 {phone && (item.kind === 'tour' || item.kind === 'reply' || item.kind === 'stuck') && (
