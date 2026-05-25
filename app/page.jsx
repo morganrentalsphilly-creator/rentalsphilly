@@ -17135,12 +17135,19 @@ function ActivityFeedView({ leads }) {
 }
 
 function AnalyticsView({ leads }) {
+  // Window picker for the loss-reason panel — defaults to 30 days because
+  // that's the most actionable timeframe; "all time" answers a different
+  // question (long-term funnel) so it gets a toggle below.
+  const [lossWindow, setLossWindow] = useState('30d');
+
   const stats = useMemo(() => {
     const total = leads.length;
     const buckets = { GCMS: 0, 'GCM75+': 0, BCMS: 0, 'BC75+': 0 };
     const stageCounts = {};
     const sourceCounts = {};
-    const sourceConverted = {}; // leases by source
+    const sourceConverted = {};      // leases by source
+    const sourceCommission = {};     // $ commission booked by source
+    const sourceTimeToClose = {};    // { sum, count } — days from createdAt to leased_at
     let commissionEarned = 0;
     let commissionReceived = 0;
 
@@ -17150,9 +17157,29 @@ function AnalyticsView({ leads }) {
       stageCounts[stage] = (stageCounts[stage] || 0) + 1;
       const source = lead.source || 'Unknown';
       sourceCounts[source] = (sourceCounts[source] || 0) + 1;
-      if (lead.stage === 'leased' || lead.stage === 'paid') sourceConverted[source] = (sourceConverted[source] || 0) + 1;
+      const isClosed = stage === 'leased' || stage === 'paid';
+      if (isClosed) {
+        sourceConverted[source] = (sourceConverted[source] || 0) + 1;
+        // Per-source commission. Counts whatever amount Morgan recorded
+        // at close — both the leased-pending and paid-in-hand states.
+        const amt = Number(lead.raw?.commission?.amount || 0);
+        if (amt) sourceCommission[source] = (sourceCommission[source] || 0) + amt;
+        // Time-to-close = days from intake to leased_at. Skip if either
+        // anchor is missing or negative (data quality issues).
+        const leasedAt = lead.raw?.leased_at;
+        const createdAt = lead.createdAt;
+        if (leasedAt && createdAt) {
+          const days = (new Date(leasedAt).getTime() - new Date(createdAt).getTime()) / 86400000;
+          if (Number.isFinite(days) && days >= 0) {
+            const acc = sourceTimeToClose[source] || { sum: 0, count: 0 };
+            acc.sum += days;
+            acc.count += 1;
+            sourceTimeToClose[source] = acc;
+          }
+        }
+      }
       const amt = Number(lead.raw?.commission?.amount || 0);
-      if (amt && (lead.stage === 'leased' || lead.stage === 'paid')) commissionEarned += amt;
+      if (amt && isClosed) commissionEarned += amt;
       if (amt && lead.raw?.commission?.received_at) commissionReceived += amt;
     }
 
@@ -17183,8 +17210,42 @@ function AnalyticsView({ leads }) {
       stageAvgDays[stage] = count > 0 ? Math.round(totalDays / count) : 0;
     }
 
-    return { total, buckets, stageCounts, sourceCounts, sourceConverted, funnel, stageAvgDays, commissionEarned, commissionReceived, matched, toured, applied, leased };
+    return {
+      total, buckets, stageCounts, sourceCounts, sourceConverted,
+      sourceCommission, sourceTimeToClose,
+      funnel, stageAvgDays, commissionEarned, commissionReceived,
+      matched, toured, applied, leased,
+    };
   }, [leads]);
+
+  // Loss-reason aggregation. Lives outside the main stats memo because
+  // it's filtered by a UI-selectable window and we don't want a window
+  // change to invalidate the rest of the (expensive) stats compute.
+  const lossStats = useMemo(() => {
+    const cutoffMs =
+      lossWindow === '30d' ? Date.now() - 30 * 86400000 :
+      lossWindow === '90d' ? Date.now() - 90 * 86400000 :
+      0;
+    const lost = leads.filter((l) => {
+      if (l.stage !== 'lost') return false;
+      if (cutoffMs === 0) return true;
+      // Prefer the close_data timestamp (when Morgan actually marked
+      // them lost); fall back to last_stage_change_at; finally fall
+      // back to createdAt so we don't lose old data points entirely.
+      const ts = l.raw?.close_data?.recorded_at
+              || l.raw?.last_stage_change_at
+              || l.createdAt;
+      if (!ts) return false;
+      return new Date(ts).getTime() >= cutoffMs;
+    });
+    const counts = {};
+    for (const l of lost) {
+      const reason = l.raw?.close_data?.reason || '(no reason recorded)';
+      counts[reason] = (counts[reason] || 0) + 1;
+    }
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    return { total: lost.length, counts: sorted };
+  }, [leads, lossWindow]);
 
   const fmtPct = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '–');
   const maxFunnel = Math.max(...stats.funnel.map((f) => f.value), 1);
@@ -17259,31 +17320,141 @@ function AnalyticsView({ leads }) {
         </div>
       </Card>
 
-      {/* SOURCES */}
+      {/* SOURCES — attribution dashboard */}
+      {/*
+        Per-source breakdown showing volume, conversion rate, total
+        commission, and average time-to-close. The point: tell Morgan
+        which channels to lean into vs deprioritize. "Instagram converts
+        at 12% with avg $2,800 commission" vs "Zillow converts at 3%
+        with avg $1,400" — that's the call she needs to make. Sorted
+        by volume since that's what she's most likely to scan first;
+        within each row the conversion + commission columns tell the
+        real story.
+      */}
       <Card className="p-5">
-        <SectionHeader icon={Star}>Lead sources</SectionHeader>
+        <SectionHeader icon={Star}>Lead sources — where the best leads come from</SectionHeader>
         {Object.keys(stats.sourceCounts).length === 0 ? (
           <div className="text-sm italic text-slate-400 mt-2">No source data yet.</div>
         ) : (
-          <div className="space-y-1.5 mt-3">
-            {Object.entries(stats.sourceCounts)
-              .sort((a, b) => b[1] - a[1])
-              .map(([source, count]) => {
-                const converted = stats.sourceConverted[source] || 0;
-                const convPct = fmtPct(converted, count);
-                const width = Math.max(8, Math.round((count / stats.total) * 100));
-                return (
-                  <div key={source} className="flex items-center gap-3">
-                    <div className="w-28 text-xs font-medium text-slate-700 shrink-0 truncate">{source}</div>
-                    <div className="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden relative">
-                      <div className="bg-slate-400 h-full" style={{ width: `${width}%` }} />
-                      <div className="absolute inset-0 flex items-center px-2 text-[11px] font-semibold text-white drop-shadow">{count}</div>
+          <>
+            {/* Header row */}
+            <div className="grid grid-cols-12 gap-2 mt-3 mb-1 px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              <div className="col-span-3">Source</div>
+              <div className="col-span-3">Leads</div>
+              <div className="col-span-2 text-right">Closed</div>
+              <div className="col-span-2 text-right">$ booked</div>
+              <div className="col-span-2 text-right">Avg days</div>
+            </div>
+            <div className="space-y-1.5">
+              {Object.entries(stats.sourceCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([source, count]) => {
+                  const converted = stats.sourceConverted[source] || 0;
+                  const convPct = fmtPct(converted, count);
+                  const commission = stats.sourceCommission[source] || 0;
+                  const ttc = stats.sourceTimeToClose[source];
+                  const avgDays = ttc && ttc.count > 0
+                    ? Math.round(ttc.sum / ttc.count)
+                    : null;
+                  const width = Math.max(8, Math.round((count / stats.total) * 100));
+                  // Highlight high-converters in emerald; show "—" for
+                  // sources with zero closed deals so a 0% doesn't
+                  // visually scream "broken." Conversion rate only
+                  // becomes meaningful at >5 leads, so use a softer
+                  // tone below that threshold.
+                  const convTone = converted > 0 ? 'text-emerald-700 font-semibold' :
+                                   count >= 5 ? 'text-amber-700' :
+                                   'text-slate-400';
+                  return (
+                    <div key={source} className="grid grid-cols-12 gap-2 items-center px-2 py-1.5 rounded-lg hover:bg-slate-50">
+                      <div className="col-span-3 text-xs font-medium text-slate-700 truncate">{source}</div>
+                      <div className="col-span-3">
+                        <div className="bg-slate-100 rounded-full h-5 overflow-hidden relative">
+                          <div className="bg-slate-400 h-full" style={{ width: `${width}%` }} />
+                          <div className="absolute inset-0 flex items-center px-2 text-[11px] font-semibold text-white drop-shadow">{count}</div>
+                        </div>
+                      </div>
+                      <div className={`col-span-2 text-right text-xs tabular-nums ${convTone}`}>
+                        {converted}{converted > 0 ? ` · ${convPct}` : ''}
+                      </div>
+                      <div className="col-span-2 text-right text-xs tabular-nums text-slate-700">
+                        {commission > 0 ? fmtCurrency(commission) : '—'}
+                      </div>
+                      <div className="col-span-2 text-right text-xs tabular-nums text-slate-500">
+                        {avgDays !== null ? `${avgDays}d` : '—'}
+                      </div>
                     </div>
-                    <div className="w-20 text-right text-[11px] text-slate-500 shrink-0 tabular-nums">{converted} · {convPct}</div>
+                  );
+                })}
+            </div>
+            <div className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+              <strong className="text-slate-700">How to read this:</strong> Conversion rates only become signal after ~5+ leads from a source. Avg days = intake → leased timeline. Use this to decide where to put more time + ad spend.
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* LOSS REASONS — funnel-fixing dashboard */}
+      {/*
+        Aggregated reasons leads were marked Lost. This is the highest-
+        leverage data Morgan has for fixing her funnel: if 40% are
+        "Budget mismatch" she should adjust her intake filters; if 30%
+        are "Ghosted" she needs a better follow-up cadence; if 20% are
+        "Picked another agent" she has a competitive positioning
+        problem. Window picker defaults to 30d because that's most
+        actionable — 90d + all-time are there for trend visibility.
+      */}
+      <Card className="p-5">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <SectionHeader icon={AlertTriangle}>Why we lost leads</SectionHeader>
+          <div className="flex gap-1 shrink-0">
+            {[
+              { k: '30d', label: '30d' },
+              { k: '90d', label: '90d' },
+              { k: 'all', label: 'All' },
+            ].map((w) => (
+              <button
+                key={w.k}
+                onClick={() => setLossWindow(w.k)}
+                className={`px-2 py-1 rounded-full text-[10px] font-semibold ${
+                  lossWindow === w.k
+                    ? 'bg-slate-900 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {lossStats.total === 0 ? (
+          <div className="text-sm italic text-slate-400">
+            No lost leads in this window. Either everyone&apos;s still active or you haven&apos;t been marking close-reasons yet — when you mark a lead Lost, the dialog asks why.
+          </div>
+        ) : (
+          <>
+            <div className="text-xs text-slate-500 mb-3">
+              {lossStats.total} lead{lossStats.total === 1 ? '' : 's'} marked lost in the last {lossWindow === '30d' ? '30 days' : lossWindow === '90d' ? '90 days' : 'all time'}.
+            </div>
+            <div className="space-y-1.5">
+              {lossStats.counts.map(([reason, count]) => {
+                const pct = Math.round((count / lossStats.total) * 100);
+                const width = Math.max(8, pct);
+                return (
+                  <div key={reason} className="flex items-center gap-3">
+                    <div className="w-40 text-xs font-medium text-slate-700 shrink-0 truncate" title={reason}>{reason}</div>
+                    <div className="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden relative">
+                      <div className="bg-red-400 h-full" style={{ width: `${width}%` }} />
+                      <div className="absolute inset-0 flex items-center px-2 text-[11px] font-semibold text-white drop-shadow">{count} · {pct}%</div>
+                    </div>
                   </div>
                 );
               })}
-          </div>
+            </div>
+            <div className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+              <strong className="text-slate-700">Action:</strong> if one reason dominates (&gt;40%), it&apos;s telling you where your funnel is leaking. Bad timing → not your fault; Budget mismatch → tighten intake; Ghosted → improve cadence; Picked another agent → competitive issue.
+            </div>
+          </>
         )}
       </Card>
     </div>

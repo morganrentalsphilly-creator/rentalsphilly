@@ -621,6 +621,119 @@ async function runTourOutcomePrompts(db) {
   return { created, errors };
 }
 
+// Tour-day debrief SMS. Fires ~2 hours after tour start (which is ~1 hour
+// after a typical 60-min tour ends) asking the lead how it went, while
+// their impressions are still fresh and they're most likely to give a
+// real signal ("loved #2, hated #1, want to apply"). The existing 48h
+// post-tour nudge is still useful — but by 48h the lead has often moved
+// on mentally. Catching them in the 2-4h window dramatically improves
+// reply rate.
+//
+// Why 2h and not "end of tour": tours can run long, and texting someone
+// the instant their tour officially "ends" risks them still standing in
+// the apartment. The 2h buffer gives them time to walk out, sit in their
+// car or get coffee, and form an opinion.
+//
+// Triggers when:
+//   - tour.status is one of the "actively in progress / completed" states
+//   - tour start time was 2-6 hours ago (the window is wide so we still
+//     fire if the cron missed a tick or two)
+//   - we haven't already sent the debrief (idempotency via
+//     lead.raw.nudge_history.tour_debrief_{tourId})
+//
+// Idempotency uses tour.id in the key so a lead with multiple tours
+// gets a debrief per tour, not one global "tour_debrief" flag.
+async function runTourDayDebriefs(db) {
+  const now = new Date();
+  const since = new Date(now.getTime() - 2 * 86400000).toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+  const { data: tours, error } = await db
+    .from('tours')
+    .select('id, lead_id, date, time, status, listings')
+    .gte('date', since)
+    .lte('date', today);
+  if (error) {
+    console.error('[cron tour-debrief] query failed', error);
+    return { sent: 0, errors: 1 };
+  }
+
+  // Pull all candidate leads in one shot.
+  const leadIds = [...new Set((tours || []).map((t) => t.lead_id).filter(Boolean))];
+  if (leadIds.length === 0) return { sent: 0, errors: 0 };
+  const { data: leads } = await db
+    .from('leads')
+    .select('id, full_name, phone, raw, opted_out')
+    .in('id', leadIds);
+  const leadById = Object.fromEntries((leads || []).map((l) => [l.id, l]));
+
+  let sent = 0;
+  let errors = 0;
+  const SEND_CAP = 25;
+
+  for (const tour of (tours || [])) {
+    if (sent >= SEND_CAP) break;
+    if (!tour.lead_id) continue;
+    // Don't debrief cancelled tours — they didn't happen.
+    if (tour.status === 'cancelled') continue;
+    const startsAt = parseTourStartsAt(tour.date, tour.time);
+    if (!startsAt) continue;
+    // 2-6 hour window. Wider than a single cron tick so we don't miss
+    // anyone if the cron skipped a beat. Idempotency keeps a tour from
+    // being debriefed twice.
+    const ageMs = now.getTime() - startsAt.getTime();
+    if (ageMs < 2 * 60 * 60 * 1000) continue;  // too soon
+    if (ageMs > 6 * 60 * 60 * 1000) continue;  // too late — the 48h nudge will catch them
+    const lead = leadById[tour.lead_id];
+    if (!lead) continue;
+    if (lead.opted_out) continue;
+    if (lead.raw?.automation_paused) continue;
+    const history = lead.raw?.nudge_history || {};
+    const debriefKey = `tour_debrief_${tour.id}`;
+    if (history[debriefKey]) continue;
+
+    // FLAG-BEFORE-SEND (same TCPA-safe pattern as #213).
+    const { error: flagErr } = await db.from('leads').update({
+      raw: {
+        ...(lead.raw || {}),
+        nudge_history: { ...history, [debriefKey]: new Date().toISOString() },
+      },
+    }).eq('id', lead.id);
+    if (flagErr) {
+      console.error('[cron tour-debrief] flag write FAILED — skipping', { tourId: tour.id, leadId: lead.id, error: flagErr.message });
+      errors++;
+      continue;
+    }
+
+    const firstName = (lead.full_name || '').split(' ')[0] || 'there';
+    const addrs = (tour.listings || []).map((l) => l.address).filter(Boolean);
+    // If we know which addresses they toured, reference them — but only
+    // the first one to keep the text short. SMS is most effective when
+    // it reads like a real human texting, not a marketing blast.
+    const firstAddr = addrs[0] || '';
+    const body = firstAddr
+      ? `Hey ${firstName}, how'd the tour at ${firstAddr.split(',')[0]} go? Any of them feel like home?`
+      : `Hey ${firstName}, how'd today's tour go? Any of them feel like home?`;
+    try {
+      const result = await sendSms({
+        leadId: lead.id,
+        body,
+        kind: 'tour_debrief',
+        idempotencyKey: `tour-debrief-${tour.id}`,
+      });
+      if (result.ok) sent++;
+      else if (result.error !== 'opted_out') {
+        console.warn('[cron tour-debrief] send failed AFTER flag-write', { tourId: tour.id, leadId: lead.id, error: result.error });
+        errors++;
+      }
+      await sleep(PER_MESSAGE_DELAY_MS);
+    } catch (err) {
+      console.error('[cron tour-debrief] send threw', { tourId: tour.id, err: err.message });
+      errors++;
+    }
+  }
+  return { sent, errors };
+}
+
 export async function GET(request) {
   if (!authorized(request)) {
     return new NextResponse('Unauthorized', { status: 401 });
@@ -648,6 +761,9 @@ export async function GET(request) {
   const blast = await runBlastDrain(db);
   const nudges = nudgesOn ? await runStageNudges(db, settingsRow) : { skipped: 'autoNudgeNoResponse disabled' };
   const tourOutcomes = autoCompleteOn ? await runTourOutcomePrompts(db) : { skipped: 'autoCompleteTours disabled' };
+  // Tour-day debrief gated by the same nudge toggle as the other
+  // post-tour outreach — it's the same "automated follow-up" category.
+  const tourDebriefs = nudgesOn ? await runTourDayDebriefs(db) : { skipped: 'autoNudgeNoResponse disabled' };
 
   // Heartbeat — stash the tick timestamp + last-run summary into settings.raw
   // so /api/health can confirm the cron is actually firing. If this stops
@@ -661,6 +777,7 @@ export async function GET(request) {
           reminders: reminders?.sent ?? reminders?.skipped ?? 0,
           nudges: nudges?.sent ?? nudges?.skipped ?? 0,
           tour_outcomes: tourOutcomes?.created ?? tourOutcomes?.skipped ?? 0,
+          tour_debriefs: tourDebriefs?.sent ?? tourDebriefs?.skipped ?? 0,
           blast: blast?.sent ?? 0,
         },
       },
@@ -669,8 +786,8 @@ export async function GET(request) {
     console.warn('[cron] heartbeat write failed', heartbeatErr?.message);
   }
 
-  console.log('[cron] dispatcher tick', { automationOn, reminders, blast, nudges, tourOutcomes });
-  return NextResponse.json({ ok: true, automationOn, reminders, blast, nudges, tourOutcomes });
+  console.log('[cron] dispatcher tick', { automationOn, reminders, blast, nudges, tourOutcomes, tourDebriefs });
+  return NextResponse.json({ ok: true, automationOn, reminders, blast, nudges, tourOutcomes, tourDebriefs });
 }
 
 // Allow POST too so it's easy to test from curl with a bearer header.
