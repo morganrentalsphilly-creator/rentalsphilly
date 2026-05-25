@@ -497,21 +497,39 @@ const csvCell = (v) => {
   return `"${s}"`;
 };
 // Download a CSV of leads — used for backup/portability.
+//
+// Real-world uses: pull into a spreadsheet for ad-hoc analysis, hand to an
+// accountant for commission reconciliation, or keep as a disaster-recovery
+// backstop in case Supabase ever has an issue. Includes bedsMin/Max +
+// bathsMin/Max because matching is range-based now (the old single beds
+// field underspecifies what a lead actually wants). application_status +
+// opted_out + leased_at round out the picture for funnel + compliance.
 const downloadLeadsCsv = (leads) => {
   const headers = [
     'name', 'email', 'phone', 'stage', 'bucket', 'source',
-    'budget_min', 'budget_max', 'beds', 'baths', 'areas',
+    'budget_min', 'budget_max',
+    'beds', 'beds_min', 'beds_max',
+    'baths', 'baths_min', 'baths_max',
+    'areas',
     'move_in', 'credit', 'employed', 'tour_type',
-    'tags', 'notes', 'created_at', 'commission',
+    'tags', 'notes', 'created_at',
+    'application_status', 'commission', 'leased_at',
+    'opted_out',
   ];
   const rows = (leads || []).map((l) => [
     l.fullName, l.email, l.phone, l.stage, l.bucket, l.source,
-    l.budgetMin, l.budgetMax, l.beds, l.baths, l.areas,
+    l.budgetMin, l.budgetMax,
+    l.beds, l.bedsMin ?? '', l.bedsMax ?? '',
+    l.baths, l.bathsMin ?? '', l.bathsMax ?? '',
+    l.areas,
     l.moveInDate, l.creditScore, l.employed, l.tourType,
     (l.tags || []).join('; '),
     (l.notes || '').replace(/\n+/g, ' ').slice(0, 500),
     l.createdAt,
+    l.applicationStatus || l.application_status || '',
     l.raw?.commission?.amount || '',
+    l.raw?.leased_at || '',
+    l.opted_out ? 'yes' : 'no',
   ].map(csvCell).join(','));
   const csv = [headers.join(','), ...rows].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1808,6 +1826,83 @@ export default function App() {
     // user changes their notification preferences, the new value won't
     // take effect until the next mount — acceptable tradeoff vs. losing
     // a real inbound message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, session]);
+
+  // ---- Tab visibility / wake-from-sleep recovery ----
+  //
+  // Supabase Realtime auto-reconnects when the network comes back, BUT it
+  // does NOT backfill events that fired during the disconnect window. So
+  // if Morgan's laptop sleeps overnight and a lead texts at 3am, the
+  // inbound message lands in the DB (the webhook handles itself) but the
+  // UI never receives the INSERT event — message stays invisible until
+  // she manually refreshes.
+  //
+  // Fix: when the tab becomes visible again after being hidden, pull
+  // every message from the last LOOKBACK window and merge any rows we
+  // don't already have in state. Idempotent — duplicates filter out by
+  // id. Only fires after `loaded` so we don't double-up the initial load.
+  useEffect(() => {
+    if (!loaded || !session) return;
+    if (typeof document === 'undefined') return;
+    let lastHiddenAt = null;
+    const LOOKBACK_MS = 12 * 60 * 60 * 1000; // 12h cap so we never refetch a year of messages
+    const MIN_HIDDEN_MS = 30 * 1000;          // only refetch if we were hidden >30s
+
+    const handler = async () => {
+      if (document.visibilityState === 'hidden') {
+        lastHiddenAt = Date.now();
+        return;
+      }
+      if (document.visibilityState !== 'visible') return;
+      if (!lastHiddenAt) return;
+      const hiddenFor = Date.now() - lastHiddenAt;
+      lastHiddenAt = null;
+      if (hiddenFor < MIN_HIDDEN_MS) return; // brief tab-switch — skip
+      const since = new Date(Date.now() - Math.min(hiddenFor + 60_000, LOOKBACK_MS)).toISOString();
+      try {
+        const supa = createBrowserSupabase();
+        if (!supa) return;
+        const { data: recent, error } = await supa
+          .from('messages')
+          .select('*')
+          .gte('created_at', since)
+          .order('created_at', { ascending: true })
+          .limit(200);
+        if (error) {
+          console.warn('[wake-resume] fetch failed', error.message);
+          return;
+        }
+        if (!recent || recent.length === 0) return;
+        // Merge: drop any rows we already have, keep the rest. Reuse the
+        // same incoming-row shape as the Realtime INSERT handler so the
+        // UI is consistent.
+        let merged = 0;
+        setLeads((prev) => prev.map((l) => {
+          const myRows = recent.filter((r) => r.lead_id === l.id);
+          if (myRows.length === 0) return l;
+          const existingIds = new Set((l.messages || []).map((m) => m.id));
+          const fresh = myRows.filter((r) => !existingIds.has(r.id)).map((r) => ({
+            id: r.id, channel: r.channel, direction: r.direction, status: r.status,
+            to: r.to, via: r.via, subject: r.subject, body: r.body,
+            automated: !!r.automated, internal: !!r.internal, kind: r.kind,
+            deliveryStatus: r.delivery_status, twilioSid: r.twilio_sid,
+            openedAt: r.opened_at, clickedAt: r.clicked_at,
+            timestamp: r.created_at || new Date().toISOString(),
+          }));
+          if (fresh.length === 0) return l;
+          merged += fresh.length;
+          return { ...l, messages: [...(l.messages || []), ...fresh] };
+        }));
+        if (merged > 0) {
+          console.log('[wake-resume] caught up', { merged, hiddenForMin: Math.round(hiddenFor / 60000) });
+        }
+      } catch (err) {
+        console.warn('[wake-resume] uncaught', err?.message);
+      }
+    };
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, session]);
 
@@ -9451,6 +9546,19 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
     showToast(`Deleted ${done} lead${done === 1 ? '' : 's'}${failed ? ` · ${failed} failed` : ''}`);
   };
 
+  // CSV export uses the module-level downloadLeadsCsv helper. Wrap it
+  // with a toast + an empty-view guard so Morgan gets confirmation of
+  // exactly how many rows landed in the file (otherwise it can feel like
+  // nothing happened, especially when the filter excluded everything).
+  const handleExportCsv = () => {
+    if (filtered.length === 0) {
+      showToast('No leads in the current view to export');
+      return;
+    }
+    downloadLeadsCsv(filtered);
+    showToast(`Exported ${filtered.length} lead${filtered.length === 1 ? '' : 's'} to CSV`);
+  };
+
   return (
     <>
       <div className="flex flex-wrap gap-2 mb-3 items-center">
@@ -9516,7 +9624,7 @@ function LeadsListView({ leads, search, onSelectLead, saveLeads, waitlist = [], 
         {leads.length > 0 && (
           <>
             <button
-              onClick={() => downloadLeadsCsv(filtered)}
+              onClick={handleExportCsv}
               className="ml-auto text-xs text-slate-500 hover:text-slate-900 inline-flex items-center gap-1"
               title="Download CSV of currently-filtered leads"
             >
@@ -10673,6 +10781,162 @@ function SmsTestCard({ form, showToast }) {
   );
 }
 
+// Settings-page setup checklist. Note: there's a SIBLING component called
+// `SetupChecklist` (at the top of Today view) that shares the same spirit
+// but lives in a different surface and uses a simpler signal set. This
+// one is dedicated to the Settings page and additionally pings /api/health
+// for live integration status (real-sending mode, cron heartbeat) — things
+// the Today version doesn't surface because they require a server fetch.
+//
+// Surfaces at the top of Settings until every item is checked. Dismissible
+// via localStorage so power users who deliberately left something blank
+// (e.g. running in simulation mode for testing) can hide it. Re-appears
+// automatically if any item becomes unchecked again later, EXCEPT when
+// the user explicitly dismissed it.
+//
+// Why a checklist instead of validation errors: most of these items aren't
+// "wrong," they're just placeholders. Morgan can technically run with the
+// default "[Your name]" signature — Twilio won't reject anything — but
+// her leads will see "[Your name]" in their emails. Better to flag this
+// at setup time than have her find out from an embarrassed customer.
+function SettingsSetupChecklist({ settings }) {
+  const DISMISS_KEY = 'rp-setup-checklist-dismissed';
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(DISMISS_KEY) === '1'; } catch { return false; }
+  });
+  const [sendingMode, setSendingMode] = useState(null); // null | 'live' | 'simulated'
+  const [cronOk, setCronOk] = useState(null);            // null | true | false
+
+  // Pull live integration status from /api/health on mount + every 5 min.
+  // /api/health is cached at the edge for 30s so this isn't expensive.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setSendingMode(data?.sending_mode?.ok ? 'live' : 'simulated');
+        setCronOk(!!data?.vercel_cron?.ok);
+      } catch {}
+    };
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const agentName = settings.agentName || settings.agent_name || '';
+  const agentEmail = settings.agentEmail || settings.agent_email || '';
+  const agentPhone = settings.agentPhone || settings.agent_phone || '';
+  const applicationUrl =
+    settings.rentSpree?.applicationUrl ||
+    settings.rentspree_application_url ||
+    '';
+  const signatureTitle = settings.signature?.title || '';
+  const isPlaceholderName = !agentName || agentName === '[Your name]';
+
+  const items = [
+    {
+      key: 'name',
+      label: 'Agent name set (replaces "[Your name]" placeholder in emails + signature)',
+      ok: !isPlaceholderName,
+      hint: 'Set in Agent profile section below.',
+    },
+    {
+      key: 'email',
+      label: 'Agent email set (drives the From: address on outbound mail)',
+      ok: !!agentEmail && agentEmail !== 'agent@rentalsphilly.com',
+      hint: 'Set in Agent profile section below.',
+    },
+    {
+      key: 'phone',
+      label: 'Agent phone set (used in tour confirmations and email signature)',
+      ok: !!agentPhone && agentPhone !== '(215) 555-0100',
+      hint: 'Set in Agent profile section below.',
+    },
+    {
+      key: 'application',
+      label: 'General rental application URL set (BCMS welcome flow + 75-day BC75+ outreach)',
+      ok: !!applicationUrl,
+      hint: 'Without this, BCMS leads silently fall back to a generic GCMS welcome.',
+    },
+    {
+      key: 'signature',
+      label: 'Email signature title configured',
+      ok: !!signatureTitle,
+      hint: 'Find under Email signature.',
+    },
+    {
+      key: 'sending',
+      label: 'Real sending enabled (ENABLE_REAL_SENDING=true in Vercel env)',
+      ok: sendingMode === 'live',
+      pending: sendingMode === null,
+      hint: sendingMode === 'simulated'
+        ? 'Currently in SIMULATION mode — outbound SMS + email are logged but not delivered. Set ENABLE_REAL_SENDING=true in your Vercel env vars.'
+        : 'Health check is still loading…',
+    },
+    {
+      key: 'cron',
+      label: 'Vercel cron is ticking (powers reminders, drip nudges, daily summary)',
+      ok: cronOk === true,
+      pending: cronOk === null,
+      hint: 'Check /api/health if this stays unchecked — the dispatcher should heartbeat every minute.',
+    },
+  ];
+
+  const total = items.length;
+  const done = items.filter((i) => i.ok).length;
+  const allDone = done === total;
+
+  // Hide entirely when everything's set OR when user dismissed.
+  if (dismissed || allDone) return null;
+
+  const handleDismiss = () => {
+    try { localStorage.setItem(DISMISS_KEY, '1'); } catch {}
+    setDismissed(true);
+  };
+
+  return (
+    <Card className="p-5" style={{ borderLeft: '3px solid var(--brand-gold)' }}>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div className="font-semibold text-slate-900">Set up your CRM ({done}/{total})</div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            A few one-time settings to make sure your leads see the polished version of Rentals Philly. Anything still unchecked is using a placeholder default.
+          </div>
+        </div>
+        <button
+          onClick={handleDismiss}
+          className="text-[11px] text-slate-400 hover:text-slate-700 shrink-0"
+          title="Dismiss this checklist — it'll come back if you ever clear localStorage."
+        >
+          Dismiss
+        </button>
+      </div>
+      <ul className="space-y-2">
+        {items.map((it) => (
+          <li key={it.key} className="flex items-start gap-2.5 text-sm">
+            <span
+              className={`mt-0.5 w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold ${
+                it.ok ? 'bg-emerald-100 text-emerald-700' :
+                it.pending ? 'bg-slate-100 text-slate-400' :
+                'bg-amber-100 text-amber-700'
+              }`}
+            >
+              {it.ok ? '✓' : it.pending ? '…' : '!'}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className={it.ok ? 'text-slate-500 line-through' : 'text-slate-900'}>{it.label}</div>
+              {!it.ok && it.hint && <div className="text-[11px] text-slate-500 mt-0.5">{it.hint}</div>}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
 function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplates }) {
   const [form, setForm] = useState(settings);
   const [dirty, setDirty] = useState(false);
@@ -10719,6 +10983,7 @@ function SettingsView({ settings, saveSettings, showToast, tours, onEditTemplate
 
   return (
     <div className="space-y-6 max-w-2xl pb-24 relative">
+      <SettingsSetupChecklist settings={settings} />
       <Card className="divide-y divide-slate-100 overflow-hidden">
         <div className="p-5">
           <SectionHeader icon={Bot}>Automation</SectionHeader>
