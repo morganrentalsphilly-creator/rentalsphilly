@@ -657,12 +657,15 @@ async function runTourDayDebriefs(db) {
     return { sent: 0, errors: 1 };
   }
 
-  // Pull all candidate leads in one shot.
+  // Pull all candidate leads in one shot. SELECT must include `stage`
+  // so we can skip leads who've been marked lost / archived between the
+  // tour time and the debrief window — otherwise we'd cheerfully ask
+  // "how'd the tour go?" to someone Morgan already wrote off.
   const leadIds = [...new Set((tours || []).map((t) => t.lead_id).filter(Boolean))];
   if (leadIds.length === 0) return { sent: 0, errors: 0 };
   const { data: leads } = await db
     .from('leads')
-    .select('id, full_name, phone, raw, opted_out')
+    .select('id, full_name, phone, raw, opted_out, stage')
     .in('id', leadIds);
   const leadById = Object.fromEntries((leads || []).map((l) => [l.id, l]));
 
@@ -673,8 +676,14 @@ async function runTourDayDebriefs(db) {
   for (const tour of (tours || [])) {
     if (sent >= SEND_CAP) break;
     if (!tour.lead_id) continue;
-    // Don't debrief cancelled tours — they didn't happen.
-    if (tour.status === 'cancelled') continue;
+    // Skip tours that didn't actually happen. `cancelled` was never going
+    // to happen at all; `no-show` was scheduled but the lead never showed
+    // up — debriefing either with "how'd it go?" would be tonally wrong
+    // (the lead didn't tour anything). If Morgan hasn't marked the
+    // outcome yet (status still scheduled / requested / booked / confirmed
+    // — all the "active" states), we DO debrief: the tour most likely
+    // happened, and worst case the lead's reply tells Morgan it didn't.
+    if (tour.status === 'cancelled' || tour.status === 'no-show') continue;
     const startsAt = parseTourStartsAt(tour.date, tour.time);
     if (!startsAt) continue;
     // 2-6 hour window. Wider than a single cron tick so we don't miss
@@ -687,6 +696,11 @@ async function runTourDayDebriefs(db) {
     if (!lead) continue;
     if (lead.opted_out) continue;
     if (lead.raw?.automation_paused) continue;
+    // Skip leads Morgan has already closed out — sending "how'd the tour
+    // go?" to a Lost or Archived lead is awkward at best and resurfaces
+    // a dead conversation at worst. The lost/archived stage transition
+    // is Morgan's explicit signal that this lead is done.
+    if (lead.stage === 'lost' || lead.stage === 'archived') continue;
     const history = lead.raw?.nudge_history || {};
     const debriefKey = `tour_debrief_${tour.id}`;
     if (history[debriefKey]) continue;

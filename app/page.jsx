@@ -2208,22 +2208,57 @@ export default function App() {
         await db.updateLead(id, leadUpdatePayload);
       }
 
-      // 2. For each nested array in updates, insert new items
+      // Helper: detect "duplicate row" errors (Postgres code 23505 / message
+      // mentions "duplicate key" or "already exists"). These are BENIGN in
+      // our flow — they mean a parallel path (sendSms server-side write +
+      // realtime INSERT event) already wrote this exact row, so the
+      // optimistic copy from updateLead is redundant. We swallow them
+      // silently so they don't trigger the "Couldn't save changes" toast
+      // every time Morgan sends an SMS — that toast is supposed to flag
+      // real save failures, not catch this race.
+      const isDuplicateRowError = (err) => {
+        const msg = String(err?.message || err || '').toLowerCase();
+        return (
+          err?.code === '23505' ||
+          msg.includes('duplicate key') ||
+          msg.includes('already exists') ||
+          msg.includes('violates unique constraint')
+        );
+      };
+
+      // 2. For each nested array in updates, insert new items.
+      // CRITICAL: per-iteration try/catch with duplicate-row swallow.
+      // The send-message flow inserts a row server-side via sendSms AND
+      // updateLead's `messages: [...lead.messages, newMsg]` argument tries
+      // to insert the optimistic copy. Realtime usually backfills first
+      // so the existingMsgIds check excludes it — but on a race lost to
+      // the client, we'd attempt the duplicate insert. PG rejects with
+      // 23505, the catch fires, and Morgan sees a confusing error toast
+      // on every successful SMS send. Swallow the dup and continue.
       const existingMsgIds = new Set((existing?.messages || []).map(m => m.id));
       const newMessages = (messages || []).filter(m => !existingMsgIds.has(m.id));
       for (const m of newMessages) {
-        await db.insertMessage({
-          id: m.id, lead_id: id,
-          channel: m.channel, direction: m.direction, status: m.status,
-          to: m.to, via: m.via, subject: m.subject, body: m.body,
-          automated: !!m.automated, internal: !!m.internal,
-        });
+        try {
+          await db.insertMessage({
+            id: m.id, lead_id: id,
+            channel: m.channel, direction: m.direction, status: m.status,
+            to: m.to, via: m.via, subject: m.subject, body: m.body,
+            automated: !!m.automated, internal: !!m.internal,
+          });
+        } catch (insertErr) {
+          if (!isDuplicateRowError(insertErr)) throw insertErr;
+          // Already-written by sendSms / realtime — benign, skip silently.
+        }
       }
 
       const existingActIds = new Set((existing?.activities || []).map(a => a.id));
       const newActs = (activities || []).filter(a => !existingActIds.has(a.id));
       for (const a of newActs) {
-        await db.insertActivity({ id: a.id, lead_id: id, type: a.type, message: a.message });
+        try {
+          await db.insertActivity({ id: a.id, lead_id: id, type: a.type, message: a.message });
+        } catch (insertErr) {
+          if (!isDuplicateRowError(insertErr)) throw insertErr;
+        }
       }
 
       const existingTaskIds = new Set((existing?.tasks || []).map(t => t.id));
@@ -2231,14 +2266,18 @@ export default function App() {
       // New tasks → insert
       const newTasks = (tasks || []).filter(t => !existingTaskIds.has(t.id));
       for (const t of newTasks) {
-        await db.insertTask({
-          id: t.id, lead_id: id, title: t.title, due_date: t.dueDate,
-          status: t.status, priority: t.priority, auto: !!t.auto,
-          completed_at: t.completedAt || null,
-          related_tour_id: t.relatedTourId || null,
-          related_submission_id: t.relatedSubmissionId || null,
-          flags: t.flags || null,
-        });
+        try {
+          await db.insertTask({
+            id: t.id, lead_id: id, title: t.title, due_date: t.dueDate,
+            status: t.status, priority: t.priority, auto: !!t.auto,
+            completed_at: t.completedAt || null,
+            related_tour_id: t.relatedTourId || null,
+            related_submission_id: t.relatedSubmissionId || null,
+            flags: t.flags || null,
+          });
+        } catch (insertErr) {
+          if (!isDuplicateRowError(insertErr)) throw insertErr;
+        }
       }
       // Existing tasks that changed status/completion → update
       for (const t of (tasks || [])) {
@@ -2252,13 +2291,17 @@ export default function App() {
       const existingTourIds = new Set((existing?.tours || []).map(t => t.id));
       const newTours = (tours || []).filter(t => !existingTourIds.has(t.id));
       for (const t of newTours) {
-        await db.insertTour({
-          id: t.id, lead_id: id, tour_type: t.tourType,
-          date: t.date, time: t.time, status: t.status,
-          listings: t.listings, schedule: t.schedule,
-          completed_at: t.completedAt || null,
-          auto_completed: !!t.autoCompleted,
-        });
+        try {
+          await db.insertTour({
+            id: t.id, lead_id: id, tour_type: t.tourType,
+            date: t.date, time: t.time, status: t.status,
+            listings: t.listings, schedule: t.schedule,
+            completed_at: t.completedAt || null,
+            auto_completed: !!t.autoCompleted,
+          });
+        } catch (insertErr) {
+          if (!isDuplicateRowError(insertErr)) throw insertErr;
+        }
       }
       // Updated tours (completed, etc.)
       for (const t of (tours || [])) {
@@ -2276,13 +2319,17 @@ export default function App() {
       const existingSubIds = new Set((existing?.submissions || []).map(s => s.id));
       const newSubs = (submissions || []).filter(s => !existingSubIds.has(s.id));
       for (const s of newSubs) {
-        await db.insertSubmission({
-          id: s.id, lead_id: id, listing: s.listing,
-          landlord_email: s.landlordEmail, landlord_name: s.landlordName,
-          email_subject: s.emailSubject, email_body: s.emailBody,
-          status: s.status, notes: s.notes || '',
-          follow_ups: s.followUps || [],
-        });
+        try {
+          await db.insertSubmission({
+            id: s.id, lead_id: id, listing: s.listing,
+            landlord_email: s.landlordEmail, landlord_name: s.landlordName,
+            email_subject: s.emailSubject, email_body: s.emailBody,
+            status: s.status, notes: s.notes || '',
+            follow_ups: s.followUps || [],
+          });
+        } catch (insertErr) {
+          if (!isDuplicateRowError(insertErr)) throw insertErr;
+        }
       }
       // Existing submissions changed (status update, follow-up added)
       for (const s of (submissions || [])) {
