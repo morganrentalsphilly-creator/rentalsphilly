@@ -7540,24 +7540,18 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
       const ageHrs = (now - new Date(lead.createdAt || now).getTime()) / 3600000;
       if (ageHrs > 48) continue; // older than 2d → falls into cadence/stuck
 
-      // Compute days to move-in. Missing date → treat as "near term" so
-      // we don't lose visibility on a lead without a date.
-      const moveInIso = lead.moveInDate || lead.move_in_date || lead.raw?.moveInDate;
-      const moveIn = moveInIso ? new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : '')) : null;
-      const daysToMove = moveIn ? Math.round((moveIn - new Date()) / 86400000) : 0;
       const hasApplication = !!lead.application || lead.applicationStatus === 'received';
 
-      // 75+ day buckets outside their window — quiet, no prompt.
-      if ((lead.bucket === 'GCM75+' || lead.bucket === 'BC75+') && daysToMove > 75) {
-        continue;
-      }
-      // BCMS still waiting on application — quiet, no prompt.
-      if (lead.bucket === 'BCMS' && !hasApplication) {
-        continue;
-      }
-
-      // BC75+ within 75 days needs an APPLICATION LINK first, not a curated.
-      const isAppPrompt = lead.bucket === 'BC75+' && !hasApplication;
+      // STRICT bucket gate — matches the Today "needs curated link" filter
+      // and the daily summary cron. ONLY GCMS (or BCMS with app received)
+      // gets a "Send curated link" prompt in Focus Now. The 75+ buckets
+      // are deliberately excluded: their own 75-day check-in task is the
+      // right surface, not this one. Without this gate, Focus Now would
+      // show 75+ leads as needing curate the moment their move date
+      // drifted under 75 days — exactly the noise Morgan was complaining
+      // about.
+      if (lead.bucket !== 'GCMS' && lead.bucket !== 'BCMS') continue;
+      if (lead.bucket === 'BCMS' && !hasApplication) continue;
 
       out.push({
         id: `new-${lead.id}`,
@@ -7565,9 +7559,9 @@ function FocusNowCard({ leads, overdueTasks, todayTasks, onSelectLead, setSubvie
         priority: 7,
         kind: 'new-lead',
         leadName: lead.fullName,
-        action: isAppPrompt ? 'Send application link' : 'Send curated link',
+        action: 'Send curated link',
         subtitle: `New lead · ${Math.round(ageHrs)}h ago`,
-        meta: isAppPrompt ? 'app' : 'curate',
+        meta: 'curate',
         tone: 'gold',
         icon: Sparkles,
         paused: !!lead.raw?.automation_paused,
@@ -12209,7 +12203,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         sendInFlightRef.current = false;
         return;
       }
-      await sendEmail({
+      const emailResult = await sendEmail({
         leadId: lead.id,
         subject: emailSubject,
         body: emailBody,
@@ -12217,6 +12211,39 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         idempotencyKey: `scheduling-link-email-${lead.id}-${Date.now()}`,
         automated: false,
       });
+      // CRITICAL: surface the SMS + email rows immediately in the lead's
+      // thread + activity. Same fix as CuratedLinkPanel — previously this
+      // relied entirely on Realtime to backfill, but Morgan was reporting
+      // the scheduling link didn't show up anywhere in the lead's history.
+      const newMessages = [];
+      if (smsResult.ok && smsResult.message) {
+        newMessages.push({
+          id: smsResult.message.id,
+          channel: 'sms',
+          direction: 'outbound',
+          status: smsResult.message.status || 'sent',
+          to: smsResult.message.to,
+          via: 'twilio',
+          subject: null,
+          body: smsResult.message.body,
+          timestamp: smsResult.message.created_at || new Date().toISOString(),
+          automated: false,
+        });
+      }
+      if (emailResult?.ok && emailResult.message) {
+        newMessages.push({
+          id: emailResult.message.id,
+          channel: 'email',
+          direction: 'outbound',
+          status: emailResult.message.status || 'sent',
+          to: emailResult.message.to,
+          via: 'resend',
+          subject: emailResult.message.subject,
+          body: emailResult.message.body,
+          timestamp: emailResult.message.created_at || new Date().toISOString(),
+          automated: false,
+        });
+      }
       // Persist: token (if newly generated), the address picks (if entered
       // manually), curated_link_url (so hydrate can re-derive lead.curatedLinkUrl
       // after refresh — without this, CuratedLinkPanel would think the link
@@ -12239,6 +12266,7 @@ function SchedulingLinkPanel({ lead, updateLead, showToast }) {
         curatedLinkUrl: lead.curatedLinkUrl || curatedUrl,
         curatedLinkSentAt: lead.curatedLinkSentAt || new Date().toISOString(),
         stage: lead.stage === 'new' || lead.stage === 'matched' ? 'tour-requested' : lead.stage,
+        messages: [...(lead.messages || []), ...newMessages],
         activities: [...(lead.activities || []), {
           id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'scheduling-link-sent',
@@ -12958,7 +12986,7 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         sendInFlightRef.current = false;
         return;
       }
-      await sendEmail({
+      const emailResult = await sendEmail({
         leadId: lead.id,
         subject: emailSubject,
         body: emailBody,
@@ -12966,6 +12994,43 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         idempotencyKey: `curated-link-email-${lead.id}-${Date.now()}`,
         automated: false,
       });
+
+      // CRITICAL: surface the SMS + email rows in the lead's thread + activity
+      // timeline IMMEDIATELY by spreading them into the optimistic state.
+      // Previously this panel relied entirely on Realtime to backfill — but
+      // there's a perceptible delay (sometimes seconds, sometimes never if
+      // Realtime is paused), so Morgan was sending the curated link and then
+      // not seeing it anywhere in the lead's history. The inbox composer
+      // already does this; replicate the pattern here.
+      const newMessages = [];
+      if (smsResult.ok && smsResult.message) {
+        newMessages.push({
+          id: smsResult.message.id,
+          channel: 'sms',
+          direction: 'outbound',
+          status: smsResult.message.status || 'sent',
+          to: smsResult.message.to,
+          via: 'twilio',
+          subject: null,
+          body: smsResult.message.body,
+          timestamp: smsResult.message.created_at || new Date().toISOString(),
+          automated: false,
+        });
+      }
+      if (emailResult?.ok && emailResult.message) {
+        newMessages.push({
+          id: emailResult.message.id,
+          channel: 'email',
+          direction: 'outbound',
+          status: emailResult.message.status || 'sent',
+          to: emailResult.message.to,
+          via: 'resend',
+          subject: emailResult.message.subject,
+          body: emailResult.message.body,
+          timestamp: emailResult.message.created_at || new Date().toISOString(),
+          automated: false,
+        });
+      }
 
       const updatedTasks = (lead.tasks || []).map((t) =>
         Array.isArray(t.flags) && t.flags.includes('curate-portal') && t.status === 'pending'
@@ -12984,11 +13049,12 @@ function CuratedLinkPanel({ lead, updateLead, showToast }) {
         curatedLinkSentAt: new Date().toISOString(),
         stage: lead.stage === 'new' ? 'matched' : lead.stage,
         tasks: updatedTasks,
+        messages: [...(lead.messages || []), ...newMessages],
         activities: [...(lead.activities || []), {
           id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           type: 'curated-link-sent',
           timestamp: new Date().toISOString(),
-          message: `Curated link sent to ${firstName}`,
+          message: `Curated link sent to ${firstName} (SMS + email)`,
         }],
       });
       showToast('Curated link sent — lead got SMS + email');
@@ -15277,20 +15343,37 @@ function InboxView({ leads, onSelectLead, updateLead, settings, showToast }) {
   };
 
   // Today action cards.
-  // Bucket-aware: skip 75+ day leads outside their window, skip BCMS
-  // still waiting on an application. Mirrors Focus Now + nextMove() so
-  // every "new lead needs curate" surface uses the same rule set.
+  //
+  // STRICT bucket gate per Morgan's product policy:
+  //   • GCMS   → always show (good credit + moving soon = curate now)
+  //   • BCMS   → only show AFTER the RentSpree application is marked
+  //              received (markApplicationReceived sets
+  //              applicationStatus='received'). Until then, the lead is
+  //              waiting on US to receive the app — not us waiting to
+  //              curate. Surfacing them as "needs curated link" before
+  //              the app would inflate the queue with leads who can't
+  //              actually be acted on.
+  //   • GCM75+ → exclude entirely. These leads are in the light-touch
+  //              window; their own 75-day check-in task handles the
+  //              prompt when the window opens.
+  //   • BC75+  → exclude entirely. Same reason — they get an application
+  //              link 75 days out, not a curated link.
+  //
+  // The old time-based "daysToMove > 75" gate is intentionally gone:
+  // bucket is set at intake from credit + move-in, and we don't auto-
+  // promote a GCM75+ to GCMS just because the calendar advanced. If
+  // Morgan wants to reclassify, she does it explicitly. This keeps the
+  // queue tight and predictable — only leads she's TAGGED as needing
+  // a link will show up here.
   const newLeadsNoCurate = useMemo(() =>
     leads.filter((l) => {
       if (l.stage !== 'new') return false;
       if (l.curatedLinkSentAt) return false;
-      const moveInIso = l.moveInDate || l.move_in_date || l.raw?.moveInDate;
-      const moveIn = moveInIso ? new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : '')) : null;
-      const daysToMove = moveIn ? Math.round((moveIn - new Date()) / 86400000) : 0;
       const hasApp = !!l.application || l.applicationStatus === 'received';
-      if ((l.bucket === 'GCM75+' || l.bucket === 'BC75+') && daysToMove > 75) return false;
-      if (l.bucket === 'BCMS' && !hasApp) return false;
-      return true;
+      if (l.bucket === 'GCMS') return true;
+      if (l.bucket === 'BCMS' && hasApp) return true;
+      // GCM75+, BC75+, or any unclassified bucket → skip.
+      return false;
     }), [leads]);
   // Leads who picked properties via /c/[token] but Morgan hasn't sent the
   // scheduling link yet. This is the single highest-value action — until the

@@ -64,18 +64,22 @@ export async function GET(request) {
   // leads as "waiting for a curated link" when they're really in the
   // light-touch holding pattern, and doesn't report BCMS-no-app leads
   // (we're waiting on THEM, not the other way around).
+  // STRICT bucket gate (matches the client-side filter in page.jsx).
+  // Only GCMS leads, OR BCMS leads whose application has been marked
+  // received via RentSpree. Every other bucket / state is intentionally
+  // excluded — Morgan was seeing "ton of people need curated links"
+  // because we were also showing GCM75+/BC75+ leads as their move dates
+  // drifted under 75 days. The bucket Morgan tagged at intake is the
+  // signal; we don't auto-promote based on the calendar.
   const newLeadsNoCurate = leads.filter((l) => {
     if (l.stage !== 'new') return false;
     if (l.raw?.curated_link_sent_at) return false;
-    const moveInIso = l.move_in_date || l.raw?.moveInDate;
-    const moveIn = moveInIso ? new Date(moveInIso + (moveInIso.length === 10 ? 'T12:00:00' : '')) : null;
-    const daysToMove = moveIn ? Math.round((moveIn - new Date()) / 86400000) : 0;
-    const hasApplication = !!l.application || l.application_status === 'received' || l.raw?.application_status === 'received';
-    // 75+ day buckets outside their window — quiet.
-    if ((l.bucket === 'GCM75+' || l.bucket === 'BC75+') && daysToMove > 75) return false;
-    // BCMS waiting on application — quiet (the system is correctly idle).
-    if (l.bucket === 'BCMS' && !hasApplication) return false;
-    return true;
+    const hasApplication = !!l.application
+      || l.application_status === 'received'
+      || l.raw?.application_status === 'received';
+    if (l.bucket === 'GCMS') return true;
+    if (l.bucket === 'BCMS' && hasApplication) return true;
+    return false;
   });
   // Separately count BCMS leads waiting on app — Morgan should know they
   // exist (so she can manually nudge if she wants) but they're not
