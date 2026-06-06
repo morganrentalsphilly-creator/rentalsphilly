@@ -25,7 +25,7 @@ export default function TermsPage() {
         </div>
 
         <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-2">Terms of Service</h1>
-        <div className="text-sm text-slate-500 mb-10">Last updated: May 23, 2026</div>
+        <div className="text-sm text-slate-500 mb-10">Last updated: June 6, 2026</div>
 
         <div className="space-y-6 text-[15px] leading-relaxed text-slate-700">
           <p>
@@ -36,11 +36,12 @@ export default function TermsPage() {
 
           <h2 className="text-xl font-semibold text-slate-900 pt-4">Who we are</h2>
           <p>
-            &quot;Rentals Philly&quot; is a trade name used by Morgan Page, an individual real estate
-            professional licensed in the Commonwealth of Pennsylvania. Rentals Philly is not a corporation,
-            LLC, or other separate legal entity — it is the brand under which Morgan Page operates as a sole
-            proprietor. References to &quot;we,&quot; &quot;us,&quot; or &quot;Rentals Philly&quot;
-            throughout these Terms mean Morgan Page in that capacity.
+            &quot;Rentals Philly&quot; is a trade name used by{' '}
+            <strong className="text-slate-900">Morgan Page</strong>, a licensed Pennsylvania real estate
+            salesperson (PA license number <strong className="text-slate-900">RS364959</strong>). Rentals
+            Philly is not a corporation, LLC, or other separate legal entity — it is the brand under which
+            Morgan Page operates as a sole proprietor. References to &quot;we,&quot; &quot;us,&quot; or
+            &quot;Rentals Philly&quot; throughout these Terms mean Morgan Page in that capacity.
           </p>
 
           <h2 className="text-xl font-semibold text-slate-900 pt-4">What we do</h2>
