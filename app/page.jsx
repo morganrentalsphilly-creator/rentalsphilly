@@ -3122,7 +3122,16 @@ export default function App() {
         // this only changes what THEY see next. 650+ continues unchanged.
         if (['Below 600', '600-649'].includes(l.creditScore)) {
           const band = l.creditScore === 'Below 600' ? 'below_600' : '600_649';
-          window.location.href = `/get-approved?lead=${encodeURIComponent(l.id)}&band=${band}`;
+          // Personalization params so /get-approved opens as THEIR results
+          // page (first name, budget, move date) — not a generic pitch.
+          const q = new URLSearchParams({
+            lead: l.id,
+            band,
+            fn: (l.fullName || '').trim().split(/\s+/)[0] || '',
+            bd: l.budgetMax ? String(l.budgetMax) : '',
+            mv: l.moveInDate || '',
+          });
+          window.location.href = `/get-approved?${q.toString()}`;
           return;
         }
         setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'curating' : 'holding');
@@ -4647,8 +4656,12 @@ function IntakeForm({ onSubmit, onBack }) {
                   // Optional step + no value yet → "Skip" reads more honestly
                   // than "Continue" since the user hasn't picked anything.
                   if (isLastStep) {
-                    if (s.optional && !data.source) return 'Skip & send to my agent';
-                    return 'Send to my agent';
+                    // Neutral CTA: good-credit leads go to the agent flow,
+                    // below-650 leads go to /get-approved — "results" is the
+                    // honest framing for both, with no agent promise that the
+                    // package branch would immediately break.
+                    if (s.optional && !data.source) return 'Skip & see my results';
+                    return 'See my results';
                   }
                   if (s.optional) {
                     if (step === 4 && !data.areas) return 'Skip — I\'m open anywhere';
@@ -4666,7 +4679,7 @@ function IntakeForm({ onSubmit, onBack }) {
               condition of purchase", "Msg & data rates may apply", "Reply
               HELP/STOP") are what carriers look for. */}
           <div className="mt-2.5 text-[10px] text-slate-500 leading-snug text-center">
-            By tapping &ldquo;{isLastStep ? 'Send to my agent' : 'Continue'}&rdquo;, you agree to receive{' '}
+            By tapping &ldquo;{isLastStep ? 'See my results' : 'Continue'}&rdquo;, you agree to receive{' '}
             <strong>recurring automated</strong> text messages from Rentals Philly at the mobile number you provided, including rental listings, showing confirmations, and appointment reminders, sent via an automatic dialing system. Consent is not a condition of any purchase. Msg frequency varies. Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help, <strong>STOP</strong> to cancel.{' '}
             <a href="/privacy" target="_blank" rel="noopener noreferrer" className="underline">Privacy</a> ·{' '}
             <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">Terms</a>.
