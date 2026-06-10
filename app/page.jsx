@@ -40,6 +40,11 @@ const MOCK_LISTINGS = [
 // ============================================================
 // HELPERS
 // ============================================================
+// Credit bands that route to the /get-approved digital-products funnel
+// instead of the agent flow. Used by the intake form (early exit), the
+// post-submit redirect, and the welcome-SMS skip — keep in one place.
+const LOW_CREDIT_BANDS = ['Below 600', '600-649'];
+
 const classifyLead = (lead) => {
   const today = new Date();
   const moveDate = new Date(lead.moveInDate);
@@ -2927,7 +2932,7 @@ export default function App() {
     // page instead of the agent flow, so DON'T send them the agent-style
     // welcome ("we'll reach out with matches") — it contradicts the page
     // they're about to see and burns trust. They still exist in the CRM.
-    const isPackageLead = ['Below 600', '600-649'].includes(lead.creditScore);
+    const isPackageLead = LOW_CREDIT_BANDS.includes(lead.creditScore);
     if (!isPackageLead) {
       fetch('/api/intake/welcome', {
         method: 'POST',
@@ -3120,7 +3125,7 @@ export default function App() {
         // FUNNEL SPLIT: below-650 leads go to the sales page instead of the
         // agent flow. They're already saved in the CRM (addLead succeeded) —
         // this only changes what THEY see next. 650+ continues unchanged.
-        if (['Below 600', '600-649'].includes(l.creditScore)) {
+        if (LOW_CREDIT_BANDS.includes(l.creditScore)) {
           const band = l.creditScore === 'Below 600' ? 'below_600' : '600_649';
           // Personalization params so /get-approved opens as THEIR results
           // page (first name, budget, move date) — not a generic pitch.
@@ -4227,23 +4232,23 @@ function IntakeForm({ onSubmit, onBack }) {
       if (fieldErrors.email) return 'Check your email';
       if (fieldErrors.phone) return 'Add your phone number';
     }
-    // Step 1: move-in date
-    if (step === 1 && !data.moveInDate) return 'Pick a move-in date';
-    // Step 2: budget
-    if (step === 2 && (!data.budgetMin || !data.budgetMax)) return 'Set your budget range';
-    // Step 3: beds/baths — require an actual pick so leads don't ship as
+    // Step 1: financial (moved up so below-650 leads exit early)
+    if (step === 1) {
+      if (!data.employed) return 'Are you currently employed?';
+      if (!data.creditScore) return 'Pick a credit range';
+    }
+    // Step 2: move-in date
+    if (step === 2 && !data.moveInDate) return 'Pick a move-in date';
+    // Step 3: budget
+    if (step === 3 && (!data.budgetMin || !data.budgetMax)) return 'Set your budget range';
+    // Step 4: beds/baths — require an actual pick so leads don't ship as
     // "1+ bed, 1+ bath" (matches every unit in Philly).
-    if (step === 3) {
+    if (step === 4) {
       const hasBeds = data.bedsMin || data.beds;
       const hasBaths = data.bathsMin || data.baths;
       if (!hasBeds && !hasBaths) return 'Pick bedrooms and bathrooms';
       if (!hasBeds) return 'Pick a bedroom count';
       if (!hasBaths) return 'Pick a bathroom count';
-    }
-    // Step 5: financial
-    if (step === 5) {
-      if (!data.employed) return 'Are you currently employed?';
-      if (!data.creditScore) return 'Pick a credit range';
     }
     // Step 6: tour type
     if (step === 6 && !data.tourType) return 'Pick in-person or virtual';
@@ -4372,6 +4377,36 @@ function IntakeForm({ onSubmit, onBack }) {
       )
     },
     {
+      // MOVED UP (was step 5): employment + credit now come right after
+      // contact info so below-650 leads exit to /get-approved immediately —
+      // without answering tour/budget questions meant for the agent flow.
+      id: 'financial',
+      title: 'A few financial details',
+      subtitle: 'This helps us find your fastest path to keys in hand.',
+      valid: () => data.employed && data.creditScore,
+      autoAdvance: true,
+      fields: (
+        <div className="space-y-5">
+          <div>
+            <div className="text-sm font-medium text-slate-700 mb-2">Currently employed?</div>
+            <div className="grid grid-cols-2 gap-2">
+              {['Yes', 'No'].map(v => (
+                <ChoiceButton key={v} selected={data.employed === v} onClick={() => update('employed', v)}>{v}</ChoiceButton>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm font-medium text-slate-700 mb-2">Credit score range</div>
+            <div className="grid grid-cols-2 gap-2">
+              {['Below 600', '600-649', '650-699', '700-749', '750+'].map(v => (
+                <ChoiceButton key={v} selected={data.creditScore === v} onClick={() => update('creditScore', v)}>{v}</ChoiceButton>
+              ))}
+            </div>
+          </div>
+        </div>
+      )
+    },
+    {
       title: 'When are you moving?',
       subtitle: 'We\'ll tailor our search to your timeline.',
       valid: () => !!data.moveInDate,
@@ -4423,32 +4458,6 @@ function IntakeForm({ onSubmit, onBack }) {
       )
     },
     {
-      title: 'A few financial details',
-      subtitle: 'This helps us match you with the right properties.',
-      valid: () => data.employed && data.creditScore,
-      autoAdvance: true,
-      fields: (
-        <div className="space-y-5">
-          <div>
-            <div className="text-sm font-medium text-slate-700 mb-2">Currently employed?</div>
-            <div className="grid grid-cols-2 gap-2">
-              {['Yes', 'No'].map(v => (
-                <ChoiceButton key={v} selected={data.employed === v} onClick={() => update('employed', v)}>{v}</ChoiceButton>
-              ))}
-            </div>
-          </div>
-          <div>
-            <div className="text-sm font-medium text-slate-700 mb-2">Credit score range</div>
-            <div className="grid grid-cols-2 gap-2">
-              {['Below 600', '600-649', '650-699', '700-749', '750+'].map(v => (
-                <ChoiceButton key={v} selected={data.creditScore === v} onClick={() => update('creditScore', v)}>{v}</ChoiceButton>
-              ))}
-            </div>
-          </div>
-        </div>
-      )
-    },
-    {
       // Tour-type is now the final step. Note: we removed a trailing
       // "How did you hear about us?" step — it was optional and lengthened
       // a flow we want to keep ruthlessly short. Lead.source still defaults
@@ -4488,6 +4497,9 @@ function IntakeForm({ onSubmit, onBack }) {
     if (!s.autoAdvance) return;
     if (!s.valid()) return;
     if (isLastStep) return;
+    // Low-credit exit submits the form — never auto-submit; require an
+    // explicit "See my results" tap (mirrors the last-step rule below).
+    if (lowCreditExit) return;
     if (autoAdvancedRef.current[step]) return;
     const handle = setTimeout(() => {
       autoAdvancedRef.current[step] = true;
@@ -4510,9 +4522,15 @@ function IntakeForm({ onSubmit, onBack }) {
     }
   }, [step]);
 
+  // FUNNEL EARLY EXIT: on the financial step, a below-650 credit pick means
+  // the remaining questions (move date, budget, tour type) are for a flow
+  // this lead will never enter. Submit right here with what we have — the
+  // parent's onSubmit routes them to /get-approved.
+  const lowCreditExit = s.id === 'financial' && LOW_CREDIT_BANDS.includes(data.creditScore);
+
   const handleNext = async () => {
     if (!s.valid() || submitting) return;
-    if (!isLastStep) { setStep(step + 1); return; }
+    if (!isLastStep && !lowCreditExit) { setStep(step + 1); return; }
     // Sync guard: closes the window between two rapid taps where async
     // setSubmitting hasn't yet re-rendered the disabled button.
     if (submitInFlightRef.current) return;
@@ -4655,16 +4673,16 @@ function IntakeForm({ onSubmit, onBack }) {
                 {(() => {
                   // Optional step + no value yet → "Skip" reads more honestly
                   // than "Continue" since the user hasn't picked anything.
-                  if (isLastStep) {
+                  if (isLastStep || lowCreditExit) {
                     // Neutral CTA: good-credit leads go to the agent flow,
                     // below-650 leads go to /get-approved — "results" is the
                     // honest framing for both, with no agent promise that the
                     // package branch would immediately break.
-                    if (s.optional && !data.source) return 'Skip & see my results';
+                    if (isLastStep && s.optional && !data.source) return 'Skip & see my results';
                     return 'See my results';
                   }
                   if (s.optional) {
-                    if (step === 4 && !data.areas) return 'Skip — I\'m open anywhere';
+                    if (step === 5 && !data.areas) return 'Skip — I\'m open anywhere';
                     if (s.optional) return 'Continue';
                   }
                   return 'Continue';
