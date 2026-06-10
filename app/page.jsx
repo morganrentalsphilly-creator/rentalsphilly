@@ -2796,7 +2796,14 @@ export default function App() {
     //   GCM75+ (good credit, moving later) → 75-day curate task
     //   BC75+  (bad credit,  moving later) → 75-day application-link task
     const tasks = [];
-    if (bucket === 'GCM75+' || bucket === 'BC75+') {
+    // Package-funnel leads (below 650) exit the intake early and route to
+    // /get-approved — they never enter the agent pipeline, so they get no
+    // agent tasks. Critically, they also skip the move-in-date questions,
+    // and the 75-day date math below would crash on the missing date.
+    const isFunnelLead = LOW_CREDIT_BANDS.includes(lead.creditScore);
+    if (isFunnelLead) {
+      // no tasks
+    } else if (bucket === 'GCM75+' || bucket === 'BC75+') {
       const followUpDate = new Date(lead.moveInDate);
       followUpDate.setDate(followUpDate.getDate() - 75);
       // Future-tense titles so the task NEVER reads as "do this now" when
