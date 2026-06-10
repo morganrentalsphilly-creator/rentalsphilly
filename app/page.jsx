@@ -2923,11 +2923,18 @@ export default function App() {
     // On a server-side dedup hit, the welcome endpoint's own idempotency check
     // (messages with kind=welcome already exist for this lead) returns
     // alreadySent=true, so this is safe to fire regardless.
-    fetch('/api/intake/welcome', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId: serverLeadId }),
-    }).catch((err) => console.warn('[addLead] welcome flow kickoff failed', err?.message));
+    // FUNNEL SPLIT: low-credit leads are routed to the /get-approved sales
+    // page instead of the agent flow, so DON'T send them the agent-style
+    // welcome ("we'll reach out with matches") — it contradicts the page
+    // they're about to see and burns trust. They still exist in the CRM.
+    const isPackageLead = ['Below 600', '600-649'].includes(lead.creditScore);
+    if (!isPackageLead) {
+      fetch('/api/intake/welcome', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId: serverLeadId }),
+      }).catch((err) => console.warn('[addLead] welcome flow kickoff failed', err?.message));
+    }
 
     // Build the in-memory lead object for immediate UI use. Messages will be
     // empty initially — the server-side welcome flow inserts the message rows
@@ -3108,7 +3115,18 @@ export default function App() {
         </div>
       )}
       {view === 'landing' && <Landing onStart={() => setView('intake')} />}
-      {view === 'intake' && <IntakeForm onSubmit={async (data) => { const l = await addLead(data); setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'curating' : 'holding'); }} onBack={() => setView('landing')} />}
+      {view === 'intake' && <IntakeForm onSubmit={async (data) => {
+        const l = await addLead(data);
+        // FUNNEL SPLIT: below-650 leads go to the sales page instead of the
+        // agent flow. They're already saved in the CRM (addLead succeeded) —
+        // this only changes what THEY see next. 650+ continues unchanged.
+        if (['Below 600', '600-649'].includes(l.creditScore)) {
+          const band = l.creditScore === 'Below 600' ? 'below_600' : '600_649';
+          window.location.href = `/get-approved?lead=${encodeURIComponent(l.id)}&band=${band}`;
+          return;
+        }
+        setView(l.bucket === 'GCMS' || l.bucket === 'BCMS' ? 'curating' : 'holding');
+      }} onBack={() => setView('landing')} />}
       {view === 'curating' && currentLead && <CuratingConfirmed lead={currentLead} agentName={settings.agentName} agentPhone={settings.agentPhone} onDone={() => { setView('landing'); setCurrentLead(null); }} />}
       {view === 'listings' && currentLead && <ListingsView lead={currentLead} properties={properties} excludedBrokerages={settings.excluded_brokerages || []} brightPortalUrls={Array.isArray(settings.bright_portal_urls) ? settings.bright_portal_urls : (settings.bright_portal_url ? [settings.bright_portal_url] : [])} onBookTour={(listings) => {
         setCurrentLead({ ...currentLead, _pendingListings: listings });
