@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The gated product-download route reads files from /private-files at
+  // runtime with fs. Vercel's serverless bundler only ships files it can
+  // statically trace — this tells it to include the product files in the
+  // /api/files function bundle.
+  outputFileTracingIncludes: {
+    "/api/files/[name]": ["./private-files/**/*"],
+  },
   // Force named imports from lucide-react to be rewritten as direct icon-file
   // imports so the bundler ships ONLY the icons we use, not all 1,943.
   //
