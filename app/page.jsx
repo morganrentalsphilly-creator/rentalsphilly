@@ -4567,7 +4567,20 @@ function IntakeForm({ onSubmit, onBack }) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await onSubmit(data);
+      // Early-exit (below-650) submissions skip the move-date/budget/tour
+      // questions, but downstream code and the DB expect those fields to
+      // exist. Fill safe, clearly-default values; the lead routes to the
+      // /get-approved funnel where these don't matter.
+      const submitData = lowCreditExit
+        ? {
+            ...data,
+            moveInDate: data.moveInDate || new Date(Date.now() + 21 * 86400000).toISOString().split('T')[0],
+            tourType: data.tourType || 'in-person',
+            budgetMin: data.budgetMin || '0',
+            budgetMax: data.budgetMax || '0',
+          }
+        : data;
+      await onSubmit(submitData);
       // Clear draft on success
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
       // Defense in depth: also release the lock + clear submitting state
@@ -4653,7 +4666,8 @@ function IntakeForm({ onSubmit, onBack }) {
             <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5">
               <div className="text-sm font-semibold text-red-800 mb-0.5">Couldn&apos;t send just yet</div>
               <div className="text-xs text-red-700 leading-relaxed">
-                Your answers are saved on this device. Check your connection and tap Send to my agent again.
+                Your answers are saved on this device — tap the button to try again.
+                {submitError && submitError !== 'Network error' ? ` (${submitError})` : ''}
               </div>
             </div>
           )}
